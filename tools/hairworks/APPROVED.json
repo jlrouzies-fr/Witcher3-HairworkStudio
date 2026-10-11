@@ -1,0 +1,71 @@
+{
+  "_doc": "Approved hair builds: rebuild exactly these configs. They are frozen - new generator features are opt-in config keys, never new defaults; a fix that changes shared code gets a legacy switch set in these configs (e.g. growth.legacy_neck).",
+  "approved": {
+    "vesemir": "vesemir_l232_mirror_ear_back",
+    "c04ma": "c04ma_h19",
+    "regis": "regis_v14",
+    "dandelion": "dandelion_v26",
+    "triss": "triss_l82_fe_user1b",
+    "guillaume": "guillaume_l124_locks_hug"
+  },
+  "approved_styles": {
+    "_doc": "Hairstyles (2026-10-11): the strings in \"approved\" are each character's DEFAULT hairstyle. Approved builds of other hairstyles go here as {\"<char>\": {\"<style id>\": \"<cfg>\"}} (style ids: roster.json hairstyles; a config opts in with \"style\": \"<id>\"). Same freeze rule. Read with tools/hairworks/approved.py."
+  },
+  "candidates_close_to_vanilla": {
+    "bowl": "bowl_v7",
+    "dandelion": "dandelion_v3",
+    "shani": "shani_v4",
+    "avallach": "avallach_v2",
+    "lambert": "lambert_v1",
+    "eskel": "eskel_v1",
+    "elihal": "elihal_v2",
+    "chappelle": "chappelle_v2",
+    "soltis": "soltis_v2",
+    "noble": "noble_v1",
+    "festival": "festival_v1",
+    "hjalmar": "hjalmar_v6",
+    "keira": "keira_k31",
+    "h106": "h106_v2"
+  },
+  "_pool_rule": "Focus pool of ~10 characters (user 2026-10-02): polish them until the user calls one perfect; a perfect one moves to \"approved\" and leaves the pool, and the next main character from \"next_main\" joins.",
+  "pool": [
+    "bowl",
+    "keira",
+    "shani",
+    "hjalmar",
+    "lambert",
+    "eskel",
+    "avallach",
+    "sheala",
+    "guillaume",
+    "tamara"
+  ],
+  "next_main": [
+    "dettlaff (parked: flare)",
+    "ciri / yennefer variants stay vanilla cards (buns)"
+  ],
+  "best_so_far": {
+    "emhyr": "emhyr_v6 (user: fine; slight ear clipping) -> emhyr_v8 (ear_tuck) queued R52",
+    "keira": "keira_k31 shape + keira_k39 colour -> keira_k41 queued R52; open: front-left clipping, straw roots",
+    "shani": "shani_v8 (colour right) -> v10 (trim) in R51",
+    "hjalmar": "hjalmar_v9 (x0.35 colour) -> v10 (trim) in R51",
+    "avallach": "avallach_v5 -> v6 (straighter) in R51",
+    "bowl": "bowl_v9 / v10 shape; open: frozen inner layer (v11 longest / v12 regroom queued R52)",
+    "lambert": "open: collar-length back, horizontal side sheet, frozen layer (v5 trim / v6 regroom / v7 longest / v2fo in R51)",
+    "eskel": "open: long wisps, face strands, crown scalp (v5 / v6 / v7 in R51)"
+  },
+  "skipped": {
+    "eredin": "hair under the helmet; batch mode cannot retarget his entity (user: skip for now)",
+    "crach": "build fails: his hair is inside the body template (outer / flat imports differ) - needs a template-patch fix",
+    "emhyr": "dropped by the user (2026-10-03): the test spawn keeps playing the afraid idle (Friendly and Neutral), shots unusable",
+    "cerys": "tied / swept hair (R77 v1 came out a wild blonde mop): tied styles stay vanilla cards, like the buns",
+    "syanna": "tied ponytail: stays vanilla cards",
+    "filippa": "braids / tied: stays vanilla cards (v2 had 35 guides)"
+  },
+  "rules": [
+    "No card underlayer (vanilla cards kept under the strands) for women's hair: user 2026-10-03, Keira k47 / k48 'look bad'. Strands only."
+  ],
+  "approved_extras": {
+    "triss": "needs mods\\modTrissScalp (scalp_tex.py: recoloured h_01_wa__triss_d01) + edits/triss_user1.json; user approved 2026-10-06"
+  }
+}

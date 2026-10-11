@@ -1,0 +1,196 @@
+{
+  "template": "characters\\npc_entities\\main_npc\\hjalmar.w2ent",
+  "appearance": "hjalmar",
+  "mod": "modHjalmarHairworks",
+  "captures": "analysis\\hairworks_hjalmar\\captures",
+  "fur_dir": "characters\\models\\main_npc\\hjalmar\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 1.0,
+    "shadow_density": 0.5,
+    "spec_primary": 0.04,
+    "root_color": [
+      25,
+      14,
+      6
+    ],
+    "tip_color": [
+      29,
+      16,
+      7
+    ],
+    "density": 1.3,
+    "length_noise": 0.2,
+    "width": 0.8,
+    "width_root": 0.15,
+    "width_tip": 0.2,
+    "width_noise": 0.5,
+    "clump_scale": 0.3,
+    "clump_noise": 0.4,
+    "wave_scale": 0.05,
+    "wave_freq": 4.3,
+    "stiffness": 0.5,
+    "root_stiffness": 0.7,
+    "bend_stiffness": 0.22,
+    "tip_stiffness": 0.1,
+    "stiffness_curve": null,
+    "bend_curve": null,
+    "damping": 0.025,
+    "stiffness_damping": 0.15,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        0.43
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        0.07
+      ]
+    },
+    "clump_roundness": 0.21,
+    "spec_color": [
+      60,
+      56,
+      52
+    ],
+    "spec_secondary": 0.02,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56,
+    "card_density_only": true,
+    "ambient_env": 0.35
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.8,
+    "hug_c0": 0.003,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.02,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": false,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": true,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.55,
+      0.58,
+      0.6
+    ],
+    "root_spacing": 0.011,
+    "drop_over_ear": false,
+    "comb": {
+      "iters": 3,
+      "alpha": 0.4,
+      "length_mix": 0.2,
+      "top_only": 0.08
+    },
+    "ear_collision": false,
+    "regroom": {
+      "k": 24,
+      "sigma": 0.015,
+      "momentum": 0.5,
+      "blend": 1.0
+    },
+    "trim": {
+      "face": 0.105,
+      "card_env": 0.025,
+      "face_env": {
+        "dist": 0.008,
+        "below": 0.06,
+        "front_y": 0.02
+      }
+    },
+    "drop_face_roots": true,
+    "interp_push": {
+      "margin": 0.0015,
+      "max_move": 0.012
+    },
+    "split_divergent": {
+      "ratio": 4.0
+    },
+    "fill_holes": {
+      "hole": 0.005,
+      "zmin": 0.12,
+      "k": 1
+    },
+    "hairline_row": {
+      "rows": 2,
+      "tol_deg": -1.0,
+      "inset_deg": 1.0
+    },
+    "bury_roots": {
+      "frac": 0.07,
+      "max_depth": 0.006
+    }
+  },
+  "accessories": [
+    {
+      "name": "lock",
+      "pos_boxes": [
+        [
+          0.05,
+          0.1,
+          -0.01,
+          0.07,
+          1.68,
+          1.88
+        ]
+      ],
+      "min_voxel_tris": 20,
+      "inside_frac": 0.9,
+      "gather": false,
+      "keep_mesh": true
+    }
+  ],
+  "atlas_exclude": [],
+  "hair": [
+    {
+      "template": "characters\\models\\main_npc\\hjalmar\\c_01_mb__hjalmar.w2ent"
+    }
+  ],
+  "note": "l108_c08_hr = hjalmar_l50_split + look.width_root=0.15, look.ambient_env=0.35, growth.fill_holes={hole=0.005, zmin=0.12, k=1}, look.root_color=[25, 14, 6], look.tip_color=[29, 16, 7], growth.hairline_row={rows=2, tol_deg=-1, inset_deg=1} (Hjalmar: sparse forehead / parting -> hairline rows)",
+  "lab": {
+    "round": "L108",
+    "axis": "l108",
+    "base": "hjalmar_l50_split",
+    "variant": "l108_c08_hr"
+  }
+}

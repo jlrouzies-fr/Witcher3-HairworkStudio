@@ -1,0 +1,239 @@
+{
+  "template": "characters\\npc_entities\\secondary_npc\\ves.w2ent",
+  "appearance": "ves",
+  "mod": "modVesHairworks",
+  "captures": "analysis\\hairworks_ves\\captures",
+  "fur_dir": "characters\\models\\common\\woman_average\\hair\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 0.65,
+    "shadow_density": 0.15,
+    "spec_primary": 0.06,
+    "root_color": [
+      110,
+      109,
+      91
+    ],
+    "tip_color": [
+      116,
+      116,
+      96
+    ],
+    "density": 15.0,
+    "length_noise": 0.15,
+    "width": 1.1,
+    "width_root": 0.15,
+    "width_tip": 0.15,
+    "width_noise": 0.4,
+    "clump_scale": 0.1,
+    "clump_noise": 0.3,
+    "wave_scale": 0.0,
+    "wave_freq": 4.3,
+    "stiffness": 0.7,
+    "root_stiffness": 1.056,
+    "bend_stiffness": 0.6,
+    "tip_stiffness": 0.05,
+    "stiffness_curve": [
+      1.0,
+      0.8,
+      0.35,
+      0.1
+    ],
+    "bend_curve": [
+      1.0,
+      0.6,
+      0.25,
+      0.1
+    ],
+    "damping": 0.25,
+    "stiffness_damping": 0.5,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        40.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.15
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        0.1
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.simulation.inertiaLimit": [
+        "Float",
+        0.15
+      ],
+      "graphicalMaterials.color.rootAlphaFalloff": [
+        "Float",
+        0.0
+      ]
+    },
+    "clump_roundness": 0.21,
+    "spec_color": [
+      60,
+      56,
+      52
+    ],
+    "spec_secondary": 0.02,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56,
+    "card_density_only": true,
+    "diffuse_blend": 0.6,
+    "ambient_env": 0.35
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.25,
+    "hug_c0": 0.005,
+    "hug_front_k": 3.0,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.03,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": false,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": false,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.85,
+      0.88,
+      0.9
+    ],
+    "root_spacing": 0.01,
+    "drop_over_ear": false,
+    "chain_segments": false,
+    "ear_collision": false,
+    "skull_spheres": 7,
+    "trim": {
+      "face_env": {
+        "dist": 0.004,
+        "below": 0.03,
+        "front_y": 0.02
+      },
+      "ear": 0.008
+    },
+    "lane_offset_keep": 0.7,
+    "split_arcs": 0.03,
+    "lane_min_rem": 0.02,
+    "drop_face_roots": true,
+    "lane_blend": 1.0,
+    "hug": true,
+    "lane_near": 0.025,
+    "alpha_tip": 0.08,
+    "interp_push": false,
+    "keep_face_locks": false,
+    "sphere_pad": 0.001,
+    "face_sphere": {
+      "pad": 0.006,
+      "back": 0.03
+    },
+    "fill_holes": {
+      "hole": 0.004,
+      "zmin": 0.13,
+      "k": 1
+    },
+    "split_divergent": {
+      "ratio": 4.0,
+      "fill": {
+        "frac": 0.4,
+        "iters": 2
+      }
+    },
+    "cover_fill": {
+      "gap": 0.004
+    },
+    "smooth_strands": {
+      "iters": 16,
+      "alpha": 0.55,
+      "keep": 1
+    },
+    "bury_roots": {
+      "frac": 0.07,
+      "skip_y": 0.06,
+      "max_depth": 0.006
+    },
+    "inflate": {
+      "k": 1.0,
+      "add": 0.0008,
+      "zrel": 0.16,
+      "ramp": 0.2
+    },
+    "densify": {
+      "auto": true
+    },
+    "sweep_front": false,
+    "ear_colliders": false,
+    "ear_pad": 0.0,
+    "crown_volume": {
+      "k": 0.2,
+      "max": 0.005,
+      "zrel": 0.09,
+      "both": true
+    },
+    "ear_rmax": 0.01,
+    "comb": {
+      "top_only": 0.14,
+      "iters": 20,
+      "alpha": 0.6
+    },
+    "lengthen_front": false,
+    "ear_final": {
+      "dist": 0.015
+    },
+    "side_cut": {
+      "depth": 0.08,
+      "x_min": 0.055,
+      "y_min": -0.02
+    }
+  },
+  "accessories": [],
+  "atlas_exclude": [],
+  "hair": [
+    {
+      "template": "characters\\models\\common\\woman_average\\hair\\c_18_wa__ves.w2ent"
+    }
+  ],
+  "note": "l203_a = ves_l178_b + edits=\"ves_user2030.json\", growth.bury_roots={frac=0.07, skip_y=0.06, max_depth=0.006}, growth.sweep_front=false, growth.lengthen_front=false, look.stiffness=0.7, look.root_stiffness=1.056, look.bend_stiffness=0.6, look.tip_stiffness=0.05, look.stiffness_curve=[1.0, 0.8, 0.35, 0.1], look.bend_curve=[1.0, 0.6, 0.25, 0.1], look.damping=0.25, look.stiffness_damping=0.5, look.root_color=[110, 109, 91], look.shadow_density=0.15, look.extra_set={physicalMaterials.simulation.windScaler=[\"Float\", 40.0], physicalMaterials.simulation.windNoise=[\"Float\", 2.0], physicalMaterials.waveness.waveRootStraighten=[\"Float\", 0.6], physicalMaterials.waveness.waveClump=[\"Float\", 0.0], physicalMaterials.waveness.waveScaleNoise=[\"Float\", 0.15], physicalMaterials.waveness.waveStrand=[\"Float\", 1.0], physicalMaterials.stiffness.interactionStiffness=[\"Float\", 0.1], physicalMaterials.simulation.massScale=[\"Float\", 20.0], physicalMaterials.simulation.backStopRadius=[\"Float\", 1.0], physicalMaterials.simulation.inertiaLimit=[\"Float\", 0.15], graphicalMaterials.color.rootAlphaFalloff=[\"Float\", 0.0]}, look.tip_color=[116, 116, 96], growth.smooth_strands={iters=16, alpha=0.55, keep=1}, look.clump_noise=0.3, look.length_noise=0.15, look.width_noise=0.4, look.width=1.1, look.density=15, look.clump_scale=0.1, look.width_tip=0.15, look.diffuse_blend=0.6, look.spec_primary=0.06 (POLISH on L202_b (finer denser strands; fringe/smoothing of L201_a; L195_a stiffness). Two look rounds left waxy blotches = sheet-normal shading: diffuse_blend 1.0->0.6 (strand shading), SHEEN spec_primary .04->.06. Everything else = L202_b | stiffness {'look.stiffness': 0.7, 'look.root_stiffness': 1.056, 'look.bend_stiffness': 0.6, 'look.tip_stiffness': 0.05} | edits ves_user2030.json)",
+  "calm_ai": true,
+  "lab": {
+    "round": "L203",
+    "axis": "new_char",
+    "base": "ves_l178_b",
+    "variant": "l203_a"
+  },
+  "edits": "ves_user2030.json"
+}

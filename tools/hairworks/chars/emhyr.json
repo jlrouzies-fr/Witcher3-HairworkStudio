@@ -1,0 +1,136 @@
+{
+  "template": "characters\\npc_entities\\main_npc\\emhyr.w2ent",
+  "appearance": "emhyr",
+  "mod": "modEmhyrHairworks",
+  "captures": "analysis\\hairworks_emhyr\\captures",
+  "fur_dir": "characters\\models\\main_npc\\emhyr\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 0.45,
+    "shadow_density": 0.5,
+    "spec_primary": 0.04,
+    "root_color": [
+      200,
+      192,
+      182
+    ],
+    "tip_color": [
+      228,
+      222,
+      212
+    ],
+    "density": 1.0,
+    "length_noise": 0.2,
+    "width": 0.8,
+    "width_root": 0.4,
+    "width_tip": 0.2,
+    "width_noise": 0.5,
+    "clump_scale": 0.8,
+    "clump_noise": 0.4,
+    "wave_scale": 0.4,
+    "wave_freq": 4.3,
+    "stiffness": 0.5,
+    "root_stiffness": 0.7,
+    "bend_stiffness": 0.22,
+    "tip_stiffness": 0.1,
+    "stiffness_curve": null,
+    "bend_curve": null,
+    "damping": 0.025,
+    "stiffness_damping": 0.15,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        0.43
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        0.07
+      ]
+    },
+    "clump_roundness": 0.21,
+    "hair_rgb": [
+      42,
+      37,
+      33
+    ],
+    "spec_color": [
+      60,
+      56,
+      52
+    ],
+    "spec_secondary": 0.02,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.6,
+    "hug_c0": 0.004,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.02,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": true,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": true,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.55,
+      0.58,
+      0.6
+    ],
+    "root_spacing": 0.011,
+    "drop_over_ear": false,
+    "comb": {
+      "iters": 3,
+      "alpha": 0.4,
+      "length_mix": 0.2,
+      "top_only": 0.08
+    }
+  },
+  "accessories": [],
+  "atlas_exclude": [],
+  "hair": [
+    {
+      "template": "characters\\models\\main_npc\\emhyr\\c_07_ma__emhyr_hair.w2ent"
+    }
+  ]
+}

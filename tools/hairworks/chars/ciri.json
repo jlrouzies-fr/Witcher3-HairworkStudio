@@ -1,0 +1,100 @@
+{
+  "template": "characters\\npc_entities\\main_npc\\ciri.w2ent",
+  "appearance": "ciri",
+  "mod": "modCiriHairworks",
+  "captures": "analysis\\hairworks_ciri\\captures",
+  "fur_dir": "characters\\models\\main_npc\\ciri\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 0.45,
+    "shadow_density": 0.6,
+    "spec_primary": 0.08,
+    "root_color": [
+      200,
+      192,
+      182
+    ],
+    "tip_color": [
+      228,
+      222,
+      212
+    ],
+    "density": 0.3,
+    "length_noise": 0.2,
+    "width": 1.5,
+    "width_root": 1.0,
+    "width_tip": 0.7,
+    "width_noise": 0.5,
+    "clump_scale": 0.2,
+    "clump_noise": 0.1,
+    "wave_scale": 1.1,
+    "wave_freq": 1.33,
+    "stiffness": 0.6,
+    "root_stiffness": 1.0,
+    "bend_stiffness": 0.5,
+    "tip_stiffness": 0.05,
+    "stiffness_curve": [
+      1.0,
+      0.9,
+      0.6,
+      0.3
+    ],
+    "bend_curve": [
+      1.0,
+      0.8,
+      0.5,
+      0.3
+    ],
+    "damping": 0.2,
+    "stiffness_damping": 0.8,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.8
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.3
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        0.1
+      ]
+    },
+    "clump_roundness": 0.3
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.6,
+    "hug_c0": 0.004,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.014,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": true,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": true,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0
+  }
+}

@@ -1,0 +1,105 @@
+{
+  "template": "characters\\npc_entities\\main_npc\\vesemir.w2ent",
+  "appearance": "vesemir",
+  "mod": "modVesemirHairworks",
+  "captures": "analysis\\hairworks_vesemir\\captures",
+  "fur_dir": "characters\\models\\main_npc\\vesemir\\model",
+  "accessories": [
+    {
+      "name": "tie",
+      "uv_box": [
+        0.94,
+        0.94,
+        1.0,
+        1.0
+      ],
+      "gather": true,
+      "keep_mesh": true
+    }
+  ],
+  "atlas_exclude": [
+    [
+      0.0,
+      0.08,
+      0.235,
+      0.5
+    ]
+  ],
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 0.7,
+    "shadow_density": 0.35,
+    "spec_primary": 0.08,
+    "root_color": [
+      200,
+      192,
+      182
+    ],
+    "tip_color": [
+      228,
+      222,
+      212
+    ],
+    "density": 1.3,
+    "length_noise": 0.2,
+    "width": 1.0,
+    "width_root": 0.8,
+    "width_tip": 0.4,
+    "width_noise": 0.5,
+    "clump_scale": 0.6,
+    "clump_noise": 0.45,
+    "wave_scale": 0.2,
+    "wave_freq": 2.0,
+    "stiffness": 1.0,
+    "root_stiffness": 1.2,
+    "bend_stiffness": 0.75,
+    "tip_stiffness": 0.3,
+    "stiffness_curve": [
+      1.0,
+      1.0,
+      0.95,
+      0.85
+    ],
+    "bend_curve": [
+      1.0,
+      0.95,
+      0.6,
+      0.4
+    ],
+    "damping": 0.35,
+    "stiffness_damping": 0.8,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        12.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        1.0
+      ]
+    }
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.0,
+    "hug_k": 0.6,
+    "hug_c0": 0.004,
+    "hug_front_k": 0.5,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.014,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": true,
+    "swept_fwd": 0.008,
+    "drop_skull_lanes": true,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0
+  },
+  "outfits": {}
+}

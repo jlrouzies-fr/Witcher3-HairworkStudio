@@ -1,0 +1,444 @@
+{
+ "version": 1,
+ "character": "dandelion",
+ "source": "dandelion_v24",
+ "comp": "hh_01_ma__dandelion",
+ "tol": 0.004,
+ "note": "user edit #4 (Strand Editor, 2026-10-03T10:40:34.373Z)",
+ "ops": [
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0402,
+     0.0578,
+     1.8543
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0495,
+     0.0571,
+     1.7751
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0605,
+     0.0476,
+     1.7814
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0556,
+     0.0564,
+     1.7881
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0107,
+     0.0493,
+     1.8732
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0214,
+     0.0631,
+     1.8604
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0249,
+     0.0495,
+     1.8702
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0361,
+     0.0507,
+     1.863
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0471,
+     0.0584,
+     1.8441
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0465,
+     0.0479,
+     1.8572
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0361,
+     0.0507,
+     1.863
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0249,
+     0.0495,
+     1.8702
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0402,
+     0.0578,
+     1.8543
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0605,
+     0.0476,
+     1.7814
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0556,
+     0.0564,
+     1.7881
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0402,
+     0.0578,
+     1.8543
+    ],
+    [
+     0.0495,
+     0.0571,
+     1.7751
+    ],
+    [
+     0.0605,
+     0.0476,
+     1.7814
+    ],
+    [
+     0.0556,
+     0.0564,
+     1.7881
+    ],
+    [
+     0.0107,
+     0.0493,
+     1.8732
+    ],
+    [
+     0.0214,
+     0.0631,
+     1.8604
+    ],
+    [
+     0.0249,
+     0.0495,
+     1.8702
+    ],
+    [
+     0.0361,
+     0.0507,
+     1.863
+    ],
+    [
+     0.0471,
+     0.0584,
+     1.8441
+    ],
+    [
+     0.0465,
+     0.0479,
+     1.8572
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.003
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0214,
+     0.0631,
+     1.8604
+    ],
+    [
+     0.0107,
+     0.0493,
+     1.8732
+    ],
+    [
+     0.0402,
+     0.0578,
+     1.8543
+    ],
+    [
+     0.0471,
+     0.0584,
+     1.8441
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.004
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0344,
+     0.066,
+     1.8479
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0495,
+     0.0694,
+     1.8034
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0344,
+     0.066,
+     1.8479
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0495,
+     0.0571,
+     1.7751
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  },
+  {
+   "type": "translate",
+   "roots": [
+    [
+     0.0192,
+     0.072,
+     1.8471
+    ]
+   ],
+   "offset": [
+    0,
+    0,
+    -0.005
+   ],
+   "falloff": "carry",
+   "from": 1
+  }
+ ]
+}

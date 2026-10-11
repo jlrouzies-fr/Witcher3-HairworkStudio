@@ -1,0 +1,7 @@
+{"out": "build/desktop_studio/uitest_guide_style", "splash": false, "steps": [
+ {"do": "wait", "frames": 40},
+ {"do": "click", "label": "##q"}, {"do": "wait", "frames": 5}, {"do": "text", "text": "of rivia"}, {"do": "wait", "frames": 10},
+ {"do": "click", "label": "card", "nth": 0}, {"do": "wait", "frames": 20},
+ {"do": "click", "label": "##style_combo"}, {"do": "wait", "frames": 15},
+ {"do": "shot", "name": "style_dropdown"}
+]}

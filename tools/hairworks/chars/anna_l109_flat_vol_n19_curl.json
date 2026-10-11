@@ -1,0 +1,152 @@
+{
+  "template": "dlc\\bob\\data\\characters\\npc_entities\\main_npc\\anna_henrietta.w2ent",
+  "appearance": "anna_henrietta",
+  "mod": "modAnnaHairworks",
+  "captures": "analysis\\hairworks_anna\\captures",
+  "fur_dir": "dlc\\bob\\data\\characters\\models\\main_npc\\anna_henrietta\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 0.45,
+    "shadow_density": 0.5,
+    "spec_primary": 0.04,
+    "root_color": [
+      53,
+      31,
+      22
+    ],
+    "tip_color": [
+      60,
+      36,
+      26
+    ],
+    "density": 1.6,
+    "length_noise": 0.2,
+    "width": 0.8,
+    "width_root": 0.15,
+    "width_tip": 0.2,
+    "width_noise": 0.5,
+    "clump_scale": 0.7,
+    "clump_noise": 0.4,
+    "wave_scale": 0.4,
+    "wave_freq": 4.3,
+    "stiffness": 0.5,
+    "root_stiffness": 0.7,
+    "bend_stiffness": 0.22,
+    "tip_stiffness": 0.1,
+    "stiffness_curve": null,
+    "bend_curve": null,
+    "damping": 0.025,
+    "stiffness_damping": 0.15,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        0.43
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        0.07
+      ]
+    },
+    "clump_roundness": 0.21,
+    "spec_color": [
+      60,
+      56,
+      52
+    ],
+    "spec_secondary": 0.02,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56,
+    "ambient_env": 0.35,
+    "card_density_only": true
+  },
+  "growth": {
+    "K": 25,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.6,
+    "hug_c0": 0.004,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.12,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": false,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": true,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.55,
+      0.58,
+      0.6
+    ],
+    "root_spacing": 0.011,
+    "drop_over_ear": false,
+    "lane_maxd": 0.25,
+    "root_below": 0.07,
+    "root_max_sd": 0.2,
+    "root_back_y": 0.0,
+    "curl": {
+      "radius": 0.016,
+      "pitch": 0.05,
+      "start": 0.2,
+      "ramp": 0.15
+    },
+    "bury_roots": {
+      "frac": 0.07,
+      "max_depth": 0.006
+    }
+  },
+  "accessories": [],
+  "atlas_exclude": [],
+  "hair": [
+    {
+      "template": "dlc\\bob\\data\\characters\\models\\main_npc\\anna_henrietta\\c_01_wa__anna_henrietta.w2ent"
+    }
+  ],
+  "note": "l109_flat_vol_n19_curl = anna_v1 + look.width_root=0.15, look.hair_rgb=null, look.ambient_env=0.35, growth.lane_maxd=0.25, growth.root_below=0.07, growth.reach=0.12, growth.root_max_sd=0.2, growth.root_back_y=0, split_cards={mode=\"components\", nape_rel=0.19}, look.card_density_only=true, look.root_color=[53, 31, 22], look.tip_color=[60, 36, 26], look.density=1.6, growth.curl={radius=0.016, pitch=0.05, start=0.2, ramp=0.15}, growth.K=25, look.clump_scale=0.7 (+ stronger waves (vanilla locks are wavy))",
+  "split_cards": {
+    "mode": "components",
+    "nape_rel": 0.19
+  },
+  "lab": {
+    "round": "L109",
+    "axis": "l96",
+    "base": "anna_v1",
+    "variant": "l109_flat_vol_n19_curl"
+  }
+}

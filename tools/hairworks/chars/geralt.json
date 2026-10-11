@@ -1,0 +1,7 @@
+{
+  "template": "characters\\npc_entities\\main_npc\\vesemir.w2ent",
+  "appearance": "vesemir",
+  "mod": "modGeraltHairEarCollision",
+  "captures": "analysis\\hairworks_geralt\\captures",
+  "note": "capture-only config for Geralt's own hair (use --mode geralt); the mod is built by analysis\\hairworks_vesemir\\build_geralt_ears.py"
+}

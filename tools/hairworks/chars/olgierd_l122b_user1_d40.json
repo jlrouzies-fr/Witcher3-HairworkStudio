@@ -1,0 +1,184 @@
+{
+  "template": "dlc\\ep1\\data\\characters\\npc_entities\\main_npc\\olgierd.w2ent",
+  "appearance": "olgierd",
+  "mod": "modOlgierdHairworks",
+  "captures": "analysis\\hairworks_olgierd\\captures",
+  "fur_dir": "dlc\\ep1\\data\\characters\\models\\main_npc\\olgierd\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 1.0,
+    "shadow_density": 0.5,
+    "spec_primary": 0.04,
+    "root_color": [
+      62,
+      36,
+      24
+    ],
+    "tip_color": [
+      72,
+      42,
+      28
+    ],
+    "density": 1.2,
+    "length_noise": 0.2,
+    "width": 1.2,
+    "width_root": 0.15,
+    "width_tip": 0.2,
+    "width_noise": 0.5,
+    "clump_scale": 0.3,
+    "clump_noise": 0.4,
+    "wave_scale": 0.0,
+    "wave_freq": 4.3,
+    "stiffness": 0.9,
+    "root_stiffness": 1.0,
+    "bend_stiffness": 0.8,
+    "tip_stiffness": 0.08,
+    "stiffness_curve": [
+      1.0,
+      0.8,
+      0.35,
+      0.1
+    ],
+    "bend_curve": [
+      1.0,
+      0.75,
+      0.3,
+      0.1
+    ],
+    "damping": 0.2,
+    "stiffness_damping": 0.8,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        10.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        0.07
+      ]
+    },
+    "clump_roundness": 0.21,
+    "spec_color": [
+      60,
+      56,
+      52
+    ],
+    "spec_secondary": 0.02,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56,
+    "card_density_only": true,
+    "ambient_env": 0.25
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.6,
+    "hug_c0": 0.004,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.02,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": false,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": false,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.55,
+      0.58,
+      0.6
+    ],
+    "root_spacing": 0.011,
+    "drop_over_ear": false,
+    "regroom": {
+      "k": 24,
+      "sigma": 0.015,
+      "momentum": 0.5,
+      "blend": 1.0
+    },
+    "smooth_strands": {
+      "iters": 5,
+      "alpha": 0.5,
+      "keep": 1
+    },
+    "densify": {
+      "spacing": 0.005,
+      "k": 6,
+      "w_fit": 0.9,
+      "w_fit_orig": 0.7,
+      "ramp": 0.2
+    },
+    "hairline_fade": {
+      "band_deg": 4.0,
+      "lo": 0.2
+    },
+    "ear_colliders": false,
+    "droop_sides": {
+      "side_x": 0.04,
+      "drop": 0.04,
+      "start": 0.35
+    },
+    "extend_across": {
+      "z_rel": 0.07,
+      "target_x": 0.07,
+      "side": 1,
+      "max_add": 0.05,
+      "hug": 0.006
+    },
+    "bury_roots": {
+      "frac": 0.07,
+      "max_depth": 0.006
+    }
+  },
+  "accessories": [],
+  "atlas_exclude": [],
+  "hair": [
+    {
+      "template": "dlc\\ep1\\data\\characters\\models\\main_npc\\olgierd\\h_01_ma__olgierd.w2ent"
+    }
+  ],
+  "note": "l122b_user1_d40 = olgierd_v3 + look.width_root=0.15, look.ambient_env=0.25, look.density=1.2, growth.inflate=null, look.root_color=[62, 36, 24], look.tip_color=[72, 42, 28], growth.smooth_strands={iters=5, alpha=0.5, keep=1}, look.wave_scale=0, look.clump_scale=0.3, look.width=1.2, growth.densify={spacing=0.005, k=6, w_fit=0.9, w_fit_orig=0.7, ramp=0.2}, growth.hairline_fade={band_deg=4, lo=0.2}, look.stiffness=0.9, look.root_stiffness=1, look.bend_stiffness=0.8, look.tip_stiffness=0.08, look.stiffness_curve=[1.0, 0.8, 0.35, 0.1], look.bend_curve=[1.0, 0.75, 0.3, 0.1], look.damping=0.2, look.stiffness_damping=0.8, look.extra_set.physicalMaterials.simulation.windScaler=[\"Float\", 10.0], look.extra_set.physicalMaterials.stiffness.interactionStiffness=[\"Float\", 0.6], growth.ear_colliders=false, edits=\"olgierd_user1.json\", growth.droop_sides={side_x=0.04, drop=0.04, start=0.35}, growth.extend_across={z_rel=0.07, target_x=0.07, side=1, max_add=0.05, hug=0.006} (user edits (115 strands cleaned) + automatic: side ends bent down along the scalp ({\"side_x\": 0.04, \"drop\": 0.04, \"start\": 0.35}) + top guides extended toward the other side (user: they stop mid-head))",
+  "edits": "olgierd_user1.json",
+  "lab": {
+    "round": "L122b",
+    "axis": "densify",
+    "base": "olgierd_v3",
+    "variant": "l122b_user1_d40"
+  }
+}

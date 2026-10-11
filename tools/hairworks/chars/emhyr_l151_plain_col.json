@@ -1,0 +1,48 @@
+{
+  "template": "characters\\npc_entities\\main_npc\\emhyr.w2ent",
+  "appearance": "emhyr",
+  "mod": "modEmhyrHairworks",
+  "captures": "analysis\\hairworks_emhyr\\captures",
+  "fur_dir": "characters\\models\\main_npc\\emhyr\\model",
+  "hair": [
+    {
+      "template": "characters\\models\\main_npc\\emhyr\\c_07_ma__emhyr_hair.w2ent"
+    }
+  ],
+  "note": "l151_plain_col = emhyr_plain + calm_ai=true, growth.bury_roots=false, look.hair_rgb=null, look.card_density_only=true, look.texture_brightness=1, look.spec_primary=0.04, look.spec_color=[60, 56, 52], look.spec_secondary=0.02, look.spec_env=0, look.glint=0, look.shadow_density=0.5, look.shadow_sigma=1.56, look.root_color=[14, 12, 11], look.tip_color=[18, 16, 14] (v6 colour path: card_density_only, flat root 14,12,11 / tip 18,16,14, v6 spec / shadow)",
+  "look": {
+    "card_density_only": true,
+    "texture_brightness": 1.0,
+    "spec_primary": 0.04,
+    "spec_color": [
+      60,
+      56,
+      52
+    ],
+    "spec_secondary": 0.02,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_density": 0.5,
+    "shadow_sigma": 1.56,
+    "root_color": [
+      14,
+      12,
+      11
+    ],
+    "tip_color": [
+      18,
+      16,
+      14
+    ]
+  },
+  "calm_ai": true,
+  "growth": {
+    "bury_roots": false
+  },
+  "lab": {
+    "round": "L151",
+    "axis": "new_char",
+    "base": "emhyr_plain",
+    "variant": "l151_plain_col"
+  }
+}

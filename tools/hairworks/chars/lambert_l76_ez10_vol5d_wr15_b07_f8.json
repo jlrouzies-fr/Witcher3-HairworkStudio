@@ -1,0 +1,212 @@
+{
+  "template": "characters\\npc_entities\\main_npc\\lambert.w2ent",
+  "appearance": "lambert",
+  "mod": "modLambertHairworks",
+  "captures": "analysis\\hairworks_lambert\\captures",
+  "fur_dir": "characters\\models\\secondary_npc\\lambert\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 0.45,
+    "shadow_density": 0.5,
+    "spec_primary": 0.003,
+    "root_color": [
+      200,
+      192,
+      182
+    ],
+    "tip_color": [
+      228,
+      222,
+      212
+    ],
+    "density": 3.1,
+    "length_noise": 0.2,
+    "width": 0.8,
+    "width_root": 0.15,
+    "width_tip": 0.2,
+    "width_noise": 0.5,
+    "clump_scale": 0.3,
+    "clump_noise": 0.4,
+    "wave_scale": 0.15,
+    "wave_freq": 4.3,
+    "stiffness": 1.0,
+    "root_stiffness": 1.2,
+    "bend_stiffness": 0.75,
+    "tip_stiffness": 0.3,
+    "stiffness_curve": [
+      1.0,
+      1.0,
+      0.95,
+      0.85
+    ],
+    "bend_curve": [
+      1.0,
+      0.95,
+      0.6,
+      0.4
+    ],
+    "damping": 0.35,
+    "stiffness_damping": 0.8,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        0.1
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.simulation.inertiaLimit": [
+        "Float",
+        0.15
+      ]
+    },
+    "clump_roundness": 0.21,
+    "hair_rgb": [
+      19,
+      15,
+      11
+    ],
+    "spec_color": [
+      44,
+      36,
+      30
+    ],
+    "spec_secondary": 0.0,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.8,
+    "hug_c0": 0.003,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.03,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": true,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": true,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.38,
+      0.48,
+      0.75
+    ],
+    "root_spacing": 0.008,
+    "drop_over_ear": true,
+    "skull_spheres": 16,
+    "trim": {
+      "max_off": 0.02,
+      "card_env": 0.008,
+      "ear": 0.02,
+      "card_env_visible": true
+    },
+    "flyaway": {
+      "k": 6,
+      "max_dev": 0.02
+    },
+    "ear_collision": false,
+    "lane_offset_keep": 0.7,
+    "split_arcs": 0.03,
+    "lane_min_rem": 0.02,
+    "drop_face_roots": true,
+    "lane_blend": 1.0,
+    "alpha_tip": 0.08,
+    "ear_pad": 0.004,
+    "fill_holes": {
+      "hole": 0.007,
+      "ear_clear": 0.06,
+      "zmin": 0.11
+    },
+    "crown_volume": {
+      "k": 1.0,
+      "max": 0.02,
+      "ramp": 0.05,
+      "zrel": 0.2,
+      "both": true,
+      "carry": 0.9,
+      "smooth": 2
+    },
+    "drop_bare_roots": {
+      "dist": 0.006,
+      "below": 0.04,
+      "front_y": -0.02
+    },
+    "hairline_follow": {
+      "k": 5,
+      "zone_x": 0.09
+    },
+    "hairline_row": {
+      "rows": 2
+    },
+    "ear_zone": {
+      "front_cut": 0.01,
+      "behind_drop": 0.02
+    },
+    "inflate": {
+      "k": 1.2,
+      "add": 0.005
+    },
+    "bury_roots": {
+      "frac": 0.07,
+      "max_depth": 0.006
+    },
+    "hairline_fade": {
+      "band_deg": 8.0,
+      "lo": 0.05
+    }
+  },
+  "accessories": [],
+  "atlas_exclude": [],
+  "hair": [
+    {
+      "template": "characters\\models\\secondary_npc\\lambert\\h_01_ma__lambert.w2ent"
+    }
+  ],
+  "note": "l76_ez10_vol5d_wr15_b07_f8 = lambert_l26_ear45 + growth.comb=null, look.spec_primary=0.003, growth.drop_bare_roots={dist=0.006, below=0.04, front_y=-0.02}, growth.hairline_follow={k=5, zone_x=0.09}, growth.trim.ear=0.02, growth.fill_holes={hole=0.007, ear_clear=0.06, zmin=0.11}, growth.hairline_row={rows=2}, growth.ear_zone={front_cut=0.01, behind_drop=0.02}, look.width_root=0.15, growth.inflate={k=1.2, add=0.005}, look.density=3.1, growth.bury_roots={frac=0.07, max_depth=0.006}, growth.hairline_fade={band_deg=8, lo=0.05} (hairline density fade over 8 deg, lo .05)",
+  "lab": {
+    "round": "L76",
+    "axis": "front",
+    "base": "lambert_l26_ear45",
+    "variant": "l76_ez10_vol5d_wr15_b07_f8"
+  }
+}

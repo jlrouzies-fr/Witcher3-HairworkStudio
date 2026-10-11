@@ -1,0 +1,154 @@
+{
+  "template": "characters\\npc_entities\\main_npc\\eredin.w2ent",
+  "appearance": "eredin_no_helmet",
+  "mod": "modEredinHairworks",
+  "captures": "analysis\\hairworks_eredin\\captures",
+  "fur_dir": "characters\\models\\main_npc\\eredin\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 1.0,
+    "shadow_density": 0.5,
+    "spec_primary": 0.04,
+    "root_color": [
+      9,
+      10,
+      9
+    ],
+    "tip_color": [
+      14,
+      16,
+      15
+    ],
+    "density": 1.6,
+    "length_noise": 0.2,
+    "width": 0.5,
+    "width_root": 0.4,
+    "width_tip": 0.2,
+    "width_noise": 0.5,
+    "clump_scale": 0.2,
+    "clump_noise": 0.2,
+    "wave_scale": 0.2,
+    "wave_freq": 4.3,
+    "stiffness": 0.5,
+    "root_stiffness": 0.7,
+    "bend_stiffness": 0.22,
+    "tip_stiffness": 0.1,
+    "stiffness_curve": null,
+    "bend_curve": null,
+    "damping": 0.025,
+    "stiffness_damping": 0.15,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        0.43
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        0.07
+      ]
+    },
+    "clump_roundness": 0.21,
+    "spec_color": [
+      40,
+      48,
+      44
+    ],
+    "spec_secondary": 0.02,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56,
+    "card_density_only": true
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.6,
+    "hug_c0": 0.005,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.02,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": true,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": true,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.55,
+      0.58,
+      0.6
+    ],
+    "root_spacing": 0.011,
+    "drop_over_ear": false,
+    "outfit_collision": false,
+    "skull_spheres": 16,
+    "trim": {
+      "card_env": 0.02
+    },
+    "densify": {
+      "spacing": 0.004,
+      "k": 3,
+      "w_fit": 0.9,
+      "w_fit_orig": 0.7,
+      "ramp": 0.2,
+      "env": 0.015,
+      "reach": 0.02,
+      "near_skin": 0.03
+    },
+    "behind_face": {
+      "y_max": 0.06,
+      "z_below": 0.06,
+      "squash": 0.15,
+      "keep_every": 3,
+      "flatten": 0.85,
+      "x_min": 0.06
+    },
+    "face_root_dx": 0.04,
+    "face_root_zeye": 0.12
+  },
+  "accessories": [],
+  "atlas_exclude": [],
+  "note": "l140_corner = eredin_baseline + growth.trim={card_env=0.02}, growth.flyaway=null, growth.densify={spacing=0.004, k=3, w_fit=0.9, w_fit_orig=0.7, ramp=0.2, env=0.015, reach=0.02, near_skin=0.03}, look.root_color=[9, 10, 9], look.tip_color=[14, 16, 15], look.spec_color=[40, 48, 44], look.clump_scale=0.2, look.clump_noise=0.2, look.width=0.5, look.density=1.6, growth.hairline_fade=null, growth.behind_face={y_max=0.06, z_below=0.06, squash=0.15, keep_every=3, flatten=0.85, x_min=0.06}, growth.face_root_dx=0.04, growth.face_root_zeye=0.12 (Eredin: base nofade (flatten behind_face, no fade) + new growth.face_root_zeye .12: face_root_dx .04 only above eye level (top - 120 mm), below it the old 70 mm rule still drops the roots (no wall over the cheekbone): only the forehead corner / upper temple gets roots)",
+  "calm_ai": true,
+  "lab": {
+    "round": "L140",
+    "axis": "new_char",
+    "base": "eredin_baseline",
+    "variant": "l140_corner"
+  }
+}

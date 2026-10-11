@@ -1,0 +1,12 @@
+{"out": "build/desktop_studio/uitest_bone_stiffness", "splash": false, "steps": [
+ {"do": "wait", "frames": 90},
+ {"do": "expect", "loaded": true, "config": "guillaume_l124_locks_hug"},
+ {"do": "click", "label": "Material"}, {"do": "wait", "frames": 10},
+ {"do": "click", "label": "Physics and motion"}, {"do": "wait", "frames": 10},
+ {"do": "wheel", "xy": [2900, 1500], "dy": -15}, {"do": "wait", "frames": 10},
+ {"do": "wheel", "xy": [2900, 1500], "dy": -15}, {"do": "wait", "frames": 10},
+ {"do": "expect", "widget": "bone stiffness emulation"},
+ {"do": "hover", "label": "bone stiffness emulation"}, {"do": "wait", "frames": 40},
+ {"do": "shot", "name": "physics_bone_stiffness"},
+ {"do": "rclick", "label": "bone stiffness emulation"}, {"do": "wait", "frames": 5},
+ {"do": "expect", "widget": "bone stiffness emulation"}]}

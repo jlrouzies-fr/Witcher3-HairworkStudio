@@ -1,0 +1,29 @@
+{
+ "version": 1,
+ "character": "vesemir",
+ "source": "vesemir_r31a",
+ "tol": 0.004,
+ "push_out": false,
+ "note": "2026-10-10 (user, L228): his LEFT side (mesh -x) goes oddly forward, the RIGHT side (+x) is perfect -> rebuild the left from the right with the mirror op. Centre band |x - plane| <= 1.5 cm and the back / tie region (roots y < -0.09) stay as they are. mirror2 (L230): + conform .03 - mirrored strands keep the source skin distance, because his left ear sits closer to the head than the right one (L229: the pure reflection ran over the left ear and puffed out at the temple). mirror3 (L232): + lateral {cell .004, min_lat .05, max_off .03}: mirrored points keep the source lateral offset from the outer head surface (the left ear is flatter: L231 SDR showed strands lying over the left ear). mirror4: as mirror3 without ymin (the back / tie roots are mirrored too). vesemir_mirror6: + ear_shift (ICP translation of the reflected right ear onto the left ear, applied to mirrored points within 3 cm of the left ear).",
+ "ops": [
+  {
+   "type": "mirror",
+   "source": "+x",
+   "plane_x": "auto",
+   "band": 0.015,
+   "conform": 0.03,
+   "lateral": {
+    "cell": 0.004,
+    "min_lat": 0.05,
+    "max_off": 0.03
+   },
+   "ear_shift": {
+    "min_lat": 0.075,
+    "zlo": 0.2,
+    "zhi": 0.04,
+    "radius": 0.03,
+    "fade": 0.02
+   }
+  }
+ ]
+}

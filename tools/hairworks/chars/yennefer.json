@@ -1,0 +1,27 @@
+{
+  "template": "characters\\npc_entities\\main_npc\\yennefer.w2ent",
+  "appearance": "yennefer_travel_outfit",
+  "mod": "modYenneferHairworks",
+  "captures": "analysis\\hairworks_yennefer\\captures",
+  "fur_dir": "characters\\models\\main_npc\\yennefer\\model",
+  "accessories": [],
+  "atlas_exclude": [],
+  "look": {
+    "hair_rgb": [
+      30,
+      28,
+      30
+    ],
+    "root_color": [
+      30,
+      28,
+      30
+    ],
+    "tip_color": [
+      45,
+      43,
+      47
+    ]
+  },
+  "growth": {}
+}

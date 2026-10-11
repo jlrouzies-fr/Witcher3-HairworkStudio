@@ -1,0 +1,240 @@
+{
+  "template": "dlc\\bob\\data\\characters\\npc_entities\\main_npc\\oriana.w2ent",
+  "appearance": "oriana",
+  "mod": "modOrianaHairworks",
+  "captures": "analysis\\hairworks_oriana\\captures",
+  "fur_dir": "dlc\\bob\\data\\characters\\models\\main_npc\\oriana\\h_01_wa__oriana",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 1.0,
+    "shadow_density": 0.2,
+    "spec_primary": 0.04,
+    "root_color": [
+      74,
+      38,
+      30
+    ],
+    "tip_color": [
+      96,
+      50,
+      40
+    ],
+    "density": 2.6,
+    "length_noise": 0.2,
+    "width": 0.8,
+    "width_root": 0.15,
+    "width_tip": 0.15,
+    "width_noise": 0.5,
+    "clump_scale": 0.0,
+    "clump_noise": 0.4,
+    "wave_scale": 0.0,
+    "wave_freq": 4.3,
+    "stiffness": 1.0,
+    "root_stiffness": 1.5,
+    "bend_stiffness": 1.0,
+    "tip_stiffness": 1.0,
+    "stiffness_curve": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "bend_curve": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "damping": 0.7,
+    "stiffness_damping": 0.8,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        0.5
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.simulation.inertiaLimit": [
+        "Float",
+        0.03
+      ],
+      "graphicalMaterials.color.rootAlphaFalloff": [
+        "Float",
+        0.15
+      ]
+    },
+    "clump_roundness": 0.21,
+    "spec_color": [
+      68,
+      58,
+      52
+    ],
+    "spec_secondary": 0.02,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56,
+    "card_density_only": true,
+    "diffuse_blend": 1.0,
+    "ambient_env": 0.35
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 1.0,
+    "hug_c0": 0.005,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.03,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": false,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": false,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.75,
+      0.78,
+      0.8
+    ],
+    "root_spacing": 0.01,
+    "drop_over_ear": false,
+    "chain_segments": false,
+    "ear_collision": false,
+    "skull_spheres": 7,
+    "trim": {
+      "face_env": {
+        "dist": 0.004,
+        "below": 0.03,
+        "front_y": 0.02
+      }
+    },
+    "lane_offset_keep": 0.7,
+    "split_arcs": 0.03,
+    "lane_min_rem": 0.02,
+    "drop_face_roots": true,
+    "lane_blend": 1.0,
+    "hug": true,
+    "lane_near": 0.025,
+    "alpha_tip": 0.08,
+    "interp_push": true,
+    "keep_face_locks": false,
+    "sphere_pad": 0.001,
+    "face_sphere": {
+      "pad": 0.006,
+      "back": 0.03
+    },
+    "fill_holes": {
+      "hole": 0.005,
+      "zmin": 0.13,
+      "k": 1
+    },
+    "split_divergent": {
+      "ratio": 4.0,
+      "fill": {
+        "frac": 0.4,
+        "iters": 2
+      }
+    },
+    "cover_fill": {
+      "gap": 0.004
+    },
+    "smooth_strands": {
+      "iters": 3,
+      "alpha": 0.4,
+      "keep": 1
+    },
+    "bury_roots": {
+      "frac": 0.07,
+      "max_depth": 0.006
+    },
+    "densify": {
+      "spacing": 0.003,
+      "k": 3,
+      "w_fit": 1.0,
+      "w_fit_orig": 1.0,
+      "ramp": 0.12,
+      "max_pull": 0.09,
+      "zmin_rel": 0.3
+    },
+    "sweep_front": {
+      "angle": 140,
+      "start": 0.0,
+      "centre": 0.0005,
+      "y_min": -0.02,
+      "tip_y_min": -0.06,
+      "z_min_rel": 0.3
+    },
+    "droop_sides": {
+      "side_x": 0.05,
+      "drop": 0.035
+    },
+    "cap_front": {
+      "y_min": 0.15,
+      "z_max": 0.0,
+      "drop_roots": 0.112,
+      "root_y": -0.005,
+      "root_x": 0.11
+    },
+    "thin_front": {
+      "any_point": true,
+      "keep": 0.0,
+      "y_min": 0.005,
+      "z_max": 0.112,
+      "x_min": -0.085,
+      "x_max": 0.085
+    }
+  },
+  "accessories": [],
+  "atlas_exclude": [],
+  "hair": [
+    {
+      "template": "dlc\\bob\\data\\characters\\models\\main_npc\\oriana\\c_01_wa__oriana.w2ent"
+    }
+  ],
+  "note": "l218_b = oriana_l150_fix + growth.cap_front={y_min=0.15, z_max=0, drop_roots=0.112, root_y=-0.005, root_x=0.11}, growth.thin_front={any_point=true, keep=0, y_min=0.005, z_max=0.112, x_min=-0.085, x_max=0.085}, growth.droop_sides={side_x=0.05, drop=0.035}, growth.roll_ends=null, growth.curl=null, look.clump_scale=0, look.root_color=[74, 38, 30], look.tip_color=[96, 50, 40], look.spec_color=[68, 58, 52] (Oriana: slightly brighter auburn copper (root [74, 38, 30], tip [96, 50, 40]) + stronger side droop (drop 35mm, side_x .050) to tuck flare tighter)",
+  "lab": {
+    "round": "L218",
+    "axis": "new_char",
+    "base": "oriana_l150_fix",
+    "variant": "l218_b"
+  },
+  "calm_ai": true,
+  "density_floor": 0.35
+}

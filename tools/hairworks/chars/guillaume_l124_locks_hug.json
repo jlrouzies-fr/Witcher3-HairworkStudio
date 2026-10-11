@@ -1,0 +1,181 @@
+{
+  "template": "dlc\\bob\\data\\characters\\npc_entities\\secondary_npc\\guillaume.w2ent",
+  "appearance": "guillaume",
+  "mod": "modGuillaumeHairworks",
+  "captures": "analysis\\hairworks_guillaume\\captures",
+  "fur_dir": "dlc\\bob\\data\\characters\\models\\secondary_npc\\guillaume\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 1.0,
+    "shadow_density": 0.5,
+    "spec_primary": 0.0945,
+    "root_color": [
+      72,
+      56,
+      30
+    ],
+    "tip_color": [
+      96,
+      76,
+      42
+    ],
+    "density": 1.2,
+    "length_noise": 0.3,
+    "width": 0.8,
+    "width_root": 0.15,
+    "width_tip": 0.2,
+    "width_noise": 0.5,
+    "clump_scale": 0.9,
+    "clump_noise": 0.4,
+    "wave_scale": 0.1,
+    "wave_freq": 6.0,
+    "stiffness": 0.5,
+    "root_stiffness": 0.7,
+    "bend_stiffness": 0.22,
+    "tip_stiffness": 0.1,
+    "stiffness_curve": null,
+    "damping": 0.025,
+    "stiffness_damping": 0.15,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        0.1
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        0.43
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        0.07
+      ]
+    },
+    "clump_roundness": 0.8,
+    "spec_color": [
+      60,
+      56,
+      52
+    ],
+    "spec_secondary": 0.05,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56,
+    "card_density_only": true,
+    "use_card_texture": true,
+    "length_scale": 1.0,
+    "spec_power_primary": 600.0,
+    "spec_power_secondary": 40.0,
+    "ambient_env": 0.35
+  },
+  "growth": {
+    "K": 25,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.5,
+    "hug_c0": 0.005,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.02,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": true,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": true,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.55,
+      0.58,
+      0.6
+    ],
+    "root_spacing": 0.011,
+    "drop_over_ear": false,
+    "comb": {
+      "iters": 3,
+      "alpha": 0.4,
+      "length_mix": 0.2,
+      "top_only": 0.08
+    },
+    "skull_spheres": 16,
+    "trim": {
+      "card_env": 0.015
+    },
+    "ear_collision": false,
+    "lane_offset_keep": 0.7,
+    "split_arcs": 0.03,
+    "lane_min_rem": 0.02,
+    "drop_face_roots": true,
+    "lane_blend": 1.0,
+    "alpha_tip": 0.2,
+    "interp_push": true,
+    "bury_roots": {
+      "frac": 0.07,
+      "max_depth": 0.006
+    },
+    "smooth_strands": {
+      "iters": 3,
+      "alpha": 0.4,
+      "keep": 1
+    },
+    "fill_holes": {
+      "hole": 0.004,
+      "zmin": 0.14,
+      "k": 2
+    },
+    "curl": {
+      "radius": 0.02,
+      "pitch": 0.045,
+      "start": 0.3,
+      "ramp": 0.15,
+      "below_top": 0.1
+    },
+    "cover_fill": {
+      "gap": 0.004
+    },
+    "keep_face_locks": true,
+    "hug": true
+  },
+  "accessories": [],
+  "atlas_exclude": [],
+  "hair": [
+    {
+      "template": "dlc\\bob\\data\\characters\\models\\secondary_npc\\guillaume\\c_01_ma_guillaume.w2ent"
+    }
+  ],
+  "note": "l124_locks_hug = guillaume_v5 + look.mat_src=\"characters\\\\models\\\\geralt\\\\coif\\\\model\\\\c_04_mg__long_fur.redfur\", look.density=1.2, look.length_noise=0.3, look.length_scale=1, look.width=0.8, look.width_root=0.15, look.width_tip=0.2, look.width_noise=0.5, look.clump_scale=0.9, look.clump_roundness=0.8, look.clump_noise=0.4, look.wave_scale=0.1, look.wave_freq=6, look.bend_curve=null, look.spec_primary=0.0945, look.spec_power_primary=600, look.spec_secondary=0.05, look.spec_power_secondary=40, look.spec_env=0, look.glint=0, look.diffuse_blend=null, look.shadow_sigma=1.56, look.shadow_density=0.5, look.ambient_env=0.35, look.extra_set.physicalMaterials.simulation.windScaler=[\"Float\", 20.0], look.extra_set.physicalMaterials.simulation.windNoise=[\"Float\", 2.0], look.extra_set.physicalMaterials.waveness.waveRootStraighten=[\"Float\", 1.0], look.extra_set.physicalMaterials.waveness.waveClump=[\"Float\", 1.0], look.extra_set.physicalMaterials.waveness.waveScaleNoise=[\"Float\", 0.2], look.extra_set.physicalMaterials.waveness.waveStrand=[\"Float\", 0.1], growth.trim.face_env=null, growth.bury_roots={frac=0.07, max_depth=0.006}, growth.smooth_strands={iters=3, alpha=0.4, keep=1}, growth.fill_holes={hole=0.004, zmin=0.14, k=2}, look.root_color=[72, 56, 30], look.tip_color=[96, 76, 42], growth.K=25, growth.curl={radius=0.02, pitch=0.045, start=0.3, ramp=0.15, below_top=0.1}, growth.cover_fill={gap=0.004}, growth.keep_face_locks=true, growth.hug=true, growth.hug_k=0.5 (+ side strands hug the head (close the gap to the cheek))",
+  "lab": {
+    "round": "L124",
+    "axis": "l97",
+    "base": "guillaume_v5",
+    "variant": "l124_locks_hug"
+  }
+}

@@ -1,0 +1,6 @@
+# Hairwork Studio pipeline packages. NOT needed to use the release: the release bundles its own Python (python\ folder) with these.
+# Only for running the tools from source with your own Python 3.10+ (tested with 3.13):  py -m pip install -r requirements.txt
+numpy>=2.0
+Pillow>=10.0
+scipy>=1.11
+lz4>=4.0

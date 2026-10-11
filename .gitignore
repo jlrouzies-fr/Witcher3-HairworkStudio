@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+# build outputs, work folders written by the tools
+build/*
+!build/desktop_studio/
+build/desktop_studio/*
+!build/desktop_studio/portraits_ai/
+dist/
+release/
+results/
+sources/

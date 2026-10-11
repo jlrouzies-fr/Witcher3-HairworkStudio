@@ -1,0 +1,167 @@
+{
+  "template": "characters\\npc_entities\\secondary_npc\\tamara.w2ent",
+  "appearance": "tamara",
+  "mod": "modTamaraHairworks",
+  "captures": "analysis\\hairworks_tamara\\captures",
+  "fur_dir": "characters\\models\\common\\woman_average\\hair\\model",
+  "look": {
+    "mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+    "texture_brightness": 1.0,
+    "shadow_density": 0.4,
+    "spec_primary": 0.04,
+    "root_color": [
+      30,
+      25,
+      21
+    ],
+    "tip_color": [
+      36,
+      30,
+      26
+    ],
+    "density": 3.5,
+    "length_noise": 0.2,
+    "width": 0.8,
+    "width_root": 0.15,
+    "width_tip": 0.15,
+    "width_noise": 0.5,
+    "clump_scale": 0.5,
+    "clump_noise": 0.4,
+    "wave_scale": 0.2,
+    "wave_freq": 4.3,
+    "stiffness": 0.6,
+    "root_stiffness": 0.8,
+    "bend_stiffness": 0.4,
+    "tip_stiffness": 0.1,
+    "stiffness_curve": null,
+    "bend_curve": null,
+    "damping": 0.08,
+    "stiffness_damping": 0.15,
+    "extra_set": {
+      "physicalMaterials.simulation.windScaler": [
+        "Float",
+        20.0
+      ],
+      "physicalMaterials.simulation.windNoise": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.waveness.waveRootStraighten": [
+        "Float",
+        0.6
+      ],
+      "physicalMaterials.waveness.waveClump": [
+        "Float",
+        0.0
+      ],
+      "physicalMaterials.waveness.waveScaleNoise": [
+        "Float",
+        0.2
+      ],
+      "physicalMaterials.waveness.waveStrand": [
+        "Float",
+        1.0
+      ],
+      "physicalMaterials.stiffness.interactionStiffness": [
+        "Float",
+        0.43
+      ],
+      "physicalMaterials.simulation.massScale": [
+        "Float",
+        2.0
+      ],
+      "physicalMaterials.simulation.backStopRadius": [
+        "Float",
+        0.07
+      ]
+    },
+    "clump_roundness": 0.21,
+    "spec_color": [
+      60,
+      56,
+      52
+    ],
+    "spec_secondary": 0.02,
+    "spec_env": 0.0,
+    "glint": 0.0,
+    "shadow_sigma": 1.56,
+    "card_density_only": true,
+    "ambient_env": 0.35
+  },
+  "growth": {
+    "K": 13,
+    "lane_pick": "balanced",
+    "lane_pick_power": 1.5,
+    "hug_k": 0.5,
+    "hug_c0": 0.005,
+    "hug_front_k": 0.8,
+    "hug_zmin_rel": 0.15,
+    "reach": 0.03,
+    "edge_lane_filter": true,
+    "hug_central_front": true,
+    "outfit_old_fit": false,
+    "outfit_spheres": 36,
+    "outfit_pad": 0.004,
+    "outfit_reach": 0.08,
+    "swept_back": false,
+    "swept_fwd": 0.0,
+    "drop_skull_lanes": true,
+    "skull_lane_zrel": 0.15,
+    "skull_lane_sd": 0.015,
+    "hug_zmin_y": 0.0,
+    "coverage": [
+      0.75,
+      0.78,
+      0.8
+    ],
+    "root_spacing": 0.01,
+    "drop_over_ear": false,
+    "chain_segments": true,
+    "ear_collision": false,
+    "skull_spheres": 16,
+    "trim": {
+      "card_env": 0.012,
+      "max_off": 0.025,
+      "face_env": {
+        "dist": 0.008,
+        "below": 0.06,
+        "front_y": 0.02
+      }
+    },
+    "lane_offset_keep": 0.7,
+    "split_arcs": 0.03,
+    "lane_min_rem": 0.02,
+    "drop_face_roots": true,
+    "lane_blend": 1.0,
+    "alpha_tip": 0.2,
+    "hug": false,
+    "flyaway": {
+      "k": 6,
+      "max_dev": 0.02
+    },
+    "interp_push": true,
+    "fill_holes": {
+      "hole": 0.005,
+      "zmin": 0.1,
+      "k": 1
+    },
+    "bury_roots": {
+      "frac": 0.07,
+      "max_depth": 0.006
+    }
+  },
+  "accessories": [],
+  "atlas_exclude": [],
+  "hair": [
+    {
+      "template": "characters\\models\\common\\woman_average\\hair\\c_18_wa__tamara.w2ent"
+    }
+  ],
+  "note": "l95_dk_fh_d = tamara_l48_rec + look.width_root=0.15, look.ambient_env=0.35, look.root_color=[30, 25, 21], look.tip_color=[36, 30, 26], growth.fill_holes={hole=0.005, zmin=0.1, k=1}, look.density=3.5, look.wave_scale=0.2 (Tamara: dk_fh was the best; + density x1.25 + calmer wave)",
+  "lab": {
+    "round": "L95",
+    "axis": "l95",
+    "base": "tamara_l48_rec",
+    "variant": "l95_dk_fh_d"
+  }
+}

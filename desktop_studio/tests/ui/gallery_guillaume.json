@@ -1,0 +1,7 @@
+{"out": "build/desktop_studio/uitest_gallery_guillaume", "splash": false, "steps": [
+ {"do": "wait", "frames": 120},
+ {"do": "wait_job", "max_frames": 1800},
+ {"do": "expect", "loaded": true, "config": "guillaume_l124_locks_hug"},
+ {"do": "click", "label": "¾##tb_cam3"}, {"do": "wait", "frames": 120},
+ {"do": "move", "xy": [1500, 120]}, {"do": "wait", "frames": 60},
+ {"do": "shot", "name": "guillaume_34"}]}

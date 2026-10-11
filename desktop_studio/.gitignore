@@ -1,0 +1,3 @@
+# build outputs (CMake build tree, packaged releases): never commit
+build/
+dist/

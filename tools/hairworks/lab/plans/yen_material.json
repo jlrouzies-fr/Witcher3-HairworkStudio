@@ -1,0 +1,70 @@
+{
+ "look.mat_src": "characters\\models\\geralt\\coif\\model\\c_04_mg__long_fur.redfur",
+ "look.density": 1.0,
+ "look.length_noise": 0.3,
+ "look.length_scale": 1.0,
+ "look.width": 0.8,
+ "look.width_root": 0.4,
+ "look.width_tip": 0.2,
+ "look.width_noise": 0.5,
+ "look.clump_scale": 0.8,
+ "look.clump_roundness": 0.21,
+ "look.clump_noise": 0.4,
+ "look.wave_scale": 1.0,
+ "look.wave_freq": 4.3,
+ "look.stiffness": 0.5,
+ "look.root_stiffness": 0.7,
+ "look.bend_stiffness": 0.22,
+ "look.tip_stiffness": 0.1,
+ "look.stiffness_curve": null,
+ "look.bend_curve": null,
+ "look.damping": 0.025,
+ "look.stiffness_damping": 0.15,
+ "look.inertia_scale": null,
+ "look.spec_primary": 0.0945,
+ "look.spec_power_primary": 600.0,
+ "look.spec_secondary": 0.05,
+ "look.spec_power_secondary": 40.0,
+ "look.spec_env": 0.0,
+ "look.glint": 0.0,
+ "look.diffuse_blend": null,
+ "look.shadow_sigma": 1.56,
+ "look.shadow_density": 0.5,
+ "look.ambient_env": 0.7,
+ "look.extra_set.physicalMaterials.simulation.windScaler": [
+  "Float",
+  20.0
+ ],
+ "look.extra_set.physicalMaterials.simulation.windNoise": [
+  "Float",
+  2.0
+ ],
+ "look.extra_set.physicalMaterials.waveness.waveRootStraighten": [
+  "Float",
+  0.6
+ ],
+ "look.extra_set.physicalMaterials.waveness.waveClump": [
+  "Float",
+  0.0
+ ],
+ "look.extra_set.physicalMaterials.waveness.waveScaleNoise": [
+  "Float",
+  0.2
+ ],
+ "look.extra_set.physicalMaterials.waveness.waveStrand": [
+  "Float",
+  1.0
+ ],
+ "look.extra_set.physicalMaterials.stiffness.interactionStiffness": [
+  "Float",
+  0.43
+ ],
+ "look.extra_set.physicalMaterials.simulation.massScale": [
+  "Float",
+  2.0
+ ],
+ "look.extra_set.physicalMaterials.simulation.backStopRadius": [
+  "Float",
+  0.07
+ ]
+}

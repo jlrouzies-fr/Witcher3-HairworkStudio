@@ -1,0 +1,41 @@
+END-USER LICENCE TERMS FOR THE NVIDIA HAIRWORKS RUNTIME
+Bundled with: Hairwork Studio (Hairwork for All) - {VERSION}
+
+This package contains a third-party component, the NVIDIA HairWorks runtime library
+(NvHairWorksDx11.win64.dll, "the NVIDIA Software"), distributed under the NVIDIA GameWorks Software
+License Agreement ("the GameWorks EULA") as part of Hairwork Studio ("the Application").
+The NVIDIA Software is NOT covered by the Hairwork Studio License that applies to the Application's own code.
+By installing or using the Application you agree to the following terms for the NVIDIA Software:
+
+a) No modification or reverse engineering. You may not modify, decompile, disassemble, reverse
+   engineer, or attempt to derive the source code of the NVIDIA Software, except to the extent that
+   such restriction is prohibited by applicable law.
+
+b) No separate distribution. The NVIDIA Software is licensed to you only as part of the Application.
+   You may not distribute, sublicense, rent, lease or otherwise make the NVIDIA Software available on
+   its own or as part of any other product. Do not copy it out of this package for other uses.
+
+c) Warranty disclaimer. THE NVIDIA SOFTWARE IS PROVIDED "AS IS". NVIDIA CORPORATION AND ITS LICENSORS
+   (AND THE AUTHORS OF THE APPLICATION) MAKE NO WARRANTIES, EXPRESS, IMPLIED OR STATUTORY, WITH RESPECT
+   TO THE NVIDIA SOFTWARE, AND EXPRESSLY DISCLAIM ALL IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR
+   A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT.
+
+d) Limitation of liability. TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL NVIDIA
+   CORPORATION OR ITS LICENSORS BE LIABLE FOR ANY SPECIAL, INCIDENTAL, INDIRECT OR CONSEQUENTIAL
+   DAMAGES, INCLUDING LOSS OF PROFITS, DATA OR USE, ARISING OUT OF OR RELATED TO THE USE OF THE NVIDIA
+   SOFTWARE, HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY. NVIDIA'S TOTAL CUMULATIVE LIABILITY SHALL NOT
+   EXCEED US$100 IN THE AGGREGATE (as in the NVIDIA GameWorks EULA).
+
+e) Export compliance. The NVIDIA Software is subject to United States export control laws and
+   regulations, including the Export Administration Regulations. You agree to comply with them and not
+   to export, re-export or transfer the NVIDIA Software to any prohibited country, entity or person, or
+   for any prohibited end use.
+
+NVIDIA Corporation and its licensors retain all intellectual property rights in the NVIDIA Software.
+Uses NVIDIA HairWorks, NVIDIA GameWorks technology, (c) NVIDIA Corporation.
+NVIDIA, GameWorks and HairWorks are trademarks of NVIDIA Corporation.
+
+Questions about the Application: https://www.nexusmods.com/witcher3/mods/13996. Licensing of the NVIDIA Software:
+NVIDIA Corporation (see the GameWorks EULA).
+
+Hairwork Studio (c) 2026 Jean-Laurent ROUZIES ("WinterElfeas").

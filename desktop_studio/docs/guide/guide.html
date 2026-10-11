@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hairwork Studio - User guide</title>
+<style>
+:root{
+  --bg:#0d0e10; --panel:#15171a; --panel2:#1b1e22; --line:#2a2d33; --text:#d9d6cf; --muted:#8e8c86;
+  --gold:#e0a040; --gold2:#f2c46b; --code:#101215; --warn:#e07a5f; --ok:#8fbf8a;
+  --head:"Cinzel","Trajan Pro","Palatino Linotype","Book Antiqua",Palatino,"Times New Roman",serif;
+  --body:"Inter","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 var(--body);-webkit-text-size-adjust:100%}
+a{color:var(--gold2);text-decoration:none;border-bottom:1px solid rgba(224,160,64,.35)}
+a:hover{border-bottom-color:var(--gold2)}
+.wrap{max-width:1180px;margin:0 auto;padding:0 16px 80px;display:grid;grid-template-columns:260px minmax(0,1fr);gap:40px}
+header.top{max-width:1180px;margin:0 auto;padding:44px 16px 20px}
+header.top h1{font:600 clamp(28px,5vw,46px)/1.15 var(--head);letter-spacing:.12em;text-transform:uppercase;margin:0;color:#ece8de}
+header.top h1 span{color:var(--gold)}
+header.top p{color:var(--muted);margin:10px 0 0;max-width:760px}
+header.top .rule{height:1px;background:linear-gradient(90deg,var(--gold),transparent);margin-top:22px}
+nav.toc{position:sticky;top:16px;align-self:start;max-height:calc(100vh - 32px);overflow:auto;font-size:14px;padding-right:6px}
+nav.toc h2{font:600 12px var(--head);letter-spacing:.2em;color:var(--muted);text-transform:uppercase;margin:0 0 10px}
+nav.toc ol{list-style:none;margin:0;padding:0}
+nav.toc li a{display:block;padding:5px 10px;border:0;border-left:2px solid var(--line);color:var(--text)}
+nav.toc li a:hover{border-left-color:var(--gold);color:var(--gold2)}
+main h2{font:600 26px/1.25 var(--head);letter-spacing:.08em;text-transform:uppercase;color:#ece8de;margin:56px 0 14px;padding-top:6px;border-top:1px solid var(--line)}
+main h2:first-child{margin-top:0;border-top:0}
+main h3{font:600 17px/1.3 var(--head);letter-spacing:.06em;color:var(--gold2);margin:30px 0 8px}
+p,li{max-width:78ch}
+code,kbd{font:13.5px/1.4 ui-monospace,Consolas,"Cascadia Mono",monospace}
+code{background:var(--code);border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:#e8d9bd;word-break:break-word}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;margin:14px 0}
+pre code{background:none;border:0;padding:0;color:#e8d9bd}
+kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 7px;color:var(--text);white-space:nowrap}
+figure{margin:20px 0}
+figure img{width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:8px;background:#000}
+figure.narrow{max-width:360px}
+figure.mid{max-width:620px}
+figcaption{color:var(--muted);font-size:13.5px;margin-top:6px}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:15px}
+th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}
+th{background:var(--panel2);font:600 12px var(--head);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+.tablewrap{overflow-x:auto}
+.note,.warn,.ok{border-left:3px solid var(--gold);background:var(--panel);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0}
+.warn{border-left-color:var(--warn)}
+.ok{border-left-color:var(--ok)}
+.note b,.warn b,.ok b{color:#ece8de}
+.pill{display:inline-block;font-size:12px;border:1px solid var(--gold);color:var(--gold2);border-radius:999px;padding:0 9px;margin-left:6px}
+footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);font-size:13.5px}
+@media (max-width:900px){
+  .wrap{grid-template-columns:1fr;gap:0}
+  nav.toc{position:static;max-height:none;margin-bottom:24px;border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--panel)}
+  main h2{font-size:22px}
+}
+@media print{body{background:#fff;color:#000}nav.toc{display:none}}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Hairwork <span>Studio</span></h1>
+  <p>User guide for version 0.1.0. The desktop editor that previews and edits NVIDIA HairWorks hair for <i>The Witcher 3: Wild Hunt</i> (5.0 next-gen), runs the real HairWorks simulation, and exports ready-to-install hair mods.
+  Created by WinterElfeas &middot; <a href="https://www.nexusmods.com/witcher3/mods/13996">Hairwork for All on Nexus Mods</a></p>
+  <div class="rule"></div>
+</header>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#what">What it is and requirements</a></li>
+    <li><a href="#first">First launch and settings</a></li>
+    <li><a href="#picker">The character picker</a></li>
+    <li><a href="#editor">The editor</a></li>
+    <li><a href="#camera">Viewport, camera, edit pose</a></li>
+    <li><a href="#tools">Selecting and editing guides</a></li>
+    <li><a href="#curls">Curl tools and symmetry</a></li>
+    <li><a href="#look">Material, look and colour</a></li>
+    <li><a href="#physics">Physics, stiffness and motion</a></li>
+    <li><a href="#budget">Budget and LOD</a></li>
+    <li><a href="#light">Lighting, time of day, shadows</a></li>
+    <li><a href="#styles">Hairstyle switcher</a></li>
+    <li><a href="#saving">Saving projects</a></li>
+    <li><a href="#export">Exporting a mod</a></li>
+    <li><a href="#keys">Keyboard shortcuts</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+    <li><a href="#licence">Licence summary</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<h2 id="what">What it is and requirements</h2>
+<p>Hairwork Studio is a native Windows application (C++, DirectX 11) that loads a character from <b>Hairwork for All</b>, shows its hair rendered and simulated by the real NVIDIA HairWorks 1.2.1 runtime (gravity, stiffness, damping, collisions, wind, level of detail), lets you edit the guide strands and the material, and exports a mod folder and zip for the game. Nothing is ever installed into your game automatically.</p>
+<h3>To run the Studio</h3>
+<ul>
+  <li>Windows 10 or 11, a DirectX 11 GPU.</li>
+  <li>The Witcher 3 (the 5.0 next-gen version) installed. The Studio reads the game's own files to build hair.</li>
+  <li><b>No Python to install.</b> The release bundles its own private Python (the <code>python</code> folder next to the exe) with everything the build scripts need; it does not touch any Python you may have. Unzip the release anywhere with write access and run <code>HairworkStudio.exe</code>. (Only if you build the Studio from source: Python 3 with <code>py -m pip install -r requirements.txt</code>.)</li>
+  <li>The NVIDIA HairWorks runtime DLL (<code>NvHairWorksDx11.win64.dll</code>). The release folder bundles it next to the exe. Otherwise point Settings at your own HairWorks 1.2.1 SDK copy (see <a href="#first">First launch</a>).</li>
+</ul>
+<h3>To play a hair mod exported from the Studio</h3>
+<div class="warn"><b>Players need two other mods.</b>
+<ol>
+<li><b>Hairwork for All &ndash; Core</b> (<a href="https://www.nexusmods.com/witcher3/mods/13996">Nexus mod 13996</a>). Mods exported for release stop the game at startup without it (see <a href="#trouble">Troubleshooting</a>).</li>
+<li><b>Graphics Control</b> (<a href="https://www.nexusmods.com/witcher3/mods/13349">Nexus mod 13349</a>) with <i>PT hair &rarr; Hair root transparency mode</i> set to <b>Mode 0</b>. In mode 1 path-traced hair shows see-through gaps.</li>
+</ol></div>
+
+<h2 id="first">First launch and settings</h2>
+<p>Double-click <code>HairworkStudio.exe</code> in the folder you extracted. A short splash shows, then the <a href="#picker">character picker</a>. Nothing has to be loaded for the app to run.</p>
+<p>The status bar at the bottom shows <b>HairWorks runtime loaded</b> when the DLL was found. Its right side shows the Core state (see <a href="#export">Exporting</a>): <b>Core v1.0.0</b>, <b>Core missing</b>, an outdated version, or <b>Core incomplete</b>.</p>
+<p>Open <b>Settings</b> with the gear at the bottom of the left tool rail. Fields:</p>
+<ul>
+<li><b>SDK folder</b>: your HairWorks 1.2.1 SDK folder (it contains <code>bin\win64\NvHairWorksDx11.win64.dll</code>).</li>
+<li><b>DLL</b>: optional full path of the DLL, overrides the SDK folder.</li>
+<li><b>Python</b>: command used for the pipeline scripts. Leave it alone in a release: it uses the bundled <code>python\python.exe</code> automatically (a source build defaults to <code>py</code>). Only change it to use a different Python on purpose.</li>
+<li><b>Game folder</b>: the Witcher 3 install folder (it contains <code>content\content0</code> and <code>mods</code>). The build scripts read the game's files from it and the Core check looks in its <code>mods</code> folder.</li>
+</ul>
+<p>Press <b>Save settings (restart to apply)</b>, then restart the Studio. Settings are stored in <code>%LOCALAPPDATA%\HairworkForAll\desktop_studio.json</code>. In a release the runtime DLL next to the exe is used; the SDK folder and DLL fields are only needed if you want a different HairWorks runtime.</p>
+<figure class="mid"><img src="img/settings.png" alt="Settings window" loading="lazy"><figcaption>Settings.</figcaption></figure>
+<figure><img src="img/about.png" alt="About box" loading="lazy"><figcaption>Help &rarr; About: version, links, and the NVIDIA HairWorks credit.</figcaption></figure>
+
+<h2 id="picker">The character picker</h2>
+<p>The picker opens at start and whenever you press <kbd>Ctrl</kbd>+<kbd>O</kbd>, click <b>Characters</b>, or click the breadcrumb in the title bar. <kbd>Esc</kbd> returns to the editor. The page lists named characters and generic haircuts as portrait cards, each with a status badge (Approved, Final, Pick, In progress, On hold, Not started).</p>
+<figure><img src="img/picker.png" alt="Character picker" loading="lazy"><figcaption>The character picker with filters, portraits and the recent builds list.</figcaption></figure>
+<h3>Filters</h3>
+<ul>
+<li><b>Search</b> (<kbd>Ctrl</kbd>+<kbd>F</kbd>): by name or by any build name (for example <code>l124</code>).</li>
+<li><b>Status</b> chips: All, Approved, Final, Pick, In progress, On hold, Not started.</li>
+<li><b>Gender</b> (All, Male, Female) and <b>portraits</b>: Painted (default), Ours (our in-game capture of the best build) and Vanilla (the unmodified character). The release ships the painted portraits; Ours and Vanilla only show pictures where in-game captures exist on your PC. The refresh button re-reads the character list.</li>
+<li><b>Hair type</b>: Cards (loose vanilla hair cards, the main candidates), Tied (bun, braid, ponytail), Native (the game already uses HairWorks for it), Helmet-hood, Beard only, Bald. <b>Hide no-hair characters</b> leaves out bald, helmet and beard-only characters.</li>
+<li><b>Game part</b>: Base game, Hearts of Stone, Blood and Wine.</li>
+</ul>
+<h3>Opening a character</h3>
+<p>Double-click a card (or hover it and click the arrow, or select it and press <kbd>Enter</kbd>) to open its best build: the approved one when there is one, else the current pick. A single click opens the <b>details drawer</b> on the right.</p>
+<figure><img src="img/picker_drawer.png" alt="Details drawer" loading="lazy"><figcaption>The drawer: hairstyles, <b>Open</b>, <b>Start from approved</b>, <b>Plain conversion</b> and the variants list.</figcaption></figure>
+<ul>
+<li><b>Open</b>: opens the best build (the approved build when there is one).</li>
+<li><b>Start from approved</b>: starts editing from the approved build. Disabled when the character has no approved build.</li>
+<li><b>Plain conversion</b>: the character's base conversion, the plain starting point (thicker basic strands), to work from scratch. When it has not been built yet, the Studio builds it first (nothing is installed). A character without a base config shows <i>Start a plain conversion &middot; coming soon</i>.</li>
+<li><b>Variants</b>: every other build of the character, newest first, with <b>Built only</b> to hide variants that have no fur yet. Click one to open it.</li>
+<li>A character whose hair is a helmet or hood, a beard only, bald, or tied cards shows an explanation instead and nothing to open. A character the game already renders with HairWorks (Native) is shown for reference.</li>
+<li>The drawer's <b>hairstyle</b> tabs or dropdown choose which hairstyle of the character you look at (see <a href="#styles">Hairstyle switcher</a>). A hairstyle with no build yet says <b>No HairWorks build yet</b>.</li>
+</ul>
+<p>The first time a build is opened the Studio prepares a data pack for it with the Python pipeline, which can take a while. Later opens are instant unless the build changed.</p>
+
+<h2 id="editor">The editor</h2>
+<figure><img src="img/editor.png" alt="Editor overview" loading="lazy"><figcaption>The editor: title bar, tool rail (left), viewport with floating bars, inspector (right), status bar.</figcaption></figure>
+<ul>
+<li><b>Title bar</b>: <b>File</b> / <b>Edit</b> / <b>View</b> / <b>Help</b> menus; the centre breadcrumb shows character, hairstyle, build, status badge and the number of edits (<i>unsaved</i> when not saved); <b>Characters</b>; Save; and the amber <b>Export mod</b> button (disabled above the budget limit).</li>
+<li><b>Tool rail</b> (left): Select, Move, Comb, Curl brush, Paint stiffness, Symmetry, Undo, Redo, Duplicate, Shorten, Delete; at the bottom Shortcuts (<kbd>F1</kbd>) and Settings. Every control has a tooltip with its shortcut.</li>
+<li><b>Viewport</b>: the hair on the character, with the top and bottom floating bars, a top-left HUD (Edit pose chip, selection chip, guide / CV / face / collider counts), an axis gizmo, a tool hint card and the fps.</li>
+<li><b>Inspector</b> (right): character card with the build menu (switch build, open folder, reload), the budget card, then collapsible sections: Material, Look, Physics &amp; motion, Stiffness map, Curl tools, Symmetry, Edit settings, Export. Slider rows show a tick at the build's value; double-click or <kbd>Ctrl</kbd>+click a value to type it; right-click a slider to reset it to the build value.</li>
+<li><b>Status bar</b>: status message, close-up hair count with the budget meter, simulation state, edit count, fps, <b>Log</b> (opens a bottom drawer), the Core state and the NVIDIA credit.</li>
+</ul>
+
+<h2 id="camera">Viewport, camera, edit pose</h2>
+<h3>Camera</h3>
+<ul>
+<li><b>Orbit</b>: right mouse drag. <b>Pan</b>: middle mouse drag. <b>Zoom</b>: mouse wheel.</li>
+<li>Top bar buttons <b>Front</b>, <b>&frac34;</b>, <b>Side</b>, <b>Back</b> (keys <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd>) jump to the same views the in-game comparison shots use. <kbd>F</kbd> frames the head. <kbd>O</kbd> toggles a turntable. Numpad <kbd>1</kbd> <kbd>3</kbd> <kbd>7</kbd> <kbd>9</kbd> give front, right, back, left. <kbd>F12</kbd> saves a screenshot to <code>build\desktop_studio\screenshot.png</code>.</li>
+</ul>
+<h3>The floating toolbar</h3>
+<p>Drag the toolbar by its grip dots (double-click the grip to put it back), the chevron collapses it. Amber means on.</p>
+<figure><img src="img/toolbar.png" alt="Viewport toolbar with a tooltip" loading="lazy"><figcaption>Top bar: show toggles, camera views, time of day, shadows. Hover any button for its tooltip and key.</figcaption></figure>
+<div class="tablewrap"><table>
+<tr><th>Button</th><th>Key</th><th>What it shows</th></tr>
+<tr><td>Guides</td><td><kbd>G</kbd></td><td>Guide strand overlay (what you edit)</td></tr>
+<tr><td>Hair</td><td><kbd>H</kbd></td><td>The rendered HairWorks hair</td></tr>
+<tr><td>Collision capsules</td><td><kbd>N</kbd></td><td>The colliders the hair bounces off</td></tr>
+<tr><td>Bones</td><td><kbd>B</kbd></td><td>Skeleton bones</td></tr>
+<tr><td>Wireframe</td><td><kbd>Z</kbd></td><td>Head and body as wireframe</td></tr>
+<tr><td>Symmetry plane</td><td><kbd>V</kbd></td><td>The mid-plane used by symmetry</td></tr>
+<tr><td>Frame head</td><td><kbd>F</kbd></td><td>Recentre the camera</td></tr>
+</table></div>
+<p>The head and body mesh (<kbd>M</kbd>) and the turntable (<kbd>O</kbd>) are in the <b>View</b> menu.</p>
+<h3>Playback bar and motion</h3>
+<p>The bottom bar has play / pause (<kbd>Space</kbd>), stop and reset to rest (<kbd>Esc</kbd>; when something is selected the first <kbd>Esc</kbd> clears the selection), step one frame (<kbd>.</kbd>), the motion preset, speed, amount, and wind (<kbd>J</kbd>) with its strength. <kbd>R</kbd> re-teleports the simulation if the hair got tangled.</p>
+<figure class="mid"><img src="img/motion_popup.png" alt="Motion preset menu" loading="lazy"><figcaption>Motion presets: idle, turn head, nod, walk bob, run, spin body, wind, rest.</figcaption></figure>
+<p>Motions move the head, neck and body bones, so inertia, sag and swing show as in the game.</p>
+<h3>Edit pose</h3>
+<p>Editing tools (Move, Comb, Curl, Paint) pause the motion and edit the hair at the bind pose, shown by the <b>Edit pose</b> chip at the top left (<kbd>Tab</kbd> toggles it, <b>Resume</b> restores the motion). The Select tool keeps the motion running. <b>Edit while moving</b> (Physics &amp; motion) lets you edit the posed, moving hair; the edits are converted back to rest space.</p>
+<figure><img src="img/curl_editpose.png" alt="Edit pose with the Curl brush and guides" loading="lazy"><figcaption>Edit pose with the guide overlay and the Curl brush.</figcaption></figure>
+
+<h2 id="tools">Selecting and editing guides</h2>
+<p>Hair is edited through its <b>guides</b>, the strands the simulation drives; the thousands of rendered hairs follow them.</p>
+<div class="tablewrap"><table>
+<tr><th>Tool</th><th>Key</th><th>How it works</th></tr>
+<tr><td>Select</td><td><kbd>Q</kbd></td><td>Click a guide; <kbd>Ctrl</kbd>+click toggles, <kbd>Shift</kbd>+click adds; drag on empty space for a box selection. <kbd>Esc</kbd> clears.</td></tr>
+<tr><td>Move</td><td><kbd>W</kbd></td><td>Drag the selected guides (a single guide under the cursor is picked automatically). The move falloff is set in Edit settings.</td></tr>
+<tr><td>Comb</td><td><kbd>E</kbd></td><td>Drag over the hair to drag the guides under the brush; strength falls off with distance from the cursor.</td></tr>
+<tr><td>Curl brush</td><td><kbd>T</kbd></td><td>Paint over guides; on release the curl settings are applied to everything you touched.</td></tr>
+<tr><td>Paint stiffness</td><td><kbd>P</kbd></td><td>Paint stiffness values on guides (see <a href="#physics">Stiffness map</a>).</td></tr>
+</table></div>
+<p>Commands on the current selection:</p>
+<ul>
+<li><b>Duplicate</b> (<kbd>D</kbd>): adds a copy of each selected guide beside it (distance = <i>Dup step mm</i>). Useful to fill bald spots and thicken a lock.</li>
+<li><b>Shorten</b> (<kbd>S</kbd>): keeps the first <i>Keep %</i> of each strand's length.</li>
+<li><b>Delete</b> (<kbd>Del</kbd>): removes the selected guides.</li>
+<li><b>Curl</b> (<kbd>C</kbd>): applies the Curl tools settings to the selection.</li>
+<li><b>Undo / Redo</b> (<kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>). <b>Edit &rarr; Select all</b> selects every guide.</li>
+</ul>
+<p><b>Edit settings</b> (inspector): <i>move falloff</i> (carry = the whole strand moves; linear = root fixed, tip moves fully; tip = mostly the lower part), <i>From CV</i> (control vertices before this one stay fixed), <i>Comb strength</i>, <i>Keep %</i>, <i>Dup step mm</i>. The brush radius (<i>Brush px</i>) is in the Stiffness map section and is shared by comb, curl and paint.</p>
+
+<h2 id="curls">Curl tools and symmetry</h2>
+<figure class="narrow"><img src="img/curl_tools.png" alt="Curl tools section" loading="lazy"><figcaption>Curl tools.</figcaption></figure>
+<p>Curl tools reshape selected guides while keeping their segment lengths. Three modes:</p>
+<ul>
+<li><b>ringlet</b>: a helix around the strand (vertical curls). Radius, turns, start, ramp, handedness, jitter.</li>
+<li><b>roll</b>: the ends roll under or out around a horizontal axis. Extra: <i>shrink</i> (spirals inwards), <i>roll outward</i>, and <i>band (nape roll)</i> where every guide rolls in the same vertical front-back plane. More than one turn loops on itself.</li>
+<li><b>wave</b>: a planar sine wave or a zigzag.</li>
+</ul>
+<p>A warning shows when a curl gets fewer than 6 control vertices per turn: lower the turns or start earlier. <b>Curl selection (C)</b> applies it; <b>Hold curls in the simulation</b> raises the stiffness values and flattens the curves so HairWorks keeps the curled rest shape instead of letting it straighten under gravity.</p>
+<figure class="narrow"><img src="img/symmetry.png" alt="Symmetry section" loading="lazy"><figcaption>Symmetry.</figcaption></figure>
+<h3>Symmetry</h3>
+<ul>
+<li><b>Live symmetry</b> (<kbd>X</kbd>, or the rail button): every move, comb, curl or paint stroke is mirrored onto the partner guides on the other side (nearest mirrored root within 15 mm; ringlets flip handedness).</li>
+<li><b>Mirror side</b> (also in the Edit menu): rebuilds one side from the other. Choose which side is the source, a <i>centre band</i> (guides near the middle stay as they are) and <i>keep the back</i> (leaves a tie or bun at the back untouched). The mid-plane is detected from the head mesh.</li>
+</ul>
+
+<h2 id="look">Material, look and colour</h2>
+<figure class="narrow"><img src="img/material.png" alt="Material section" loading="lazy"><figcaption>Material presets.</figcaption></figure>
+<h3>Material presets</h3>
+<p>A preset sets the strand shading and shape (width, clumping, waves, specular, glint, diffuse). Density and the density map always stay the character's. The tiles shown first are the character's current look, then the preset families:</p>
+<div class="tablewrap"><table>
+<tr><th>Preset</th><th>Use</th></tr>
+<tr><td>Default conversion</td><td>The plain default conversion, thicker basic strands</td></tr>
+<tr><td>Fine strands</td><td>Thin, soft strands</td></tr>
+<tr><td>Fine strands, keep dynamics</td><td>The fine-strand look without touching the physics</td></tr>
+<tr><td>Fine strands, sheen</td><td>Fine strands with an alternative shading</td></tr>
+<tr><td>Coarse short</td><td>Short hair and beards</td></tr>
+<tr><td>Curly / wavy</td><td>Stiff enough to hold curls</td></tr>
+<tr><td>Tied / braided sheen</td><td>Glossy tied or braided hair</td></tr>
+<tr><td>Grey / aged</td><td>Grey, thin hair with low specular</td></tr>
+<tr><td>Character's current</td><td>The loaded build, to go back</td></tr>
+</table></div>
+<p><b>Keep the character's colours</b> (on by default) keeps root, tip and specular colour and the texture brightness when you switch presets. <b>Save preset</b> stores your current values as a custom preset (in the <code>presets</code> folder of the Studio) that then appears as a tile.</p>
+<h3>Look</h3>
+<figure class="narrow"><img src="img/look.png" alt="Look section" loading="lazy"><figcaption>Look: volume, clump / wave and colour sliders.</figcaption></figure>
+<p>The Look section lists the individual values grouped by Volume, Clump / wave and Colour (root and tip colour and their weight, specular colours and powers, glint, shadow, texture brightness). Colour rows edit the colour. The section summary shows how many values differ from the build; only changed values are exported.</p>
+
+<h2 id="physics">Physics, stiffness and motion</h2>
+<figure class="narrow"><img src="img/physics.png" alt="Physics and motion section" loading="lazy"><figcaption>Physics &amp; motion sliders (the curve editor is below them).</figcaption></figure>
+<ul>
+<li><b>Physics &amp; motion</b>: stiffness, root stiffness, tip stiffness, bend stiffness, stiffness strength, stiffness damping, interaction stiffness, damping, mass scale, inertia limit, back stop radius, wind scaler and wind noise. Below them a <b>curve editor</b> (tabs Stiffness, Bend, Strength, Damping) edits each curve from root to tip.</li>
+<li><b>Simulate</b>: off shows the rest pose that you edit. <b>Close-up LOD</b> forces the close-up (dialogue) hair count at any distance, the worst case for the budget. <b>Edit while moving</b>: see <a href="#camera">Edit pose</a>.</li>
+<li><b>W3 bone stiffness</b> (only on hair that uses the game's extra bone-distance stiffness): the HairWorks 1.2.1 runtime does not have this game-only block, so the Studio emulates it for the preview so curls hold as they do in the game. 1 (default) = emulation on, 0 = raw runtime. Preview only; it is not exported.</li>
+</ul>
+<h3>Stiffness map</h3>
+<figure class="narrow"><img src="img/stiffness_map.png" alt="Stiffness map section" loading="lazy"><figcaption>Stiffness map.</figcaption></figure>
+<p>Paint stiffness by region: choose what the Paint tool writes (stiffness + root stiffness, stiffness only, root stiffness only), the values, and the brush size, then paint on the hair with the <b>Paint</b> tool (<kbd>P</kbd>). Low values make hair floppy there, high values stiff. <b>Fill all with value</b> and <b>Clear map</b> are there too. The map is exported only when painted.</p>
+<div class="note"><b>Not verified in game yet.</b> Painted stiffness maps are previewed live in the Studio, but a first in-game test should confirm the game reads the texture.</div>
+
+<h2 id="budget">Budget and LOD</h2>
+<p>The budget card at the top of the inspector compares the hair cost (hair count in close-up times control points times width) with the character's <b>approved build</b> (or the loaded build when there is none). The bar shows 100 % at the reference tick and a 120 % limit. Hard caps are always enforced: density at most 1.2 &times; the reference, close-up density at most the smaller of 1.2 &times; the reference and 2, width at most 1.5 &times; the reference, LOD always on.</p>
+<ul>
+<li>Above 120 % the <b>Export</b> buttons are disabled and the exporter refuses too.</li>
+<li><b>Hairs</b> is the estimate, <b>Live (SDK)</b> is what HairWorks currently draws on screen, <b>LOD</b> is the current detail factor.</li>
+</ul>
+
+<h2 id="light">Lighting, time of day, shadows</h2>
+<p>The Studio approximates the game's path-traced hair in real time: sun shadows, hair self-shadowing, sky light and bounce, soft occlusion. The top bar's <b>time of day</b> dropdown (<kbd>L</kbd> cycles) offers: HairLab capture rig (default, fitted to in-game frames: use it to compare with the game), Noon sun, Morning, Dawn, Dusk, Overcast, Moonlight, Torch / interior, Night. Shadows are toggled with <kbd>K</kbd>.</p>
+<figure class="mid"><img src="img/tod_popup.png" alt="Time of day popup" loading="lazy"><figcaption>Time of day popup with <b>Sky backdrop</b> and <b>Advanced...</b>.</figcaption></figure>
+<p><b>Advanced...</b> (or <b>View &rarr; Light settings</b>) opens the floating <b>Light</b> window: lighting quality (Fast: sun shadow only; Balanced: 8 sky-occlusion maps; High: 16, default), hair view (debug visualisations, <kbd>F6</kbd> cycles), time of day, a sun azimuth dial and elevation arc (drag the amber dot), shadows, sky backdrop and the individual intensity and calibration sliders. In the viewport, <kbd>Ctrl</kbd> + right drag rotates the sun live.</p>
+<figure><img src="img/light_window.png" alt="Light window" loading="lazy"><figcaption>The Light window and the sun gizmo.</figcaption></figure>
+
+<h2 id="styles">Hairstyle switcher</h2>
+<p>Some characters have several hairstyles (for example Geralt, with eight; Guillaume has just Default). In the editor the hairstyle is shown in the breadcrumb and in the inspector's <b>Hairstyle</b> row. Click it, or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd>, to open the dropdown.</p>
+<figure class="mid"><img src="img/style_dropdown.png" alt="Hairstyle dropdown" loading="lazy"><figcaption>The hairstyle dropdown, here in the details drawer of the picker (Geralt). In the editor the same list opens from the breadcrumb.</figcaption></figure>
+<ul>
+<li>Choosing a style that has a build opens its best build. If you have unsaved edits the Studio first asks <b>Save</b>, <b>Discard</b> or <b>Cancel</b>.</li>
+<li>A style with no build yet shows a small panel in the inspector instead (<i>Start plain conversion</i> when possible, else <i>Not started yet</i>); the loaded build stays untouched.</li>
+<li>A character with a single hairstyle shows <b>Default</b> (disabled).</li>
+</ul>
+
+<h2 id="saving">Saving projects</h2>
+<p><b>File &rarr; Save project</b> (<kbd>Ctrl</kbd>+<kbd>S</kbd>) writes a <code>*.groomproj.json</code> file with the build, all edit operations, look changes, material, stiffness map, motion and camera, by default to <code>build\desktop_studio\projects\&lt;build&gt;.groomproj.json</code>. <b>Save project as...</b> chooses a path. <b>File &rarr; Open project...</b> (also on the start screen) loads one. The title bar shows how many edits are unsaved. The picker's right-hand panel lists your recent builds and exports.</p>
+
+<h2 id="export">Exporting a mod</h2>
+<p>Open the <b>Export</b> section from the inspector, or click the amber <b>Export mod</b> button.</p>
+<figure class="narrow"><img src="img/export.png" alt="Export section" loading="lazy"><figcaption>Export section: mod folder name, tag, the two export buttons, the Core status.</figcaption></figure>
+<ul>
+<li><b>mod folder</b>: the game mod folder name (starts with <code>mod</code>, for example <code>modGuillaumeHairworks</code>). <b>tag</b>: names this edit set in the file names (for example <code>desk1</code>).</li>
+<li><b>Export edits + mod</b> (the <i>dev export</i>): for your own testing. It has no Core check.</li>
+<li><b>Export for release (requires Core)</b>: for publishing. Same hair and textures, plus a small script that calls the Hairwork for All Core, so the game refuses to start without it.</li>
+</ul>
+<h3>What gets written</h3>
+<p>Everything goes to <code>build\desktop_studio\&lt;build&gt;\export\</code> (use <b>Open export folder</b>). Nothing is installed into your game.</p>
+<ul>
+<li><code>&lt;mod&gt;\content\blob0.bundle</code> and <code>metadata.store</code>: the hair, built from the character's own fur so physics, LOD, density mask and collision are kept (only what you changed is rewritten).</li>
+<li><code>&lt;mod&gt;_&lt;tag&gt;.zip</code>: the ready mod folder in a zip, with <code>INSTALL_INSTRUCTIONS.txt</code>.</li>
+<li><code>&lt;char&gt;_&lt;tag&gt;_edits.json</code>, <code>_look.json</code>, <code>_geo.json</code>, <code>_config.json</code>: your edits, the changed look values, the geometry and a build configuration proposal.</li>
+<li>Release export only: <code>content\scripts\local\hwfa_req_&lt;mod&gt;_&lt;crc&gt;.ws</code> (the requirement script), <code>REQUIREMENTS.txt</code>, <code>hairworkforall_mod.json</code> (<code>requires_core</code>), and the requirement lines in <code>INSTALL_INSTRUCTIONS.txt</code>.</li>
+</ul>
+<h3>Install and test in game</h3>
+<ol>
+<li>Install <b>Hairwork for All &ndash; Core</b> (Nexus 13996) and <b>Graphics Control</b> with <i>Hair root transparency mode</i> = 0.</li>
+<li>Copy the exported mod folder (<code>modXxxHairworks</code>) into <code>&lt;game&gt;\mods\</code>, as <code>INSTALL_INSTRUCTIONS.txt</code> says. If you replace an existing hair mod of the same character, remove the old folder first.</li>
+<li>If another mod changes the same character's hair (for example a lore-friendly hair mod), the HairWorks mod must load first: name its folder so it sorts before the other mod (for example <code>mod000_TrissHairworks</code>).</li>
+<li>Start the game. If the Core is missing the game stops with a script compile error (see below).</li>
+</ol>
+<p>The Studio checks the Core every few seconds in <code>&lt;game&gt;\mods\mod0000HairworkForAllCore</code> and shows its state in the status bar and in the Export section. A release export still works without the Core installed; only testing it in the game needs it.</p>
+<div class="note"><b>Budget:</b> export is disabled above 120 % of the approved build. See <a href="#budget">Budget and LOD</a>.</div>
+
+<h2 id="keys">Keyboard shortcuts</h2>
+<p>Press <kbd>F1</kbd> in the Studio to see this list. Keys that need no modifier are ignored while you type in a text field.</p>
+<div class="tablewrap"><table>
+<tr><th>Keys</th><th>Action</th></tr>
+<tr><td><kbd>Q</kbd> <kbd>W</kbd> <kbd>E</kbd> <kbd>T</kbd> <kbd>P</kbd></td><td>Select, Move, Comb, Curl brush, Paint stiffness</td></tr>
+<tr><td>Click, <kbd>Ctrl</kbd>+click, <kbd>Shift</kbd>+click, drag</td><td>Select, toggle, add, box select</td></tr>
+<tr><td><kbd>Del</kbd> / <kbd>D</kbd> / <kbd>S</kbd> / <kbd>C</kbd></td><td>Delete / duplicate / shorten / curl the selection</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Undo / redo</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Save the project</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Characters (the picker)</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd></td><td>Hairstyle switcher</td></tr>
+<tr><td><kbd>X</kbd></td><td>Live symmetry</td></tr>
+<tr><td><kbd>G</kbd> <kbd>H</kbd> <kbd>M</kbd> <kbd>N</kbd> <kbd>B</kbd> <kbd>Z</kbd> <kbd>V</kbd></td><td>Guides, hair, head and body mesh, colliders, bones, wireframe, symmetry plane</td></tr>
+<tr><td><kbd>Space</kbd> / <kbd>Esc</kbd> / <kbd>.</kbd></td><td>Play-pause / stop and reset to rest (clears the selection first) / step one frame</td></tr>
+<tr><td><kbd>R</kbd> / <kbd>J</kbd></td><td>Re-teleport the simulation / wind on-off</td></tr>
+<tr><td><kbd>Tab</kbd></td><td>Edit pose on / off</td></tr>
+<tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></td><td>Front, 3/4, side, back cameras</td></tr>
+<tr><td><kbd>F</kbd> / <kbd>O</kbd></td><td>Frame the head / turntable</td></tr>
+<tr><td><kbd>L</kbd> / <kbd>K</kbd></td><td>Next time of day / shadows on-off</td></tr>
+<tr><td><kbd>Ctrl</kbd> + right drag</td><td>Rotate the sun</td></tr>
+<tr><td>Right drag / middle drag / wheel</td><td>Orbit / pan / zoom</td></tr>
+<tr><td><kbd>F6</kbd></td><td>Hair debug views</td></tr>
+<tr><td>Numpad <kbd>1</kbd> <kbd>3</kbd> <kbd>7</kbd> <kbd>9</kbd></td><td>Front, right, back, left views</td></tr>
+<tr><td><kbd>F1</kbd> / <kbd>F12</kbd></td><td>Shortcuts / screenshot</td></tr>
+<tr><td>Picker: <kbd>Ctrl</kbd>+<kbd>F</kbd>, <kbd>Enter</kbd>, <kbd>Esc</kbd></td><td>Search, open the selected character, back to the editor</td></tr>
+</table></div>
+
+<h2 id="trouble">Troubleshooting</h2>
+<h3>"HairWorks runtime not found" in the status bar, or the viewport stays empty</h3>
+<p>The Studio could not load <code>NvHairWorksDx11.win64.dll</code>. Open <b>Settings</b> and set the <b>SDK folder</b> (or <b>DLL</b>), save, restart. The line <i>runtime: ...</i> in Settings shows the path that is tried. In a release folder the DLL must sit next to the exe.</p>
+<h3>Python or pipeline errors when opening a character</h3>
+<p>In a release the bundled Python is used, so there is nothing to install: check that the <code>python</code> folder next to the exe is complete (unzip the whole package again if not) and that the Python field in Settings is untouched. In a source build make sure <code>py -m pip install -r requirements.txt</code> was run. The Log drawer (status bar) shows the error output.</p>
+<h3>The hair has see-through gaps in the game</h3>
+<p>Install <b>Graphics Control</b> (<a href="https://www.nexusmods.com/witcher3/mods/13349">Nexus 13349</a>) and set <i>PT hair &rarr; Hair root transparency mode</i> to <b>0</b>. In mode 1 path-traced hair shows see-through gaps. The Studio viewport does not show this problem; it only occurs in the game.</p>
+<h3>The game does not start and the script log says it could not find a function</h3>
+<p>The Hairwork for All Core is missing or too old. The game's script compiler reports:</p>
+<pre><code>Could not find function 'HairworkForAllCore_Required_GetItFromNexus13996'</code></pre>
+<p>The function name points at the Nexus page of the Core, <a href="https://www.nexusmods.com/witcher3/mods/13996">mod 13996</a>. Install the Core (<code>mod0000HairworkForAllCore</code> in <code>&lt;game&gt;\mods</code>), or remove the release hair mod. In the Studio the status bar shows <b>Core missing</b> or <b>Core v&lt;x&gt; &lt; &lt;required&gt;</b> and <b>Core incomplete</b> means the script or <code>version.json</code> is absent.</p>
+<h3>Export buttons are disabled</h3>
+<p>The hair is above 120 % of the approved build's budget. Delete or shorten guides, lower the density or width, then retry.</p>
+<h3>Hair looks different from the game</h3>
+<p>Use the <b>HairLab capture rig</b> time of day, which is fitted to in-game captures, and the 3/4 or side views for comparison. The game's own light, weather and the Graphics Control settings still change how the hair looks.</p>
+<h3>The Studio crashes</h3>
+<p>The log is <code>build\desktop_studio\desktop_studio.log</code> inside the Studio folder (also shown in the Log drawer); the line starting with <code>CRASH</code> names the function and source line. Include it in a bug report.</p>
+
+<h2 id="licence">Licence summary</h2>
+<ul>
+<li>The Studio is under the <b>Hairwork Studio License</b> (source-available, not open source; see <code>LICENSE.md</code>): free for personal use and modification.</li>
+<li>If you share a hair mod made with the Studio you <b>must keep the Core requirement</b> (use the release export, which includes it), <b>credit Hairwork Studio (state on the mod page that it was made with it and link to Nexus 13996)</b>, and <b>not sell it or put it behind a paywall</b>. No commercial use.</li>
+<li><b>NVIDIA HairWorks</b> is a separate proprietary component under the NVIDIA GameWorks EULA. The runtime DLL is not covered by the Studio licence and is not redistributed separately. The Studio shows: <i>Uses NVIDIA HairWorks, NVIDIA GameWorks technology, &copy; NVIDIA Corporation</i>.</li>
+<li>Included libraries keep their own licences: Dear ImGui (MIT), nlohmann/json (MIT), stb (public domain / MIT), the Cinzel and Inter fonts (SIL OFL 1.1), Lucide icons (ISC).</li>
+<li>Do not ship other people's mods or files inside yours.</li>
+</ul>
+<p>Read <code>LICENSE.md</code> for the exact terms; this summary is not legal advice.</p>
+
+</main>
+</div>
+<footer>Hairwork Studio 0.1.0 &middot; created by WinterElfeas &middot; <a href="https://www.nexusmods.com/witcher3/mods/13996">nexusmods.com/witcher3/mods/13996</a></footer>
+</body>
+</html>
