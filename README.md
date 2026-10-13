@@ -8,6 +8,17 @@ Witcher 3 mod. Part of **Hairwork for All**.
 - Nexus Mods (downloads, the Core mod): https://www.nexusmods.com/witcher3/mods/13996
 - User guide: [`desktop_studio/docs/guide/guide.html`](desktop_studio/docs/guide/guide.html), agent / scripting guide: [`desktop_studio/docs/AGENT_GUIDE.md`](desktop_studio/docs/AGENT_GUIDE.md)
 
+## Contents
+
+- [Licences (which covers what)](#licences-which-covers-what)
+- [What is NOT here](#what-is-not-here)
+- [Build the Studio](#build-the-studio)
+- [Run](#run)
+- [Release export and mod requirements](#release-export-and-mod-requirements)
+- [Agents / MCP](#agents--mcp)
+  - [Starter prompt](#starter-prompt)
+- [Contributing](#contributing)
+
 ## Licences (which covers what)
 
 | Part | Licence |
