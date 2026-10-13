@@ -6,6 +6,7 @@ Writes desktop_studio\dist\HairworkStudio-<version>\ (git-ignored) and dist\Hair
   HairworkStudio.exe, *.cso (our shaders, compiled), assets\ (our logo, OFL fonts + their licences)
   NvHairWorksDx11.win64.dll    <- the ONLY NVIDIA file, bundled with the app as the GameWorks EULA allows
   LICENSE.txt (Hairwork Studio License), core\LICENSE.md (Core licence), NVIDIA_HairWorks_EULA.txt, THIRD_PARTY_NOTICES.txt
+  desktop_studio\mcp\{hairwork_studio_mcp,hws}.py = MCP server for agents; docs\agents\SKILL.md = agent skill
   README.txt, requirements.txt (only for running the tools from source)
   python\ (private embedded CPython + vendored pip packages, packaging\embedded_python.py; players install no Python)
   licenses\ (CPython PSF licence + every vendored package's licence files)
@@ -34,6 +35,7 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import embedded_python
+import agents_text
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DS = os.path.dirname(HERE)
@@ -54,6 +56,9 @@ HW_MODULES = ['approved.py', 'atlas.py', 'beard.py', 'collision.py', 'cr2w_edit.
 HW_DATA = ['APPROVED.json', 'roster.json',
            os.path.join('lab', 'plans', 'yen_material.json'), os.path.join('lab', 'plans', 'yen_strands_only.json')]
 STUDIO_TOOLS = ['desk_prep.py', 'desk_export.py', 'calib.py']
+# MCP server for coding agents (desktop_studio\mcp, same relative path as in the repo). autotune_* are internal: never shipped.
+MCP_FILES = ['hairwork_studio_mcp.py', 'hws.py']
+DOCS_IGNORE = shutil.ignore_patterns('__pycache__', 'feedback')   # feedback/ = private user reviews
 
 # Base configs bundled: approved builds, every "start plain" base config (plain_configs.py), the material-preset sources of
 # desk_prep.PRESETS, the reviewed colour picks (plain_configs.COLOUR_FROM). A config that names a third-party mod
@@ -110,6 +115,7 @@ Bundled Python: CPython %(pyv)s (embeddable package from python.org, PSF licence
 the licenses\\ folder and THIRD_PARTY_NOTICES.txt.
 
 Source code: https://github.com/jlrouzies-fr/Witcher3-HairworkStudio
+
 """
 
 
@@ -198,6 +204,8 @@ def main():
         put(os.path.join(HW, t))
     for t in HW_DATA:
         put(os.path.join(HW, t))
+    for t in MCP_FILES:
+        put(os.path.join(DS, 'mcp', t))
     put(os.path.join(ROOT, 'core', 'hwcore.py'))
     put(os.path.join(ROOT, 'core', 'LICENSE.md'))
     cfgs, skipped = chosen_configs()
@@ -218,7 +226,7 @@ def main():
     # ---- docs (written by another task) when present
     docs = os.path.join(DS, 'docs')
     if os.path.isdir(docs):
-        shutil.copytree(docs, os.path.join(out, 'docs'), ignore=shutil.ignore_patterns('__pycache__'))
+        shutil.copytree(docs, os.path.join(out, 'docs'), ignore=DOCS_IGNORE)
     else:
         print('note: desktop_studio\\docs not found, the user guide is not in this package')
     if not a.no_runtime:
@@ -251,7 +259,7 @@ def main():
                 'Vendored pip packages: ' + ', '.join(pkgs) + ' (licences in licenses/<package>/; numpy / scipy list their bundled libraries',
                 'such as OpenBLAS, LAPACK, GCC runtime and others in their licence files).', '']
     open(os.path.join(out, 'THIRD_PARTY_NOTICES.txt'), 'w', encoding='utf-8').write('\n'.join(notices))
-    open(os.path.join(out, 'README.txt'), 'w', encoding='utf-8').write(README % dict(v=a.version, pyv=embedded_python.PY_VERSION))
+    open(os.path.join(out, 'README.txt'), 'w', encoding='utf-8').write(README % dict(v=a.version, pyv=embedded_python.PY_VERSION) + agents_text.agents_txt())
     open(os.path.join(out, 'requirements.txt'), 'w', encoding='utf-8').write(REQUIREMENTS)
     # ---- guards
     for dp, dn, fns in os.walk(out):

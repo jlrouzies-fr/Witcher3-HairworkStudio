@@ -426,10 +426,15 @@ void Groom::applyRebuild(const json& op) {
     // bases first (they may be among the deleted guides)
     std::vector<int> base;
     for (auto& b : op.value("base", json::array())) { int g = nearestAlive(rootOf(b), 1.0f); base.push_back(g < 0 ? 0 : g); }
+    if (!op.contains("base"))   // baked community snapshot: the skinning source of each new guide is the nearest guide to its own root
+        for (auto& pts : op.value("guides", json::array())) { int g = pts.empty() ? -1 : nearestAlive(rootOf(pts[0]), 1.0f); base.push_back(g < 0 ? 0 : g); }
     // uv of each kept guide (any face corner), before faces change
     std::map<int, std::array<float, 2>> uvOf;
     for (auto& f : faces) for (int c = 0; c < 3; c++) if (!uvOf.count(f.g[c])) uvOf[f.g[c]] = {f.uv[2 * c], f.uv[2 * c + 1]};
-    if (op.contains("delete") && !op["delete"].empty()) {
+    if (op.value("delete_all", false)) {   // baked snapshot: every guide and face of the base goes
+        for (size_t i = 0; i < P.size(); i++) alive[i] = 0;
+        faces.clear();
+    } else if (op.contains("delete") && !op["delete"].empty()) {
         auto dead = match(op["delete"]);
         for (int i : dead) alive[i] = 0;
         faces.erase(std::remove_if(faces.begin(), faces.end(), [&](const Face& f) { return !alive[f.g[0]] || !alive[f.g[1]] || !alive[f.g[2]]; }), faces.end());
@@ -450,7 +455,9 @@ void Groom::applyRebuild(const json& op) {
         if (op.contains("uv") && n < op["uv"].size()) uvOf[ni] = {op["uv"][n][0].get<float>(), op["uv"][n][1].get<float>()};
         else uvOf[ni] = {0.5f, 0.5f};
     }
+    size_t nf = (size_t)-1;
     for (auto& fj : op.value("faces", json::array())) {
+        nf++;
         if (fj.size() != 3) continue;
         Face f;
         bool ok = true;
@@ -464,6 +471,10 @@ void Groom::applyRebuild(const json& op) {
             std::array<float, 2> uv = it != uvOf.end() ? it->second : std::array<float, 2>{0.5f, 0.5f};
             f.uv[2 * c] = uv[0];
             f.uv[2 * c + 1] = uv[1];
+            if (op.contains("face_uv") && nf < op["face_uv"].size() && op["face_uv"][nf].size() == 6) {   // per-corner uv of the snapshot
+                f.uv[2 * c] = op["face_uv"][nf][2 * c].get<float>();
+                f.uv[2 * c + 1] = op["face_uv"][nf][2 * c + 1].get<float>();
+            }
         }
         if (ok) faces.push_back(f); else unmatched++;
     }

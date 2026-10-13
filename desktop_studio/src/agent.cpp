@@ -7,6 +7,7 @@
 #include <fstream>
 
 #include "app.h"
+std::string applyPackHeadless(App& a, const std::string& dir);   // community.cpp
 #include "lighting.h"
 
 namespace fs = std::filesystem;
@@ -502,6 +503,25 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
             r["dir"] = od;
             if (rel) { checkCore(true); r["core"] = {{"installed", core.installed}, {"version", core.version}, {"required", core.required}}; }
             if (!ok) { r["error"] = status; rc = 6; }
+        } else if (d == "apply_pack") {
+            // {"do": "apply_pack", "dir": "<pack folder>"}: apply a community pack onto the loaded project (like Community > Apply)
+            r["message"] = applyPackHeadless(*this, stp.value("dir", ""));
+            r["unmatched"] = groom.unmatched;
+        } else if (d == "dump_geo") {
+            // {"do": "dump_geo", "path": "x.json"}: the groom as it is now (alive guides in order, faces by alive index, per-corner uv)
+            std::vector<int> ix(groom.P.size(), -1);
+            json G = json::array(), Fa = json::array();
+            for (size_t i = 0; i < groom.P.size(); i++) {
+                if (!groom.alive[i]) continue;
+                ix[i] = (int)G.size();
+                json pts = json::array();
+                for (auto& q : groom.P[i]) pts.push_back({r4(q.x), r4(q.y), r4(q.z)});
+                G.push_back(pts);
+            }
+            for (auto& f : groom.faces) Fa.push_back({{"g", {ix[f.g[0]], ix[f.g[1]], ix[f.g[2]]}}, {"uv", {f.uv[0], f.uv[1], f.uv[2], f.uv[3], f.uv[4], f.uv[5]}}});
+            std::ofstream(stp.value("path", out + "\geo.json")) << json{{"K", groom.K}, {"guides", G}, {"faces", Fa}}.dump();
+            r["guides"] = G.size();
+            r["faces"] = Fa.size();
         } else if (d == "report") {
             // nothing: the budget is added to every report below
         } else {

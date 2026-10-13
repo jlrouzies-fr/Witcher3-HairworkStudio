@@ -99,6 +99,14 @@ inline std::vector<json> toStudio(const std::vector<json>& hw, int* skipped = nu
     for (auto& o0 : hw) {
         std::string k = opType(o0);
         if (!opTypes().count(k)) { sk++; continue; }
+        if (k == "rebuild" && o0.value("kind", std::string()) == "baked" && o0.contains("params") && o0["params"].is_object()) {
+            // baked geometry snapshot (guides + faces + uv): replaces every guide of the loaded groom, see Groom::applyRebuild
+            json b = o0["params"];
+            b["op"] = "rebuild";
+            b["delete_all"] = true;
+            out.push_back(b);
+            continue;
+        }
         json o = normOp(o0);
         if (k == "duplicate" || k == "delete_face") { o.erase("type"); o["op"] = k; }
         if (k == "rebuild") { o.erase("type"); o["op"] = "rebuild_param"; }

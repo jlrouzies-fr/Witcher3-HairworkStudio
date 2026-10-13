@@ -19,11 +19,12 @@ ROOT = os.path.dirname(HERE)
 GAME = os.path.dirname(ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'desktop_studio', 'packaging'))
 import package_release as PR  # noqa: E402
+import agents_text  # noqa: E402
 
 DS_SKIP_TOOLS = {'ai_logo_upscale.py', 'ai_portrait_test.py', 'make_portraits.py', 'lookcompare.py', '__pycache__'}
 IGN = shutil.ignore_patterns('__pycache__', '*.pyc')
 
-README = """# Hairwork Studio
+README = r"""# Hairwork Studio
 
 Hairwork Studio is a native Windows editor and simulator for **NVIDIA HairWorks** hair in **The Witcher 3** (next-gen patch 5.0, DX12).
 It converts a character's vanilla hair cards to real HairWorks strands built from *your own* game install, lets you edit and
@@ -57,7 +58,7 @@ You also need the **NVIDIA HairWorks 1.2.1 SDK** (`HairWorks-r1_2_1-15-distro`) 
 and unzip it anywhere; it is only read at build time (headers, shader header) and run time (runtime DLL).
 
 ```
-cmake -S desktop_studio -B desktop_studio/build -G "Visual Studio 17 2022" -A x64 -DHAIRWORKS_SDK_DIR=<...>\\HairWorks
+cmake -S desktop_studio -B desktop_studio/build -G "Visual Studio 17 2022" -A x64 -DHAIRWORKS_SDK_DIR=<...>\HairWorks
 cmake --build desktop_studio/build --config Release
 ```
 
@@ -81,6 +82,7 @@ The first time you open a character the Studio builds its strand pack from your 
 - **Hairwork for All - Core** (Nexus 13996): https://www.nexusmods.com/witcher3/mods/13996 (source in `core/`)
 - **Graphics Control** with PT hair > "Hair root transparency mode" = Mode 0: https://www.nexusmods.com/witcher3/mods/13349
 
+@@AGENTS@@
 ## Contributing
 
 Pull requests are welcome under the Hairwork Studio License (see section 1.3 of the licence). Run
@@ -122,7 +124,11 @@ def main():
     ds = os.path.join(ROOT, 'desktop_studio')
     for d in ('src', 'shaders', 'assets', 'third_party', 'packaging', 'docs'):
         if os.path.isdir(os.path.join(ds, d)):
-            shutil.copytree(os.path.join(ds, d), os.path.join(out, 'desktop_studio', d), ignore=IGN)
+            shutil.copytree(os.path.join(ds, d), os.path.join(out, 'desktop_studio', d), ignore=PR.DOCS_IGNORE if d == 'docs' else IGN)
+    for t in PR.MCP_FILES:   # MCP server for agents (autotune_* stay private)
+        cp(os.path.join(ds, 'mcp', t), os.path.join(out, 'desktop_studio', 'mcp', t))
+    cp(os.path.join(ds, 'docs', 'agents', 'SKILL.md'), os.path.join(out, '.claude', 'skills', 'hairwork-studio', 'SKILL.md'))
+    open(os.path.join(out, 'AGENTS.md'), 'w', encoding='utf-8', newline=chr(10)).write(agents_text.AGENTS_ROOT_MD)
     os.makedirs(os.path.join(out, 'desktop_studio', 'tools'))
     for f in os.listdir(os.path.join(ds, 'tools')):
         if f not in DS_SKIP_TOOLS:
@@ -159,7 +165,7 @@ def main():
     # licences / README
     lic = open(os.path.join(ROOT, 'LICENSE.md'), encoding='utf-8').read()
     open(os.path.join(out, 'LICENSE.md'), 'w', encoding='utf-8').write(lic)
-    open(os.path.join(out, 'README.md'), 'w', encoding='utf-8').write(README)
+    open(os.path.join(out, 'README.md'), 'w', encoding='utf-8').write(README.replace('@@AGENTS@@', agents_text.agents_md()))
     open(os.path.join(out, '.gitignore'), 'w').write(GITIGNORE)
     # check, then ONE commit (no remote)
     r = subprocess.run([sys.executable, os.path.join(out, 'tools', 'sdk_guard.py'), '--tree', out])
@@ -172,7 +178,7 @@ def main():
     g('config', 'user.name', 'jlrouzies-fr')
     g('config', 'user.email', 'jlrouzies-fr@users.noreply.github.com')
     g('add', '-A')
-    g('commit', '-q', '-m', 'Hairwork Studio 0.1.0: initial public export\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>')
+    g('commit', '-q', '-m', 'Hairwork Studio 0.2.1: fresh export\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>')
     files = subprocess.run(['git', '-C', out, 'ls-files'], capture_output=True, text=True).stdout.split('\n')
     print('exported %d files to %s (one commit, no remote)' % (len([f for f in files if f]), out))
 

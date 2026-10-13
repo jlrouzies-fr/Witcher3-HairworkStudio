@@ -5,7 +5,7 @@
 inline constexpr const char* kCommunityRepo = "jlrouzies-fr/Witcher3-HairworkCommunity";
 #include <windows.h>
 
-#define GSD_VERSION "0.2.0"
+#define GSD_VERSION "0.2.1"
 
 #include <atomic>
 #include <functional>

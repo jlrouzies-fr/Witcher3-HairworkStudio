@@ -409,7 +409,7 @@ std::vector<std::string> validatePack(const fs::path& d, bool installCheck) {
                 else if (t == "reshape") ok = has("root") && has("points") && o["points"].is_array() && o["points"].size() >= 2;
                 else if (t == "mirror") ok = o.value("source", "") == "+x" || o.value("source", "") == "-x";
                 else if (t == "delete_face") ok = has("roots") && o["roots"].is_array() && o["roots"].size() == 3 && o.value("face", -2) >= -1;
-                else if (t == "rebuild") ok = o.value("kind", "") == "from_cards" && has("params") && o["params"].is_object() && o.contains("studio_version");
+                else if (t == "rebuild") ok = (o.value("kind", "") == "from_cards" || o.value("kind", "") == "baked") && has("params") && o["params"].is_object() && o.contains("studio_version");
             }
             if (!ok) bad++;
         }
@@ -425,9 +425,22 @@ std::vector<std::string> validatePack(const fs::path& d, bool installCheck) {
             return true;
         };
         if (!sane(doc, 0)) e.push_back("edits.hwgroom: values out of range (non-finite, huge or too deeply nested)");
+        if (doc.contains("params")) {   // look overrides: name -> number / bool / short word / list of numbers / colour-vector object
+            if (!doc["params"].is_object()) e.push_back("edits.hwgroom: params must be an object");
+            else for (auto& [k, v] : doc["params"].items()) {
+                bool okv = v.is_number() || v.is_boolean() || v.is_string();
+                if (v.is_array()) { okv = v.size() <= 16; for (auto& x : v) if (!x.is_number()) okv = false; }
+                if (v.is_object()) { okv = v.size() <= 4; for (auto& [k2, x] : v.items()) if (!x.is_number()) okv = false; }
+                if (!okv) { e.push_back("edits.hwgroom: params value '" + k + "' is not a plain value"); break; }
+            }
+        }
         // rebuild settings: plain keys with numbers / booleans / short words only
         for (auto& o : doc["ops"]) {
             if (cm::opType(o) != "rebuild" || !o.contains("params") || !o["params"].is_object()) continue;
+            if (o.value("kind", "") == "baked") {   // geometry snapshot: lists of numbers
+                for (const char* k : {"guides", "uv", "face_uv", "faces"}) if (!o["params"].contains(k) || !o["params"][k].is_array()) e.push_back(std::string("edits.hwgroom: baked rebuild needs a '") + k + "' list");
+                continue;
+            }
             for (auto& [k, v] : o["params"].items()) {
                 bool okv = reOk(k, "^[a-z0-9_]{1,40}$") && (v.is_number() || v.is_boolean() || (v.is_string() && reOk(v.get<std::string>(), "^[A-Za-z0-9_.-]{0,40}$")) ||
                            (v.is_array() && v.size() <= 16));
@@ -474,7 +487,8 @@ bool readOps(const fs::path& dir, std::vector<json>& ops, json* docOut = nullptr
 void applyPack(App& a, const std::string& dir) {
     json meta;
     std::vector<json> hw;
-    if (!readJson(P(dir) / "pack.json", meta) || !readOps(P(dir), hw)) { setMsg("Apply: pack.json / edits.hwgroom unreadable in " + dir); return; }
+    json hwDoc;
+    if (!readJson(P(dir) / "pack.json", meta) || !readOps(P(dir), hw, &hwDoc)) { setMsg("Apply: pack.json / edits.hwgroom unreadable in " + dir); return; }
     if (!a.loaded) { setMsg("Apply: open the character's build first (File > Open)."); return; }
     std::string ch = meta.value("character", ""), sl = meta.value("slot", "");
     if (lower(ch) != lower(a.pack.character) || lower(sl) != lower(currentSlot(a))) {
@@ -543,7 +557,17 @@ void applyPack(App& a, const std::string& dir) {
         nApplied++;
     }
     a.groom.replay();
+    int nLook = 0;
+    if (hwDoc.contains("params") && hwDoc["params"].is_object()) {   // look / material overrides of the pack
+        for (auto& [k, v] : hwDoc["params"].items()) {
+            if (v.is_number()) a.look.setF(k, v.get<float>()); else a.look.setJson(k, v);
+            nLook++;
+        }
+        a.look.enforceCaps();
+        a.computeBudget();
+    }
     a.editsChanged();
+    if (nLook) warn += "; " + std::to_string(nLook) + " look value(s) set";
     setMsg("Applied " + std::to_string(nApplied) + " of " + std::to_string(ops.size()) + " op(s) from " + meta.value("name", "?") + " (undo: Ctrl+Z)" +
            (skipped ? "; " + std::to_string(skipped) + " unsupported op(s) skipped" : "") + warn +
            (err.empty() ? "" : "; STOPPED at a rebuild: " + err) +
@@ -1528,6 +1552,14 @@ void drawGithub(App& a, Settings& s) {
     ImGui::EndChild();
 }
 }  // namespace
+
+// headless apply (agent step "apply_pack"): the status line applyPack would show
+std::string applyPackHeadless(App& a, const std::string& dir) {
+    setMsg("");
+    applyPack(a, dir);
+    std::lock_guard<std::mutex> l(g_mx);
+    return g_msg;
+}
 
 void drawCommunity(App& a, bool& open) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
