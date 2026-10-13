@@ -84,6 +84,18 @@ CHARS = {
         # 2026-10-10 user (L226 'almost no improvement'): ~38 % darker than [68,66,64], same hue; temples 100 % (L228)
         root=(42, 41, 40), tip=(42, 41, 40), temple_strength=1.0,
         lum_to=True, gate='grey', regions='vesemir', config='vesemir_r31a'),
+    # Ciri (2026-10-13, user: "add a white scalp texture for ciri, so any space doesnt look like a bald part"): her d01
+    # already carries a NEUTRAL GREY hair paint on the skull (mean ~[130,123,121], R-G ~7; skin R-G ~37), which the
+    # Studio's dark-paint scalp finder misses. Recolour = Vesemir path: grey gate + lightness moved to an ash white
+    # (paint x ~1.45), strand variation kept. d01 = 4096, 13 mips, same layout as Triss. HairWorks cr6 root
+    # (222,208,180) / tip (242,234,212); the paint stays below that so it reads as hair in shadow, not glare.
+    'ciri': dict(
+        mode='recolour',
+        rel=r'characters\models\main_npc\ciri\h_01_wa__ciri\h_01_wa__ciri_d01.xbm',
+        mesh=r'characters\models\main_npc\ciri\h_01_wa__ciri\h_01_wa__ciri.w2mesh',
+        mod='modCiriScalp', build='scalp_ciri', prev='ciri_scalp',
+        root=(190, 182, 165), tip=(190, 182, 165), lum_to=True, gate='grey', regions='ciri',
+        config='ciri_l257_cr6'),
 }
 import tempfile
 _SCRATCH = os.path.join(tempfile.gettempdir(), 'hairwork_scratch')
@@ -411,8 +423,8 @@ def uv_zone(p):
     z = np.clip(z * 4, 0, 1)                          # ~ dilation by k px, soft edge
     z = gaussian_filter(z, p['feather'] * S / W * 0.5)
     u, v = np.meshgrid((np.arange(S) + .5) / S, (np.arange(S) + .5) / S)
-    if CHAR.get('regions') == 'vesemir':
-        z = z * vesemir_regions(u, v)
+    if CHAR.get('regions') in ('vesemir', 'ciri'):
+        z = z * (vesemir_regions(u, v) if CHAR['regions'] == 'vesemir' else ciri_regions(u, v))
         zi = np.asarray(Image.fromarray((z * 255).astype(np.uint8)).resize((W, H), Image.BILINEAR), np.float32) / 255
         return zi
     # region limits (UV): skull islands at the bottom, hairline + temples at the top; mouth island / brows / ears out
@@ -440,6 +452,13 @@ def vesemir_regions(u, v):
     # front zones (visible in front of the strands): 75 % strength, so the hairline keeps a lighter stubble fade.
     # 2026-10-10 (user, L228): CHARS 'temple_strength' (default .75) - temples / above the ears at 100 %
     return np.maximum.reduce([skull, nape, 0.75 * top, CHAR.get('temple_strength', 0.75) * temple])
+
+
+def ciri_regions(u, v):
+    """Ciri d01: the grey gate finds the paint; this only keeps the face (brows, eyes, lips, scar) out: everything
+    except the face centre u .27-.73, v .17-.60 (the forehead hairline at v < .15 and the temples stay in)"""
+    face = smooth(u, 0.25, 0.29) * (1 - smooth(u, 0.71, 0.75)) * smooth(v, 0.15, 0.19) * (1 - smooth(v, 0.58, 0.62))
+    return 1 - face
 
 
 def grey_weight(rgb):

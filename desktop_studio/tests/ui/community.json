@@ -1,0 +1,16 @@
+{"out": "build/desktop_studio/uitest_comm", "splash": false, "steps": [
+ {"do": "wait", "frames": 90},
+ {"do": "click", "label": "Community##title"}, {"do": "wait", "frames": 30},
+ {"do": "click", "label": "Source##chip"}, {"do": "wait", "frames": 10},
+ {"do": "shot", "name": "c0_source"},
+ {"do": "click", "label": "Use repo community"}, {"do": "wait", "frames": 10},
+ {"do": "click", "label": "Source##chip"}, {"do": "wait", "frames": 5},
+ {"do": "click", "label": "Refresh##comm"}, {"do": "wait", "frames": 90},
+ {"do": "shot", "name": "c1_browse"},
+ {"do": "click", "label": "My packs##ctab"}, {"do": "wait", "frames": 20},
+ {"do": "shot", "name": "c2_mine"},
+ {"do": "click", "label": "Export current project as pack"}, {"do": "wait", "frames": 20},
+ {"do": "shot", "name": "c3_export"},
+ {"do": "click", "label": "GitHub##ctab"}, {"do": "wait", "frames": 60},
+ {"do": "shot", "name": "c4_github"}
+]}

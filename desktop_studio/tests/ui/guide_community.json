@@ -1,0 +1,11 @@
+{"out": "build/desktop_studio/uitest_guide_comm", "splash": false, "steps": [
+ {"do": "wait", "frames": 120},
+ {"do": "shot", "name": "g_title"},
+ {"do": "click", "label": "Community##title"}, {"do": "wait", "frames": 30},
+ {"do": "click", "label": "Refresh##comm"}, {"do": "wait", "frames": 90},
+ {"do": "shot", "name": "g_browse"},
+ {"do": "click", "label": "My packs##ctab"}, {"do": "wait", "frames": 20},
+ {"do": "shot", "name": "g_mine"},
+ {"do": "click", "label": "GitHub##ctab"}, {"do": "wait", "frames": 60},
+ {"do": "shot", "name": "g_github"}
+]}

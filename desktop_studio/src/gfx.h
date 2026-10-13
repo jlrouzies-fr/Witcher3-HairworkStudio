@@ -98,6 +98,7 @@ struct Gfx {
     void endScene();        // resolve MSAA -> back buffer, bind back buffer for UI
     void present(bool vsync);
     bool saveScreenshot(const std::string& path);
+    bool saveViewportJpg(const std::string& path, int x0, int y0, int x1, int y1, size_t maxBytes);   // back buffer region, scaled to <=1280 wide, jpeg <= maxBytes
     ID3D11ShaderResourceView* loadTexture(const std::string& path, bool srgb, int* outW = nullptr, int* outH = nullptr);
     void shutdown();
 

@@ -209,6 +209,37 @@ Budget Look::budget(int numFaces, double sumFaceDensity, int K) const {
     return b;
 }
 
+// Thresholds mirror tools/hairworks/perf_budget.py. Measured in game (W3 5.0, RTX 5090, path tracing, one NPC; Vesemir 552 faces
+// clump 0.8 = 14 ms): path-traced hair renders a fixed 32 hairs per growth face, so faces matter, not density; Lambert clump
+// 0.3 -> 0.8 saved ~4 ms; Lambert shipped 1007 faces clump 0.3 ~27 ms; Guillaume 1516 faces curled 32 ms vs 15.5 ms curl off.
+void Look::pathTrace(Budget& b, int numFaces, double tort, double pts) const {
+    const int facesWarn = 600, facesStrong = 900, clumpFaces = 450;
+    const double clumpLow = 0.5, tortWarn = 1.5, tortPts = 20, tortPtsTort = 1.4;
+    double clump = f("physicalMaterials.clumping.clumpScale", 1.0f);
+    double wScale = f("physicalMaterials.waveness.waveScale", 1.0f), wStrand = f("physicalMaterials.waveness.waveStrand", 0.0f);
+    char buf[200];
+    b.warns.clear();
+    if (numFaces > facesStrong) {
+        snprintf(buf, sizeof buf, "Very many growth faces (%d > %d): path-traced hair cost scales with faces, not density; expect a large GPU cost.", numFaces, facesStrong);
+        b.warns.push_back(buf);
+    } else if (numFaces > facesWarn) {
+        snprintf(buf, sizeof buf, "Many growth faces (%d > %d): path-traced hair cost scales with faces, not density; aim for ~550.", numFaces, facesWarn);
+        b.warns.push_back(buf);
+    }
+    if (clump < clumpLow && numFaces > clumpFaces) {
+        snprintf(buf, sizeof buf, "Low clumping (%.2f) with many faces (%d) is slow under path tracing; try clump 0.8.", clump, numFaces);
+        b.warns.push_back(buf);
+    }
+    if (tort > tortWarn || (pts > tortPts && tort > tortPtsTort)) {
+        snprintf(buf, sizeof buf, "Tight curl is expensive under path tracing (tortuosity %.2f, %.0f points/guide); loosen pitch / radius.", tort, pts);
+        b.warns.push_back(buf);
+    }
+    double score = numFaces / 1000.0 * (1.0 + std::max(0.0, 0.8 - clump) / 0.5) * (1.0 + std::max(0.0, tort - 1.3) * 3.0) *
+                   (1.0 + 2.0 * wStrand * std::max(0.0, 0.4 - wScale) / 0.4);
+    (void)score;
+    b.costNote.clear();   // the ms estimate comes from pt_estimate.cpp (budget card)
+}
+
 std::string fmtCount(double n) {
     char buf[32];
     if (n >= 1e6) snprintf(buf, sizeof buf, "%.2fM", n / 1e6);

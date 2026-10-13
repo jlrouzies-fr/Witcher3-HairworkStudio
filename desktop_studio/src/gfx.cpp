@@ -466,6 +466,54 @@ bool Gfx::saveScreenshot(const std::string& path) {
     return ok;
 }
 
+bool Gfx::saveViewportJpg(const std::string& path, int x0, int y0, int x1, int y1, size_t maxBytes) {
+    ID3D11Texture2D* bb = nullptr;
+    swap->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb);
+    D3D11_TEXTURE2D_DESC td;
+    bb->GetDesc(&td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    td.MiscFlags = 0;
+    ID3D11Texture2D* st = nullptr;
+    dev->CreateTexture2D(&td, nullptr, &st);
+    ctx->CopyResource(st, bb);
+    D3D11_MAPPED_SUBRESOURCE m;
+    bool ok = false;
+    x0 = std::clamp(x0, 0, (int)td.Width - 1); x1 = std::clamp(x1, x0 + 1, (int)td.Width);
+    y0 = std::clamp(y0, 0, (int)td.Height - 1); y1 = std::clamp(y1, y0 + 1, (int)td.Height);
+    if (SUCCEEDED(ctx->Map(st, 0, D3D11_MAP_READ, 0, &m))) {
+        int w = x1 - x0, h = y1 - y0;
+        int ow = std::min(w, 1280), oh = std::max(1, int(h * (double)ow / w));
+        std::vector<unsigned char> px(size_t(ow) * oh * 3);
+        for (int y = 0; y < oh; y++)
+            for (int x = 0; x < ow; x++) {       // box filter over the source footprint of the output pixel
+                int sx0 = x0 + int(x * (double)w / ow), sx1 = std::max(sx0 + 1, x0 + int((x + 1) * (double)w / ow));
+                int sy0 = y0 + int(y * (double)h / oh), sy1 = std::max(sy0 + 1, y0 + int((y + 1) * (double)h / oh));
+                int acc[3] = {0, 0, 0}, n = 0;
+                for (int sy = sy0; sy < sy1 && sy < y1; sy++)
+                    for (int sx = sx0; sx < sx1 && sx < x1; sx++) {
+                        const unsigned char* s = (const unsigned char*)m.pData + size_t(sy) * m.RowPitch + size_t(sx) * 4;
+                        acc[0] += s[0]; acc[1] += s[1]; acc[2] += s[2]; n++;
+                    }
+                for (int c = 0; c < 3; c++) px[(size_t(y) * ow + x) * 3 + c] = (unsigned char)(acc[c] / std::max(n, 1));
+            }
+        ctx->Unmap(st, 0);
+        for (int q = 88; q >= 30 && !ok; q -= 8) {
+            std::vector<unsigned char> buf;
+            stbi_write_jpg_to_func([](void* c, void* d, int n) { auto* v = (std::vector<unsigned char>*)c; v->insert(v->end(), (unsigned char*)d, (unsigned char*)d + n); }, &buf, ow, oh, 3, px.data(), q);
+            if (buf.size() <= maxBytes) {
+                FILE* f = nullptr;
+                if (fopen_s(&f, path.c_str(), "wb") == 0 && f) { ok = fwrite(buf.data(), 1, buf.size(), f) == buf.size(); fclose(f); }
+                break;
+            }
+        }
+    }
+    safeRelease(st);
+    safeRelease(bb);
+    return ok;
+}
+
 ID3D11ShaderResourceView* Gfx::loadTexture(const std::string& path, bool srgb, int* ow, int* oh) {
     int tw, th, n;
     unsigned char* px = stbi_load(path.c_str(), &tw, &th, &n, 4);

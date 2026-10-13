@@ -1,6 +1,8 @@
 // Desktop Groom Studio - UI ("Refined Ink & Iron": title bar, tool rail, inspector, status bar) and viewport input.
 // Design: desktop_studio/design/ui_direction1 (IMPLEMENTATION.md). Our own code (MIT).
 #include <windows.h>
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
 #include <commdlg.h>
 #include <shellapi.h>
 
@@ -168,8 +170,22 @@ static void tip(const char* t) { w::tip(t); }
 static void openGuide(App& a) {
     std::string g = exeDir() + "\\docs\\guide\\guide.html";
     if (!std::filesystem::exists(g)) g = a.set.repo + "\\desktop_studio\\docs\\guide\\guide.html";
-    if (std::filesystem::exists(g)) ShellExecuteA(nullptr, "open", g.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    else a.status = "User guide not found: " + g;
+    if (!std::filesystem::exists(g)) { a.status = "User guide not found: " + g; return; }
+    // force the default WEB browser (the https handler), not whatever app owns .html (often an editor)
+    std::wstring wg = std::filesystem::path(g).wstring(), url = L"file:///";
+    for (wchar_t c : wg) url += c == (wchar_t)92 ? std::wstring(L"/") : c == L' ' ? std::wstring(L"%20") : std::wstring(1, c);
+    wchar_t cmd[2048]; DWORD n = 2048;
+    if (SUCCEEDED(AssocQueryStringW(ASSOCF_NONE, ASSOCSTR_COMMAND, L"https", L"open", cmd, &n))) {
+        std::wstring c = cmd;
+        size_t k = c.find(L"%1");
+        if (k != std::wstring::npos) c.replace(k, 2, url); else c += L" \"" + url + L"\"";
+        STARTUPINFOW si{sizeof si}; PROCESS_INFORMATION pi{};
+        if (CreateProcessW(nullptr, c.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            return;
+        }
+    }
+    ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);   // fallback
 }
 
 static void label(const char* l) {
@@ -345,12 +361,26 @@ void App::handleInput() {
             if (g >= 0 && !sel.count(g)) { sel.clear(); sel.insert(g); }
             if (sel.empty()) dragging = false;
             else {
+                // one selected guide and the click on one of its points (2026-10-13): drag that point only
+                std::string fo = falloff;
+                int fk = fromK;
+                dragK = -1;
+                if (sel.size() == 1) {
+                    int gi = *sel.begin();
+                    float bd = 9.0f * 9.0f;
+                    for (int k = 1; k < pack.K; k++) {
+                        XMFLOAT2 s = project(posedPoint(gi, k));
+                        float d = (s.x - mx) * (s.x - mx) + (s.y - my) * (s.y - my);
+                        if (d < bd) { bd = d; dragK = k; }
+                    }
+                    if (dragK > 0) { fo = "point"; fk = dragK; }
+                }
                 strokeOps0 = groom.ops.size();
                 int grp = 3000 + (++grpId);
-                groom.ops.push_back({{"type", "translate"}, {"roots", groom.rootsOf(selList())}, {"offset", {0.0f, 0.0f, 0.0f}}, {"falloff", falloff}, {"from", fromK}, {"grp", grp}});
+                groom.ops.push_back({{"type", "translate"}, {"roots", groom.rootsOf(selList())}, {"offset", {0.0f, 0.0f, 0.0f}}, {"falloff", fo}, {"from", fk}, {"grp", grp}});
                 auto mir = symmetry ? mirrorOf(selList()) : std::vector<int>();
                 if (!mir.empty())
-                    groom.ops.push_back({{"type", "translate"}, {"roots", groom.rootsOf(mir)}, {"offset", {0.0f, 0.0f, 0.0f}}, {"falloff", falloff}, {"from", fromK}, {"grp", grp}, {"mirrored", true}});
+                    groom.ops.push_back({{"type", "translate"}, {"roots", groom.rootsOf(mir)}, {"offset", {0.0f, 0.0f, 0.0f}}, {"falloff", fo}, {"from", fk}, {"grp", grp}, {"mirrored", true}});
                 groom.redo.clear();
                 groom.replay();
             }
@@ -369,7 +399,7 @@ void App::handleInput() {
         if (tool == Tool::Move && (dx != 0 || dy != 0) && groom.ops.size() > strokeOps0) {
             auto ix = selList();
             V3 c{0, 0, 0};
-            for (int i : ix) c = c + posedPoint(i, pack.K / 2);
+            for (int i : ix) c = c + posedPoint(i, dragK > 0 ? dragK : pack.K / 2);
             c = c * (1.0f / std::max<size_t>(ix.size(), 1));
             V3 w = restDelta(ix.empty() ? 0 : ix[0], screenDeltaToWorld(mx - mx0, my - my0, c));   // posed -> rest space
             for (size_t k = strokeOps0; k < groom.ops.size(); k++) {
@@ -611,6 +641,9 @@ static void drawTitleBar(App& a) {
             ImGui::Separator();
             ImGui::MenuItem("Hair (HairWorks)", "H", &a.showHair);
             ImGui::MenuItem("Head and outfit", "M", &a.showMeshes);
+            ImGui::MenuItem("Scalp highlight (green)", nullptr, &a.scalpOverlay);
+            ImGui::MenuItem("Vanilla reference...", nullptr, &a.vanillaOpen);
+            if (ImGui::MenuItem("Vanilla hair (cards)", nullptr, &a.vanillaHair)) a.showHair = !a.vanillaHair;
             ImGui::MenuItem("Guide overlay", "G", &a.showGuideOverlay);
             ImGui::MenuItem("Simulated guides (SDK)", nullptr, &a.sdkGuides);
             ImGui::MenuItem("Collision capsules (SDK)", "N", &a.showCollision);
@@ -618,6 +651,7 @@ static void drawTitleBar(App& a) {
             ImGui::Separator();
             ImGui::MenuItem("Turntable", "O", &a.turntable);
             ImGui::MenuItem("Sky backdrop", nullptr, &a.rig.backdrop);
+            ImGui::MenuItem("Community...", nullptr, &a.communityOpen);
             ImGui::MenuItem("Light settings...", nullptr, &a.lightOpen);
             ImGui::MenuItem("Log", nullptr, &s_logOpen);
         } else {
@@ -746,11 +780,23 @@ static void drawTitleBar(App& a) {
         ImGui::SetCursorScreenPos(ImVec2(rx, cy - S(15)));
         if (w::primaryButton("Export mod##title", "Export mod", ImVec2(ew, S(30)), canExport, ICON_LC_PACKAGE)) { a.exportReq = true; a.pickerOpen = false; }
         tip(!a.loaded ? "Export mod\nOpen a character first." : a.bud.overLimit ? "Export mod\nBlocked: over the 120 % performance budget." : "Export mod\nOpens the Export section (mod folder, tag, export).");
+        {   // Community, same size class as Export mod
+            float cw = w::textSize(g_fontUiSemi, "Community").x + S(22) + S(24);
+            rx -= S(8) + cw;
+            ImGui::SetCursorScreenPos(ImVec2(rx, cy - S(15)));
+            w::g_primaryAlt = 0x6f9fd8;   // steel blue, distinct from the amber Export mod
+            if (w::primaryButton("Community##title", "Community", ImVec2(cw, S(30)), true, ICON_LC_USERS)) a.communityOpen = !a.communityOpen;
+            w::g_primaryAlt = 0;
+            tip("Community\nBrowse, install, sync and publish shared hair packs.");
+        }
         {   // user guide, always visible
-            float gw = ImGui::CalcTextSize("Guide").x + S(23) + S(24);
+            float gw = w::textSize(g_fontUiSemi, "Open User Guide").x + S(22) + S(24);
             rx -= S(8) + gw;
             ImGui::SetCursorScreenPos(ImVec2(rx, cy - S(15)));
-            if (w::button("Guide##title", "Guide", ImVec2(gw, S(30)), ICON_LC_INFO, true)) openGuide(a);
+            w::g_primaryAlt = 0x8fbf8a;   // sage green, distinct from Community (steel) and Export mod (amber)
+            bool og = w::primaryButton("Guide##title", "Open User Guide", ImVec2(gw, S(30)), true, ICON_LC_INFO);
+            w::g_primaryAlt = 0;
+            if (og) openGuide(a);
             tip("User guide\nOpens the illustrated guide in your web browser (also Help > User guide).");
         }
         if (a.pickerOpen) {
@@ -956,6 +1002,32 @@ static void budgetCard(App& a) {
         tip(t.c_str());
     }
     ImGui::SetCursorScreenPos(ImVec2(wp.x, q.y + S(10)));
+    // path-tracing GPU cost: warnings (never block export) + the estimate
+    {
+        PtResult pr;
+        bool have = a.ptWorker.get(pr);
+        if (have) a.ptMs = a.ptCalib.ms(pr);
+        ImGui::SetCursorPosX(S(14));
+        ImGui::BeginGroup();
+        ImGui::PushTextWrapPos(W - S(14));
+        char pb[160];
+        // 2026-10-13: estimate hidden (fit r^2 0.28 vs in-game PresentMon, see pt_calibration.json); set kShowPtEstimate to show it again
+        constexpr bool kShowPtEstimate = false;
+        if (!kShowPtEstimate) {
+        } else if (have) {
+            double ms = std::max(0.0, a.ptMs);
+            snprintf(pb, sizeof pb, "Path tracing est.: ~%.0f ms/frame (Vesemir ~%.0f)%s", ms, a.ptCalib.vesemir, a.ptWorker.busy() ? " ..." : "");
+            smallNote(pb, ms >= 20 ? tok::WARN : ms >= 16 ? tok::AMBER : tok::OK);
+        } else smallNote("Path tracing est.: computing ...");
+        ImGui::PopTextWrapPos();
+        if (kShowPtEstimate) ImGui::Checkbox("PT load sim##ptsim", &a.ptLoadSim);
+        if (kShowPtEstimate && ImGui::IsItemHovered()) tip("Adds an artificial GPU load to the viewport (repeats the hair pass) proportional to the estimate. Off by default.");
+        ImGui::PushTextWrapPos(W - S(14));
+        for (auto& wmsg : b.warns) smallNote("Warning: " + wmsg, tok::WARN);
+        ImGui::PopTextWrapPos();
+        ImGui::EndGroup();
+        ImGui::Dummy(ImVec2(0, S(6)));
+    }
 }
 
 static void colourRow(App& a, const ParamDef& d) {
@@ -1699,6 +1771,9 @@ void App::ui() {
         ImGui::PopStyleColor();
     }
 
+    if (vanillaOpen) drawVanillaRef();
+    if (communityOpen) drawCommunity(*this, communityOpen);
+
     // light settings (time-of-day popup "Advanced...", View > Light settings)
     if (lightOpen) {
         ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - (inspector ? g_panelW : 0) - S(16), vp->Pos.y + g_titleH + S(110)), ImGuiCond_Appearing, ImVec2(1, 0));
@@ -1885,4 +1960,76 @@ void App::ui() {
         if (w::button("Close##shortcuts", "Close", ImVec2(S(120), 0))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+}
+
+// ================================================================================================ vanilla reference
+// floating window with the in-game vanilla stills of this character (one tab per HairLab camera) and "Match camera",
+// which puts the viewport on the same eye / target / field of view, so the groom can be compared with vanilla
+void App::drawVanillaRef() {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + S(90), vp->Pos.y + g_titleH + S(110)), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(S(420), S(500)), ImGuiCond_Appearing);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, S(10));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(17 / 255.f, 20 / 255.f, 23 / 255.f, 0.96f));
+    if (ImGui::Begin("Vanilla reference", &vanillaOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+        std::vector<std::string> ids;
+        if (loaded)
+            for (auto& [k, sh] : pack.shots.items())
+                if (sh.contains("ref") && sh["ref"].is_string()) ids.push_back(k);
+        if (ids.empty()) {
+            ImGui::TextWrapped("No vanilla capture for this build yet (the reference stills come from the HairLab vanilla rounds).");
+        } else {
+            if (std::find(ids.begin(), ids.end(), vanillaShot) == ids.end()) vanillaShot = ids[0];
+            auto viewName = [&](const std::string& k) {
+                std::string v = pack.shots[k].value("view", k);
+                if (v == "front34") return std::string("1/4 front R");
+                if (v == "front34_left") return std::string("1/4 front L");
+                if (v == "side_left") return std::string("side L");
+                if (v == "side") return std::string("side R");
+                return v;
+            };
+            for (size_t i = 0; i < ids.size(); i++) {
+                if (i) ImGui::SameLine();
+                bool on = ids[i] == vanillaShot;
+                if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                if (ImGui::Button((viewName(ids[i]) + "##vref" + ids[i]).c_str())) vanillaShot = ids[i];
+                if (on) ImGui::PopStyleColor();
+            }
+            auto& sh = pack.shots[vanillaShot];
+            if (ImGui::Button("Match camera##vref")) {
+                XMFLOAT3 e{sh["eye"][0], sh["eye"][1], sh["eye"][2]}, t{sh["target"][0], sh["target"][1], sh["target"][2]};
+                float dx = e.x - t.x, dy = e.y - t.y, dz = e.z - t.z, d = std::sqrt(dx * dx + dy * dy + dz * dz);
+                cam.target = t;
+                cam.dist = d;
+                cam.yaw = std::atan2(dx, dy);
+                cam.pitch = std::asin(std::clamp(dz / std::max(d, 1e-6f), -1.0f, 1.0f));
+                cam.fov = sh.value("fovy", cam.fov);
+                turntable = false;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Put the 3D view on the camera of this vanilla still");
+            ImGui::SameLine();
+            bool hasCards = false;
+            for (auto& m : pack.meshes) if (m.kind == "hair_cards") hasCards = true;
+            if (hasCards) {
+                if (ImGui::Checkbox("Vanilla hair in 3D##vref", &vanillaHair)) showHair = !vanillaHair;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show the game's own hair cards instead of the HairWorks groom (same camera, same light)");
+            }
+            auto it = vanillaTex.find(vanillaShot);
+            if (it == vanillaTex.end()) {
+                RefTex rt;
+                rt.srv = gfx.loadTexture(set.repo + "\\" + sh["ref"].get<std::string>(), false, &rt.w, &rt.h);
+                it = vanillaTex.emplace(vanillaShot, rt).first;
+            }
+            if (it->second.srv && it->second.w > 0) {
+                ImVec2 av = ImGui::GetContentRegionAvail();
+                float sc = std::min(av.x / it->second.w, av.y / it->second.h);
+                ImGui::Image((ImTextureID)it->second.srv, ImVec2(it->second.w * sc, it->second.h * sc));
+            } else {
+                ImGui::TextDisabled("Still not found: %s", sh["ref"].get<std::string>().c_str());
+            }
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 }

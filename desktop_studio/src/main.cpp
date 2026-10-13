@@ -14,6 +14,7 @@
 #include "../third_party/imgui/imgui_impl_dx11.h"
 #include "../third_party/imgui/imgui_impl_win32.h"
 #include "app.h"
+#include "theme.h"
 #include "uitest.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -41,6 +42,10 @@ static void parseArgs(Args& a, int argc, wchar_t** argv) {
         else if (s == "--sdk") a.sdk = next();
         else if (s == "--dll") a.dll = next();
         else if (s == "--agent") a.agent = next();
+        else if (s == "--serve") a.serve = true;
+        else if (s == "--pt-estimate") a.ptEstimate = next();
+        else if (s == "--pt-opts") a.ptOpts = next();
+        else if (s == "--out") a.out = next();
         else if (s == "--project") a.project = next();
         else if (s == "--ui-test") a.uiTest = next();
         else if (s == "--no-splash") a.noSplash = true;
@@ -110,16 +115,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     parseArgs(g_app.args, argc, argv);
-    g_app.headless = !g_app.args.agent.empty();
+    if (!g_app.args.ptEstimate.empty()) {
+        HANDLE so = GetStdHandle(STD_OUTPUT_HANDLE);
+        if ((!so || so == INVALID_HANDLE_VALUE) && AttachConsole(ATTACH_PARENT_PROCESS)) { FILE* f; freopen_s(&f, "CONOUT$", "w", stdout); }
+        return ptCli(g_app.args.ptEstimate, g_app.args.ptOpts);
+    }
+    g_app.headless = !g_app.args.agent.empty() || g_app.args.serve;
     g_app.set.load();
     if (!g_app.args.sdk.empty()) g_app.set.sdkDir = g_app.args.sdk;
     if (!g_app.args.dll.empty()) g_app.set.dll = g_app.args.dll;
-    if (g_app.headless && AttachConsole(ATTACH_PARENT_PROCESS)) {
+    if (g_app.headless && !g_app.args.serve && AttachConsole(ATTACH_PARENT_PROCESS)) {
         FILE* f;
         freopen_s(&f, "CONOUT$", "w", stdout);
     }
     fs::create_directories(g_app.set.repo + "\\build\\desktop_studio");
-    openLog(g_app.set.repo + "\\build\\desktop_studio\\" + (g_app.headless ? "agent.log" : "desktop_studio.log"), g_app.headless);
+    openLog(g_app.set.repo + "\\build\\desktop_studio\\" + (g_app.args.serve ? "serve.log" : g_app.headless ? "agent.log" : "desktop_studio.log"), g_app.headless && !g_app.args.serve);
     SetUnhandledExceptionFilter(crashFilter);
     g_hairLog = hairLogSink;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -156,7 +166,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     applyTheme(fonts, dpi);
     if (g_app.headless) {
         g_stage = "agent";
-        int rc = g_app.runAgent(g_app.args.agent);
+        int rc = g_app.args.serve ? g_app.runServe(g_app.args.out.empty() ? g_app.set.repo + "\\build\\desktop_studio\\mcp" : g_app.args.out)
+                                  : g_app.runAgent(g_app.args.agent);
         shutdownAll(hwnd);
         return rc;
     }
@@ -201,6 +212,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
         g_app.step(dt);
         g_stage = "draw";
         g_app.drawScene();
+        if (!g_app.pendingPreview.empty()) {   // community export: the 3D view only (before the UI is drawn), toolbar-free rect
+            ImGuiViewport* pv = ImGui::GetMainViewport();
+            g_app.previewOk = g_app.gfx.saveViewportJpg(g_app.pendingPreview, int(pv->Pos.x + g_railW), int(pv->Pos.y + g_titleH),
+                                                        int(pv->Pos.x + pv->Size.x - g_panelW), int(pv->Pos.y + pv->Size.y - g_statusH), 290u * 1024) ? 1 : 0;
+            g_app.pendingPreview.clear();
+        }
         if (frameNo % 15 == 0) g_app.st = g_app.hw.stats();
         g_stage = "ui";
         g_app.ui();

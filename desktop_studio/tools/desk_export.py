@@ -19,6 +19,10 @@ What it does (nothing is installed; output = build\desktop_studio\<cfg>\export\)
      a painted map switches the fur to UNIQUE per-face UVs: the Studio re-bakes the density map (and the colour map when
      the fur uses one) into that atlas (--density-png / --colour-png) and they ship as two more inline xbm.
   5. Budget guard: refuses when the Studio's hair estimate (close-up) is above --limit x the reference build.
+     Performance guard (2026-10-13, tools/hairworks/perf_budget.py): when the geometry is replaced, refuses on invalid
+     solver input (zero-length segments, guides under 5 mm, shared roots, zero-area growth faces: Crach ~0.1 FPS and
+     Dettlaff ~2 FPS in game, L255) or hair metres over the cap; `py tools\hairworks\perf_budget.py ops <geo>` writes
+     the fix ops. --allow-perf exports anyway (not for releases).
   6. Packages <mod>\content\blob0.bundle + metadata.store with w3lib (the pipeline's writer) + the character's w2ent
      from its release mod (mods\<mod>), INSTALL_INSTRUCTIONS.txt, and a zip. Also writes <char>_<tag>_config.json: the
      build's config + "edits" + the look changes as look.extra_set keys (a pipeline config proposal; rename it to a new
@@ -54,6 +58,7 @@ sys.path.insert(0, HW)
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
 import desk_prep  # noqa: E402
+import perf_budget  # noqa: E402
 from cr2w_edit import CR2WDoc, Chunk, v_import  # noqa: E402
 import redfur as RF  # noqa: E402
 
@@ -186,6 +191,7 @@ def main():
     ap.add_argument('--density-png', dest='density_png')
     ap.add_argument('--colour-png', dest='colour_png')
     ap.add_argument('--release', action='store_true', help='release export: requires the Hairwork for All Core')
+    ap.add_argument('--allow-perf', action='store_true', help='export despite performance-budget errors (dev only)')
     a = ap.parse_args()
     log = print
     if not a.mod.startswith('mod') or not a.mod.replace('_', '').isalnum():
@@ -196,6 +202,15 @@ def main():
         raise SystemExit('BLOCKED: %.0f %% of the reference build %s (limit %.0f %%)' % (b['ratio'] * 100, b.get('ref'), a.limit * 100))
     edits = json.load(open(a.edits))
     look = json.load(open(a.look))
+    if edits.get('ops') or geo.get('unique_uv'):
+        dens = (look.get('set', {}).get('physicalMaterials.volume.density') or [None, None])[1] or perf_budget.base_density(a.cfg)
+        pr = perf_budget.check(geo, density=dens)
+        log('perf budget: %s%s' % (json.dumps(pr['metrics']), ''.join('\n  warning: ' + w for w in pr['warnings'])))
+        if pr['errors']:
+            msg = 'PERF BLOCKED: ' + '; '.join(pr['errors']) + r' (fix: py tools\hairworks\perf_budget.py ops <geo> -o fix.json)'
+            if not a.allow_perf or a.release:
+                raise SystemExit(msg)
+            log('allowed (--allow-perf): ' + msg)
     fur = desk_prep.find_fur(a.cfg)
     if not fur:
         raise SystemExit('no built redfur for ' + a.cfg)
@@ -313,6 +328,8 @@ def main():
     xs = lk.setdefault('extra_set', {})
     for path, (hint, value) in look.get('set', {}).items():
         typ = resolve_type(doc, ch, path.split('.'), hint, value, lambda *x: None)
+        if typ == 'Color' and isinstance(value, list) and len(value) < 4:
+            value = list(value) + [255] * (4 - len(value))     # as encode() writes it into the exported redfur
         if typ:
             xs[path] = [typ, value]
     if a.release:

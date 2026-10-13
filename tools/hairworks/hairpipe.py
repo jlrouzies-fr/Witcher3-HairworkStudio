@@ -1308,6 +1308,12 @@ def generate(C, hair=None, log=print, prefix=''):
         # with the mod folder below); the fur itself is the dev build's. Default builds never set it.
         core_unretarget(look, log=log)
     data = redfur.write(res['S'], _F, uvs, bones, col, look, auto_hide=C.get('auto_hide', 100.0))
+    if C.get('studio_geo'):
+        # 2026-10-12 opt-in: the guides / faces / UVs of a Groom Studio project (its export's _geo.json, incl. Studio-only
+        # ops such as rebuild) replace the built geometry; material / bones / collision stay this build's (studio_geo.py)
+        import studio_geo
+        data, _sg_files = studio_geo.apply(C, data, fur_path(C, hair['comp']), len(bones), log=log)
+        extra_files = list(extra_files) + _sg_files
     redfur.verify(data)
     try:                                # R78: HairWorks Preview data pack (reads the fur bytes only; never breaks a build)
         strand_edits.export_hw_pack(C, data, _edit_path, tex=tex, comp=hair['comp'], index=_idx, log=log)
@@ -1412,6 +1418,24 @@ def build(C, install=False, log=print, prefix='', assemble=False):
             files.append((new_mesh, w))
             bufs.append((new_mesh + '.1.buffer', b))
             extra.append((hair['comp'] + '_holes', new_mesh))
+        if C.get('ribbon_under'):
+            # 2026-10-13 opt-in (Ciri): thin custom strand ribbons under the fur where the scalp looks empty (ribbon_under.py)
+            import growth
+            import ribbon_under
+            rc_ = C['ribbon_under'] if isinstance(C['ribbon_under'], dict) else {}
+            head_ = growth.Head(C.get('head_mesh') or info['heads'][0])
+            if C.get('studio_geo'):
+                import studio_geo
+                _gd = studio_geo.load_geo(C['studio_geo']['geo'])['guides']
+            else:
+                _gd = [s_['p'] for s_ in st['growth']['S']]
+            _R = ribbon_under.build(rc_, head_, _gd, log=log)
+            new_mesh = P(hair['mesh'][:-len('.w2mesh')] + '_ribbons.w2mesh')
+            w, b, stt = ribbon_under.write_mesh(hair['mesh'], _R, log=log)
+            log('  ribbon_under: %d ribbons as %s: (verts, tris, slots) per chunk %s' % (_R['nribbons'], new_mesh, stt))
+            files.append((new_mesh, w))
+            bufs.append((new_mesh + '.1.buffer', b))
+            extra.append((hair['comp'] + '_ribbons', new_mesh))
         if C.get('hairline_cards'):
             # 2026-10-06 (user: smooth out the spiky strand roots at the hairline; if thinner roots are not enough "use
             # cardboard system only on hairline", roots moved back): keep ONLY the vanilla card triangles on a band

@@ -26,16 +26,21 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 # the characters it ships; APPROVED.json first, AIO_PICKS for those that are "settled / user OK" but not listed there
-# (characters.md 2026-10-06)
-AIO_ORDER = ['vesemir', 'c04ma', 'avallach', 'sheala', 'dandelion', 'keira', 'lambert', 'triss', 'guillaume', 'regis']
+# (characters.md 2026-10-06). Emhyr (user: DONE 2026-10-12) = his Groom Studio project big_c/emhyr_mcp_8 as a pipeline
+# config (opt-in studio_geo key: tools/hairworks/studio_geo.py)
+AIO_ORDER = ['vesemir', 'c04ma', 'avallach', 'sheala', 'dandelion', 'keira', 'lambert', 'triss', 'guillaume', 'regis', 'emhyr', 'ciri']
 AIO_PICKS = {'avallach': 'avallach_l85b_hl70_wv_ln_hc', 'sheala': 'sheala_l89_rec_sk6_sink5only',
-             'keira': 'keira_l108_user1_c09', 'lambert': 'lambert_l76_ez10_vol5d_wr15_b07_f8'}
+             'keira': 'keira_l108_user1_c09', 'lambert': 'lambert_l76_ez10_vol5d_wr15_b07_f8',
+             'emhyr': 'emhyr_l255_mcp8',
+             'ciri': 'ciri_l259_cr10rib'}
+# path-tracing picks (user OK 2026-10-13, measured with fpsrun): these win over APPROVED.json, which stays frozen
+AIO_PT_PICKS = {'lambert': 'lambert_l285_me3', 'guillaume': 'guillaume_l275_p09r15c10', 'triss': 'triss_l275_c07'}
 # folder name overrides: Triss loads before the lore-friendly Triss mod (modtriss_lorehair), which otherwise overrides her hair
 AIO_MOD_NAMES = {'triss': 'mod000_TrissHairworks'}
 AIO_EXTRA_MODS = {'vesemir': 'modVesemirScalp', 'triss': 'modTrissScalp'}
 AIO_NAMES = {'vesemir': 'Vesemir', 'c04ma': 'generic short-hair men (c04ma, 79 NPCs)', 'avallach': "Avallac'h", 'sheala': 'Sheala',
              'dandelion': 'Dandelion', 'keira': 'Keira Metz', 'lambert': 'Lambert', 'triss': 'Triss (needs the lore-friendly Triss mod)',
-             'guillaume': 'Guillaume', 'regis': 'Regis'}
+             'guillaume': 'Guillaume', 'regis': 'Regis', 'emhyr': 'Emhyr var Emreis', 'ciri': 'Ciri'}
 
 README = """Hairwork for All - All In One %(v)s  (Nexus witcher3 mod 13996; patch 5.0 next-gen, DX12)
 by WinterElfeas
@@ -77,10 +82,10 @@ def configs():
     dm = approved.default_map()
     out = []
     for ch in AIO_ORDER:
-        cfg = dm.get(ch) or AIO_PICKS.get(ch)
+        cfg = AIO_PT_PICKS.get(ch) or dm.get(ch) or AIO_PICKS.get(ch)
         if not cfg:
             sys.exit('no config for ' + ch)
-        if ch in AIO_PICKS and dm.get(ch) not in (None, cfg):
+        if ch in AIO_PICKS and ch not in AIO_PT_PICKS and dm.get(ch) not in (None, cfg):
             print('note: APPROVED.json now has %s for %s (AIO_PICKS: %s): using APPROVED' % (dm[ch], ch, AIO_PICKS[ch]))
         with open(os.path.join(ROOT, 'tools', 'hairworks', 'chars', cfg + '.json'), encoding='utf-8-sig') as fh:
             C = json.load(fh)
@@ -176,6 +181,10 @@ def build_allinone(out, aiover, core_version, jobs, det_zip, scan):
     mods = {ch: mod for ch, _c, mod in cfgs}
     for ch, extra in AIO_EXTRA_MODS.items():
         src = os.path.join(game_mods, extra)
+        if not os.path.isdir(src):      # not installed in the game: use the scalp_tex.py build folder of the repo
+            alt = os.path.join(ROOT, 'build', 'scalp' if ch == 'triss' else 'scalp_' + ch, extra)
+            if os.path.isdir(os.path.join(alt, 'content')):
+                src = alt
         if not os.path.isdir(src):
             sys.exit('missing %s (build + install it with scalp_tex.py first)' % src)
         print('  scalp %s merged into %s: %s' % (extra, mods[ch], merge_scalp(os.path.join(pkg, mods[ch]), src)), flush=True)

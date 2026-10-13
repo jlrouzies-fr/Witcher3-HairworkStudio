@@ -491,6 +491,7 @@ static void primaryFill(ImDrawList* d, ImVec2 a, ImVec2 b, bool chamfer, bool ho
     d->AddLine(ImVec2(a.x + S(6), a.y + 1.5f), ImVec2(b.x - S(4), a.y + 1.5f), IM_COL32(255, 220, 170, (int)(90 * alpha)), 1);
 }
 
+unsigned g_primaryAlt = 0;   // non-zero: primaryButton filled with this colour instead of amber (Community)
 bool primaryButton(const char* label, const char* text, ImVec2 size, bool enabled, const char* glyph, bool chamfer, const char* kbdText, const char* sub) {
     ImFont* f = g_fontUiSemi;
     ImVec2 ts = textSize(f, text);
@@ -505,8 +506,17 @@ bool primaryButton(const char* label, const char* text, ImVec2 size, bool enable
     float alpha = enabled ? 1.0f : 0.45f;
     ImDrawList* d = GetWindowDrawList();
     ImVec2 b(p.x + size.x, p.y + size.y);
-    primaryFill(d, p, b, chamfer, hov && enabled, held, alpha);
     ImU32 ink = IM_COL32(27, 16, 6, (int)(255 * alpha));
+    if (g_primaryAlt) {
+        float k = held ? 0.8f : hov && enabled ? 1.12f : 1.0f;
+        auto ch = [&](int sh) { return (int)(std::min)(255.0f, ((g_primaryAlt >> sh) & 255) * k); };
+        ImU32 top = IM_COL32(ch(16), ch(8), ch(0), (int)(255 * alpha));
+        ImU32 bot = IM_COL32((int)(ch(16) * 0.78f), (int)(ch(8) * 0.78f), (int)(ch(0) * 0.78f), (int)(255 * alpha));
+        (void)bot;
+        d->AddRectFilled(p, b, top, S(4));
+        d->AddRect(p, b, IM_COL32(220, 235, 255, (int)(90 * alpha)), S(4));
+        ink = IM_COL32(8, 16, 28, (int)(255 * alpha));
+    } else primaryFill(d, p, b, chamfer, hov && enabled, held, alpha);
     float cy = p.y + size.y * 0.5f;
     bool left = chamfer || kbdText || sub;
     float x = left ? p.x + S(14) : p.x + (size.x - ts.x - gw) * 0.5f;

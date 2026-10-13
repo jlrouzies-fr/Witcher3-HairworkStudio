@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 #include <sstream>
 
 #include "curls.h"
@@ -18,6 +19,7 @@ static std::vector<float> falloffWeights(int K, const std::string& falloff, int 
         float t = K > 1 ? float(k) / float(K - 1) : 1.0f;
         if (falloff == "linear") w[k] = t;
         else if (falloff == "tip") w[k] = t * t;
+        else if (falloff == "point") { w[k] = std::max(0.0f, 1.0f - std::abs(k - from) / 2.0f); continue; }   // one CV (+ half on neighbours)
         if (k < from) w[k] = 0.0f;
     }
     return w;
@@ -178,7 +180,7 @@ static std::array<float, 3> closestBary(V3 p, V3 a, V3 b, V3 c, float& dist) {
 }
 
 // a duplicated guide splits the growth face its root lands on into three, so HairWorks interpolates around it
-void Groom::insertGuide(int ni) {
+void Groom::insertGuide(int ni, bool edgeFace, bool srcUv, const float* fixUv) {
     V3 r = P[ni][0];
     int best = -1;
     float bd = 1e9f;
@@ -188,6 +190,66 @@ void Groom::insertGuide(int ni) {
         float d;
         auto w = closestBary(r, P[F.g[0]][0], P[F.g[1]][0], P[F.g[2]][0], d);
         if (d < bd) { bd = d; best = (int)f; bw = w; }
+    }
+    // 2026-10-12 opt-in (Studio hairline_fill, duplicate op "edge_face": true): a root OUTSIDE the growth mesh (past its
+    // open edge) gets new faces fanned onto the nearest open edges instead of folding the nearest face, so the hair
+    // interpolated there grows from the new root outward (the growth mesh extends to the planted hairline)
+    if (edgeFace && best >= 0 && bd > 0.0015f) {
+        std::map<std::pair<int, int>, int> ec;
+        std::map<std::pair<int, int>, std::pair<int, int>> owner;   // open edge -> (face, corner a)
+        for (size_t f = 0; f < faces.size(); f++)
+            for (int q = 0; q < 3; q++) {
+                int a = faces[f].g[q], b = faces[f].g[(q + 1) % 3];
+                auto k = std::make_pair(std::min(a, b), std::max(a, b));
+                ec[k]++; owner[k] = {(int)f, q};
+            }
+        struct Cand { float d; int f, q; };
+        std::vector<Cand> cs;
+        for (auto& [k, n] : ec) {
+            if (n != 1) continue;
+            auto [f, q] = owner[k];
+            const Face& F = faces[f];
+            V3 A = P[F.g[q]][0], B = P[F.g[(q + 1) % 3]][0], C = P[F.g[(q + 2) % 3]][0];
+            if (len(A - r) > 0.025f || len(B - r) > 0.025f) continue;
+            // the root must lie on the open side of the edge (opposite the face's third corner)
+            V3 e = B - A, m = (A + B) * 0.5f, nrm = cross(e, C - A);
+            V3 out = cross(e, nrm);   // in the face plane, perpendicular to the edge
+            if (dot(out, C - m) > 0) out = out * -1.0f;
+            if (dot(out, r - m) <= 0) continue;
+            float dl = std::max(len(A - r), len(B - r));
+            cs.push_back({dl, f, q});
+        }
+        std::sort(cs.begin(), cs.end(), [](const Cand& x, const Cand& y) { return x.d < y.d; });
+        // 2026-10-12 opt-in (duplicate "edge_uv": "src", Studio fill_below_hairline / make_bun fill): the new root's corner
+        // takes the uv of the guide it was copied from (its colour / density texel) instead of the open edge's midpoint,
+        // whose texel at the growth-mesh border can be another colour (light / dark patches on the planted hair)
+        // "edge_uv": [u, v] = this uv on ALL corners of the new edge faces (Studio fills pass the build's typical hair
+        // texel: on atlased builds the source guide's corner can sit on any colour - a blue-grey slab on Ciri's crown)
+        bool haveSrcUv = fixUv != nullptr;
+        float su = fixUv ? fixUv[0] : 0, sv = fixUv ? fixUv[1] : 0;
+        if (!haveSrcUv && srcUv && ni < (int)src.size() && src[ni] >= 0)
+            for (auto& F : faces) {
+                for (int q = 0; q < 3 && !haveSrcUv; q++) if (F.g[q] == src[ni]) { su = F.uv[2 * q]; sv = F.uv[2 * q + 1]; haveSrcUv = true; }
+                if (haveSrcUv) break;
+            }
+        int added = 0;
+        std::set<int> used;
+        for (auto& c : cs) {
+            if (added >= 2) break;
+            const Face F = faces[c.f];
+            int a = F.g[c.q], b = F.g[(c.q + 1) % 3];
+            if (added == 1 && !(used.count(a) || used.count(b))) continue;   // second face: the neighbouring open edge only
+            Face n;
+            float u = 0.5f * (F.uv[2 * c.q] + F.uv[2 * ((c.q + 1) % 3)]), v = 0.5f * (F.uv[2 * c.q + 1] + F.uv[2 * ((c.q + 1) % 3) + 1]);
+            if (haveSrcUv) { u = su; v = sv; }
+            n.g = {b, a, ni};   // reversed edge = same winding as the neighbour
+            n.uv = {F.uv[2 * ((c.q + 1) % 3)], F.uv[2 * ((c.q + 1) % 3) + 1], F.uv[2 * c.q], F.uv[2 * c.q + 1], u, v};
+            if (fixUv) n.uv = {su, sv, su, sv, su, sv};
+            faces.push_back(n);
+            used.insert(a); used.insert(b);
+            added++;
+        }
+        if (added) return;
     }
     if (best < 0 || bd > 0.02f) return;
     Face F = faces[best];
@@ -255,6 +317,30 @@ float Groom::mirrorPlane() {
     return planeCache = bestC;
 }
 
+// explicit form of a mirror op for the current state: source side, numeric plane_x and the roots of the guides mirrored
+json Groom::resolveMirror(const json& op) {
+    buildHead();
+    json r = op;
+    r["type"] = "mirror";
+    r.erase("op");
+    if (!op.contains("source") || !op["source"].is_string()) r["source"] = "+x";
+    float px = op.contains("plane_x") && op["plane_x"].is_number() ? op["plane_x"].get<float>() : mirrorPlane();
+    r["plane_x"] = r4(px);
+    float sgn = r["source"].get<std::string>()[0] == '-' ? -1.0f : 1.0f;
+    float band = op.value("band", 0.015f);
+    json roots = json::array();
+    for (size_t i = 0; i < P.size(); i++) {
+        if (!alive[i]) continue;
+        V3 p = P[i][0];
+        if ((op.contains("ymin") && p.y < op["ymin"].get<float>()) || (op.contains("ymax") && p.y > op["ymax"].get<float>()) ||
+            (op.contains("zmin") && p.z < op["zmin"].get<float>()) || (op.contains("zmax") && p.z > op["zmax"].get<float>())) continue;
+        float off = (p.x - px) * sgn;
+        if (std::fabs(off) > band && off > 0) roots.push_back({r4(p.x), r4(p.y), r4(p.z)});
+    }
+    r["source_roots"] = roots;
+    return r;
+}
+
 void Groom::applyMirror(const json& op) {
     buildHead();
     float px = op.contains("plane_x") && op["plane_x"].is_number() ? op["plane_x"].get<float>() : mirrorPlane();
@@ -274,6 +360,12 @@ void Groom::applyMirror(const json& op) {
         float off = (P[i][0].x - px) * sgn;
         if (std::fabs(off) <= band || !inside(P[i][0])) continue;
         if (off > 0) { src.push_back((int)i); side[i] = 1; } else { gone.push_back((int)i); side[i] = -1; }
+    }
+    if (op.contains("source_roots") && op["source_roots"].is_array()) {   // explicit form (resolved at export): exactly these guides are the source
+        for (int i : src) side[i] = 0;
+        src.clear();
+        for (int i : match(op["source_roots"])) if (alive[i] && side[i] == 0) { src.push_back(i); side[i] = 1; }
+        gone.erase(std::remove_if(gone.begin(), gone.end(), [&](int i) { return side[i] > 0; }), gone.end());
     }
     std::map<int, int> copyOf;
     for (int i : src) {
@@ -319,9 +411,68 @@ void Groom::applyMirror(const json& op) {
     for (int i : gone) alive[i] = 0;
 }
 
+// 2026-10-12 opt-in (Studio rebuild_from_cards): one op replaces a set of guides by guides traced from the vanilla
+// cards. "delete": roots of the old guides removed (their faces go too, no hole fill); "guides": new guides (K points,
+// edit frame); "base": per new guide the root of an existing guide that lends its skinning / fur-frame offset; "uv":
+// per new guide its growth uv; "faces": growth triangles, each corner = index of a new guide or [x,y,z] root of a kept
+// old guide. Studio-only (the HairLab pipeline does not know this op; Studio exports write the guides / faces shown).
+void Groom::applyRebuild(const json& op) {
+    auto rootOf = [](const json& r) { return V3{r[0].get<float>(), r[1].get<float>(), r[2].get<float>()}; };
+    auto nearestAlive = [&](V3 q, float maxd) {
+        int best = -1; float bd = maxd;
+        for (size_t i = 0; i < P.size(); i++) if (alive[i]) { float d = len(P[i][0] - q); if (d <= bd) { bd = d; best = (int)i; } }
+        return best;
+    };
+    // bases first (they may be among the deleted guides)
+    std::vector<int> base;
+    for (auto& b : op.value("base", json::array())) { int g = nearestAlive(rootOf(b), 1.0f); base.push_back(g < 0 ? 0 : g); }
+    // uv of each kept guide (any face corner), before faces change
+    std::map<int, std::array<float, 2>> uvOf;
+    for (auto& f : faces) for (int c = 0; c < 3; c++) if (!uvOf.count(f.g[c])) uvOf[f.g[c]] = {f.uv[2 * c], f.uv[2 * c + 1]};
+    if (op.contains("delete") && !op["delete"].empty()) {
+        auto dead = match(op["delete"]);
+        for (int i : dead) alive[i] = 0;
+        faces.erase(std::remove_if(faces.begin(), faces.end(), [&](const Face& f) { return !alive[f.g[0]] || !alive[f.g[1]] || !alive[f.g[2]]; }), faces.end());
+    }
+    std::vector<int> newIx;
+    auto& gs = op["guides"];
+    for (size_t n = 0; n < gs.size(); n++) {
+        Guide G(K);
+        auto& pts = gs[n];
+        if ((int)pts.size() != K) { newIx.push_back(-1); continue; }
+        for (int k = 0; k < K; k++) G[k] = rootOf(pts[k]);
+        P.push_back(G);
+        alive.push_back(1);
+        src.push_back(n < base.size() ? base[n] : 0);
+        int ni = (int)P.size() - 1;
+        newIx.push_back(ni);
+        edited.insert(ni);
+        if (op.contains("uv") && n < op["uv"].size()) uvOf[ni] = {op["uv"][n][0].get<float>(), op["uv"][n][1].get<float>()};
+        else uvOf[ni] = {0.5f, 0.5f};
+    }
+    for (auto& fj : op.value("faces", json::array())) {
+        if (fj.size() != 3) continue;
+        Face f;
+        bool ok = true;
+        for (int c = 0; c < 3; c++) {
+            int g = -1;
+            if (fj[c].is_number_integer()) { int n = fj[c]; g = n >= 0 && n < (int)newIx.size() ? newIx[n] : -1; }
+            else if (fj[c].is_array()) g = nearestAlive(rootOf(fj[c]), tol);
+            if (g < 0) { ok = false; break; }
+            f.g[c] = g;
+            auto it = uvOf.find(g);
+            std::array<float, 2> uv = it != uvOf.end() ? it->second : std::array<float, 2>{0.5f, 0.5f};
+            f.uv[2 * c] = uv[0];
+            f.uv[2 * c + 1] = uv[1];
+        }
+        if (ok) faces.push_back(f); else unmatched++;
+    }
+}
+
 void Groom::applyOp(const json& op) {
     std::string kind = op.contains("type") ? op["type"].get<std::string>() : op.value("op", "");
     if (kind == "mirror") { applyMirror(op); return; }
+    if (kind == "rebuild") { applyRebuild(op); return; }
     if (kind == "duplicate") {
         if (!op.contains("root")) return;
         auto g = match(json::array({op["root"]}));
@@ -335,11 +486,29 @@ void Groom::applyOp(const json& op) {
         src.push_back(g[0]);
         int ni = (int)P.size() - 1;
         edited.insert(ni);
-        insertGuide(ni);
+        float fuv[2];
+        const json eu = op.contains("edge_uv") ? op["edge_uv"] : json();
+        bool fix = eu.is_array() && eu.size() == 2;
+        if (fix) { fuv[0] = eu[0].get<float>(); fuv[1] = eu[1].get<float>(); }
+        insertGuide(ni, op.value("edge_face", false), eu.is_string() && eu.get<std::string>() == "src", fix ? fuv : nullptr);
         return;
     }
     json roots = op.contains("roots") ? op["roots"] : (op.contains("root") ? json::array({op["root"]}) : json::array());
     if (roots.empty()) return;
+    if (kind == "delete_face") {
+        // 2026-10-12 opt-in (Studio trim_growth): remove the growth face of these 3 guide roots (no hair is interpolated
+        // there any more). Studio exports write the faces as shown; the HairLab pipeline ignores this op.
+        if (roots.size() != 3) return;
+        auto g3 = match(roots);
+        if (g3.size() != 3) return;
+        std::sort(g3.begin(), g3.end());
+        faces.erase(std::remove_if(faces.begin(), faces.end(), [&](const Face& f) {
+                        std::array<int, 3> q = f.g;
+                        std::sort(q.begin(), q.end());
+                        return q[0] == g3[0] && q[1] == g3[1] && q[2] == g3[2];
+                    }), faces.end());
+        return;
+    }
     auto g = match(roots);
     if (g.empty()) return;
     if (kind == "curl") {
@@ -397,6 +566,12 @@ void Groom::replay() {
     for (auto& o : preOps) applyOp(o);
     for (auto& o : ops) {
         std::string k = o.contains("type") ? o["type"].get<std::string>() : o.value("op", "");
+        if (k == "mirror" && (!o.contains("source") || !o["source"].is_string() || !o.contains("source_roots"))) {
+            json r = resolveMirror(o);       // explicit form so a shared pack replays identically (plane, side, source guide roots)
+            baked.push_back(r);
+            applyOp(r);
+            continue;
+        }
         if (k != "curl") baked.push_back(o);
         applyOp(o);
     }

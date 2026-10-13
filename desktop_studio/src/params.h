@@ -27,6 +27,8 @@ struct Budget {
     double ratio = 0;          // max(hairsClose / refHairsClose, cost / refCost)
     bool overLimit = false;
     std::string refName, msg;
+    std::vector<std::string> warns;   // path-tracing GPU cost warnings (never block export)
+    std::string costNote;             // info line: estimated path-traced GPU cost
 };
 
 struct Look {
@@ -46,6 +48,8 @@ struct Look {
     float cap(const std::string& path) const;
     void enforceCaps();
     json exportLook() const;      // {"set": {path: [type, value]}} - only values that differ from the build
+    // path-tracing cost warnings from faces, mean strand tortuosity (path / root-to-tip) and points per guide (see perf_budget.py)
+    void pathTrace(Budget& b, int numFaces, double tortuosity, double pts) const;
     Budget budget(int numFaces, double sumFaceDensity, int K) const;
 };
 

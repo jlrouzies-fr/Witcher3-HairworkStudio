@@ -86,6 +86,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
     <li><a href="#styles">Hairstyle switcher</a></li>
     <li><a href="#saving">Saving projects</a></li>
     <li><a href="#export">Exporting a mod</a></li>
+    <li><a href="#community">Community packs</a></li>
     <li><a href="#keys">Keyboard shortcuts</a></li>
     <li><a href="#trouble">Troubleshooting</a></li>
     <li><a href="#licence">Licence summary</a></li>
@@ -121,12 +122,12 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 <li><b>Game folder</b>: the Witcher 3 install folder (it contains <code>content\content0</code> and <code>mods</code>). The build scripts read the game's files from it and the Core check looks in its <code>mods</code> folder.</li>
 </ul>
 <p>Press <b>Save settings (restart to apply)</b>, then restart the Studio. Settings are stored in <code>%LOCALAPPDATA%\HairworkForAll\desktop_studio.json</code>. In a release the runtime DLL next to the exe is used; the SDK folder and DLL fields are only needed if you want a different HairWorks runtime.</p>
-<figure class="mid"><img src="img/settings.png" alt="Settings window" loading="lazy"><figcaption>Settings.</figcaption></figure>
-<figure><img src="img/about.png" alt="About box" loading="lazy"><figcaption>Help &rarr; About: version, links, and the NVIDIA HairWorks credit.</figcaption></figure>
+<figure class="mid"><img width="1500" height="885" src="img/settings.png" alt="Settings window" loading="lazy"><figcaption>Settings.</figcaption></figure>
+<figure><img width="1500" height="885" src="img/about.png" alt="About box" loading="lazy"><figcaption>Help &rarr; About: version, links, and the NVIDIA HairWorks credit.</figcaption></figure>
 
 <h2 id="picker">The character picker</h2>
 <p>The picker opens at start and whenever you press <kbd>Ctrl</kbd>+<kbd>O</kbd>, click <b>Characters</b>, or click the breadcrumb in the title bar. <kbd>Esc</kbd> returns to the editor. The page lists named characters and generic haircuts as portrait cards, each with a status badge (Approved, Final, Pick, In progress, On hold, Not started).</p>
-<figure><img src="img/picker.png" alt="Character picker" loading="lazy"><figcaption>The character picker with filters, portraits and the recent builds list.</figcaption></figure>
+<figure><img width="1500" height="885" src="img/picker.png" alt="Character picker" loading="lazy"><figcaption>The character picker with filters, portraits and the recent builds list.</figcaption></figure>
 <h3>Filters</h3>
 <ul>
 <li><b>Search</b> (<kbd>Ctrl</kbd>+<kbd>F</kbd>): by name or by any build name (for example <code>l124</code>).</li>
@@ -137,7 +138,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 </ul>
 <h3>Opening a character</h3>
 <p>Double-click a card (or hover it and click the arrow, or select it and press <kbd>Enter</kbd>) to open its best build: the approved one when there is one, else the current pick. A single click opens the <b>details drawer</b> on the right.</p>
-<figure><img src="img/picker_drawer.png" alt="Details drawer" loading="lazy"><figcaption>The drawer: hairstyles, <b>Open</b>, <b>Start from approved</b>, <b>Plain conversion</b> and the variants list.</figcaption></figure>
+<figure><img width="1500" height="885" src="img/picker_drawer.png" alt="Details drawer" loading="lazy"><figcaption>The drawer: hairstyles, <b>Open</b>, <b>Start from approved</b>, <b>Plain conversion</b> and the variants list.</figcaption></figure>
 <ul>
 <li><b>Open</b>: opens the best build (the approved build when there is one).</li>
 <li><b>Start from approved</b>: starts editing from the approved build. Disabled when the character has no approved build.</li>
@@ -149,7 +150,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 <p>The first time a build is opened the Studio prepares a data pack for it with the Python pipeline, which can take a while. Later opens are instant unless the build changed.</p>
 
 <h2 id="editor">The editor</h2>
-<figure><img src="img/editor.png" alt="Editor overview" loading="lazy"><figcaption>The editor: title bar, tool rail (left), viewport with floating bars, inspector (right), status bar.</figcaption></figure>
+<figure><img width="1500" height="885" src="img/editor.png" alt="Editor overview" loading="lazy"><figcaption>The editor: title bar, tool rail (left), viewport with floating bars, inspector (right), status bar.</figcaption></figure>
 <ul>
 <li><b>Title bar</b>: <b>File</b> / <b>Edit</b> / <b>View</b> / <b>Help</b> menus; the centre breadcrumb shows character, hairstyle, build, status badge and the number of edits (<i>unsaved</i> when not saved); <b>Characters</b>; Save; and the amber <b>Export mod</b> button (disabled above the budget limit).</li>
 <li><b>Tool rail</b> (left): Select, Move, Comb, Curl brush, Paint stiffness, Symmetry, Undo, Redo, Duplicate, Shorten, Delete; at the bottom Shortcuts (<kbd>F1</kbd>) and Settings. Every control has a tooltip with its shortcut.</li>
@@ -166,7 +167,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 </ul>
 <h3>The floating toolbar</h3>
 <p>Drag the toolbar by its grip dots (double-click the grip to put it back), the chevron collapses it. Amber means on.</p>
-<figure><img src="img/toolbar.png" alt="Viewport toolbar with a tooltip" loading="lazy"><figcaption>Top bar: show toggles, camera views, time of day, shadows. Hover any button for its tooltip and key.</figcaption></figure>
+<figure><img width="1500" height="885" src="img/toolbar.png" alt="Viewport toolbar with a tooltip" loading="lazy"><figcaption>Top bar: show toggles, camera views, time of day, shadows. Hover any button for its tooltip and key.</figcaption></figure>
 <div class="tablewrap"><table>
 <tr><th>Button</th><th>Key</th><th>What it shows</th></tr>
 <tr><td>Guides</td><td><kbd>G</kbd></td><td>Guide strand overlay (what you edit)</td></tr>
@@ -178,24 +179,26 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 <tr><td>Frame head</td><td><kbd>F</kbd></td><td>Recentre the camera</td></tr>
 </table></div>
 <p>The head and body mesh (<kbd>M</kbd>) and the turntable (<kbd>O</kbd>) are in the <b>View</b> menu.</p>
+<p><b>View &rarr; Scalp highlight (green)</b> paints the head and body skin flat, unlit pure green while the hair stays normal: any green you still see through the hair is bare scalp, so thin spots and parting gaps are easy to find. Switch it off to go back to the normal look.</p>
 <h3>Playback bar and motion</h3>
 <p>The bottom bar has play / pause (<kbd>Space</kbd>), stop and reset to rest (<kbd>Esc</kbd>; when something is selected the first <kbd>Esc</kbd> clears the selection), step one frame (<kbd>.</kbd>), the motion preset, speed, amount, and wind (<kbd>J</kbd>) with its strength. <kbd>R</kbd> re-teleports the simulation if the hair got tangled.</p>
-<figure class="mid"><img src="img/motion_popup.png" alt="Motion preset menu" loading="lazy"><figcaption>Motion presets: idle, turn head, nod, walk bob, run, spin body, wind, rest.</figcaption></figure>
+<figure class="mid"><img width="1500" height="885" src="img/motion_popup.png" alt="Motion preset menu" loading="lazy"><figcaption>Motion presets: idle, turn head, nod, walk bob, run, spin body, wind, rest.</figcaption></figure>
 <p>Motions move the head, neck and body bones, so inertia, sag and swing show as in the game.</p>
 <h3>Edit pose</h3>
 <p>Editing tools (Move, Comb, Curl, Paint) pause the motion and edit the hair at the bind pose, shown by the <b>Edit pose</b> chip at the top left (<kbd>Tab</kbd> toggles it, <b>Resume</b> restores the motion). The Select tool keeps the motion running. <b>Edit while moving</b> (Physics &amp; motion) lets you edit the posed, moving hair; the edits are converted back to rest space.</p>
-<figure><img src="img/curl_editpose.png" alt="Edit pose with the Curl brush and guides" loading="lazy"><figcaption>Edit pose with the guide overlay and the Curl brush.</figcaption></figure>
+<figure><img width="1500" height="885" src="img/curl_editpose.png" alt="Edit pose with the Curl brush and guides" loading="lazy"><figcaption>Edit pose with the guide overlay and the Curl brush.</figcaption></figure>
 
 <h2 id="tools">Selecting and editing guides</h2>
 <p>Hair is edited through its <b>guides</b>, the strands the simulation drives; the thousands of rendered hairs follow them.</p>
 <div class="tablewrap"><table>
 <tr><th>Tool</th><th>Key</th><th>How it works</th></tr>
-<tr><td>Select</td><td><kbd>Q</kbd></td><td>Click a guide; <kbd>Ctrl</kbd>+click toggles, <kbd>Shift</kbd>+click adds; drag on empty space for a box selection. <kbd>Esc</kbd> clears.</td></tr>
-<tr><td>Move</td><td><kbd>W</kbd></td><td>Drag the selected guides (a single guide under the cursor is picked automatically). The move falloff is set in Edit settings.</td></tr>
+<tr><td>Select</td><td><kbd>Q</kbd></td><td>Click a guide, anywhere along its strand (not only on its points); <kbd>Ctrl</kbd>+click toggles, <kbd>Shift</kbd>+click adds; drag on empty space for a box selection. <kbd>Esc</kbd> clears.</td></tr>
+<tr><td>Move</td><td><kbd>W</kbd></td><td>Drag the selected guides (a single guide under the cursor is picked automatically). With exactly one guide selected, dragging one of its points moves only that point; the neighbouring points follow softly. The move falloff is set in Edit settings.</td></tr>
 <tr><td>Comb</td><td><kbd>E</kbd></td><td>Drag over the hair to drag the guides under the brush; strength falls off with distance from the cursor.</td></tr>
 <tr><td>Curl brush</td><td><kbd>T</kbd></td><td>Paint over guides; on release the curl settings are applied to everything you touched.</td></tr>
 <tr><td>Paint stiffness</td><td><kbd>P</kbd></td><td>Paint stiffness values on guides (see <a href="#physics">Stiffness map</a>).</td></tr>
 </table></div>
+<p>The selected guide is drawn bold blue with a yellow marker on each control point, so you can see what you are about to move. <b>View &rarr; Scalp highlight (green)</b> paints the visible scalp skin green, to check that roots and strands sit on the scalp.</p>
 <p>Commands on the current selection:</p>
 <ul>
 <li><b>Duplicate</b> (<kbd>D</kbd>): adds a copy of each selected guide beside it (distance = <i>Dup step mm</i>). Useful to fill bald spots and thicken a lock.</li>
@@ -207,7 +210,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 <p><b>Edit settings</b> (inspector): <i>move falloff</i> (carry = the whole strand moves; linear = root fixed, tip moves fully; tip = mostly the lower part), <i>From CV</i> (control vertices before this one stay fixed), <i>Comb strength</i>, <i>Keep %</i>, <i>Dup step mm</i>. The brush radius (<i>Brush px</i>) is in the Stiffness map section and is shared by comb, curl and paint.</p>
 
 <h2 id="curls">Curl tools and symmetry</h2>
-<figure class="narrow"><img src="img/curl_tools.png" alt="Curl tools section" loading="lazy"><figcaption>Curl tools.</figcaption></figure>
+<figure class="narrow"><img width="620" height="1512" src="img/curl_tools.png" alt="Curl tools section" loading="lazy"><figcaption>Curl tools.</figcaption></figure>
 <p>Curl tools reshape selected guides while keeping their segment lengths. Three modes:</p>
 <ul>
 <li><b>ringlet</b>: a helix around the strand (vertical curls). Radius, turns, start, ramp, handedness, jitter.</li>
@@ -215,7 +218,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 <li><b>wave</b>: a planar sine wave or a zigzag.</li>
 </ul>
 <p>A warning shows when a curl gets fewer than 6 control vertices per turn: lower the turns or start earlier. <b>Curl selection (C)</b> applies it; <b>Hold curls in the simulation</b> raises the stiffness values and flattens the curves so HairWorks keeps the curled rest shape instead of letting it straighten under gravity.</p>
-<figure class="narrow"><img src="img/symmetry.png" alt="Symmetry section" loading="lazy"><figcaption>Symmetry.</figcaption></figure>
+<figure class="narrow"><img width="620" height="1512" src="img/symmetry.png" alt="Symmetry section" loading="lazy"><figcaption>Symmetry.</figcaption></figure>
 <h3>Symmetry</h3>
 <ul>
 <li><b>Live symmetry</b> (<kbd>X</kbd>, or the rail button): every move, comb, curl or paint stroke is mirrored onto the partner guides on the other side (nearest mirrored root within 15 mm; ringlets flip handedness).</li>
@@ -223,7 +226,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 </ul>
 
 <h2 id="look">Material, look and colour</h2>
-<figure class="narrow"><img src="img/material.png" alt="Material section" loading="lazy"><figcaption>Material presets.</figcaption></figure>
+<figure class="narrow"><img width="620" height="1512" src="img/material.png" alt="Material section" loading="lazy"><figcaption>Material presets.</figcaption></figure>
 <h3>Material presets</h3>
 <p>A preset sets the strand shading and shape (width, clumping, waves, specular, glint, diffuse). Density and the density map always stay the character's. The tiles shown first are the character's current look, then the preset families:</p>
 <div class="tablewrap"><table>
@@ -240,18 +243,18 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 </table></div>
 <p><b>Keep the character's colours</b> (on by default) keeps root, tip and specular colour and the texture brightness when you switch presets. <b>Save preset</b> stores your current values as a custom preset (in the <code>presets</code> folder of the Studio) that then appears as a tile.</p>
 <h3>Look</h3>
-<figure class="narrow"><img src="img/look.png" alt="Look section" loading="lazy"><figcaption>Look: volume, clump / wave and colour sliders.</figcaption></figure>
+<figure class="narrow"><img width="620" height="1512" src="img/look.png" alt="Look section" loading="lazy"><figcaption>Look: volume, clump / wave and colour sliders.</figcaption></figure>
 <p>The Look section lists the individual values grouped by Volume, Clump / wave and Colour (root and tip colour and their weight, specular colours and powers, glint, shadow, texture brightness). Colour rows edit the colour. The section summary shows how many values differ from the build; only changed values are exported.</p>
 
 <h2 id="physics">Physics, stiffness and motion</h2>
-<figure class="narrow"><img src="img/physics.png" alt="Physics and motion section" loading="lazy"><figcaption>Physics &amp; motion sliders (the curve editor is below them).</figcaption></figure>
+<figure class="narrow"><img width="620" height="1512" src="img/physics.png" alt="Physics and motion section" loading="lazy"><figcaption>Physics &amp; motion sliders (the curve editor is below them).</figcaption></figure>
 <ul>
 <li><b>Physics &amp; motion</b>: stiffness, root stiffness, tip stiffness, bend stiffness, stiffness strength, stiffness damping, interaction stiffness, damping, mass scale, inertia limit, back stop radius, wind scaler and wind noise. Below them a <b>curve editor</b> (tabs Stiffness, Bend, Strength, Damping) edits each curve from root to tip.</li>
 <li><b>Simulate</b>: off shows the rest pose that you edit. <b>Close-up LOD</b> forces the close-up (dialogue) hair count at any distance, the worst case for the budget. <b>Edit while moving</b>: see <a href="#camera">Edit pose</a>.</li>
 <li><b>W3 bone stiffness</b> (only on hair that uses the game's extra bone-distance stiffness): the HairWorks 1.2.1 runtime does not have this game-only block, so the Studio emulates it for the preview so curls hold as they do in the game. 1 (default) = emulation on, 0 = raw runtime. Preview only; it is not exported.</li>
 </ul>
 <h3>Stiffness map</h3>
-<figure class="narrow"><img src="img/stiffness_map.png" alt="Stiffness map section" loading="lazy"><figcaption>Stiffness map.</figcaption></figure>
+<figure class="narrow"><img width="620" height="1512" src="img/stiffness_map.png" alt="Stiffness map section" loading="lazy"><figcaption>Stiffness map.</figcaption></figure>
 <p>Paint stiffness by region: choose what the Paint tool writes (stiffness + root stiffness, stiffness only, root stiffness only), the values, and the brush size, then paint on the hair with the <b>Paint</b> tool (<kbd>P</kbd>). Low values make hair floppy there, high values stiff. <b>Fill all with value</b> and <b>Clear map</b> are there too. The map is exported only when painted.</p>
 <div class="note"><b>Not verified in game yet.</b> Painted stiffness maps are previewed live in the Studio, but a first in-game test should confirm the game reads the texture.</div>
 
@@ -264,13 +267,13 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 
 <h2 id="light">Lighting, time of day, shadows</h2>
 <p>The Studio approximates the game's path-traced hair in real time: sun shadows, hair self-shadowing, sky light and bounce, soft occlusion. The top bar's <b>time of day</b> dropdown (<kbd>L</kbd> cycles) offers: HairLab capture rig (default, fitted to in-game frames: use it to compare with the game), Noon sun, Morning, Dawn, Dusk, Overcast, Moonlight, Torch / interior, Night. Shadows are toggled with <kbd>K</kbd>.</p>
-<figure class="mid"><img src="img/tod_popup.png" alt="Time of day popup" loading="lazy"><figcaption>Time of day popup with <b>Sky backdrop</b> and <b>Advanced...</b>.</figcaption></figure>
+<figure class="mid"><img width="1500" height="885" src="img/tod_popup.png" alt="Time of day popup" loading="lazy"><figcaption>Time of day popup with <b>Sky backdrop</b> and <b>Advanced...</b>.</figcaption></figure>
 <p><b>Advanced...</b> (or <b>View &rarr; Light settings</b>) opens the floating <b>Light</b> window: lighting quality (Fast: sun shadow only; Balanced: 8 sky-occlusion maps; High: 16, default), hair view (debug visualisations, <kbd>F6</kbd> cycles), time of day, a sun azimuth dial and elevation arc (drag the amber dot), shadows, sky backdrop and the individual intensity and calibration sliders. In the viewport, <kbd>Ctrl</kbd> + right drag rotates the sun live.</p>
-<figure><img src="img/light_window.png" alt="Light window" loading="lazy"><figcaption>The Light window and the sun gizmo.</figcaption></figure>
+<figure><img width="1500" height="885" src="img/light_window.png" alt="Light window" loading="lazy"><figcaption>The Light window and the sun gizmo.</figcaption></figure>
 
 <h2 id="styles">Hairstyle switcher</h2>
 <p>Some characters have several hairstyles (for example Geralt, with eight; Guillaume has just Default). In the editor the hairstyle is shown in the breadcrumb and in the inspector's <b>Hairstyle</b> row. Click it, or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd>, to open the dropdown.</p>
-<figure class="mid"><img src="img/style_dropdown.png" alt="Hairstyle dropdown" loading="lazy"><figcaption>The hairstyle dropdown, here in the details drawer of the picker (Geralt). In the editor the same list opens from the breadcrumb.</figcaption></figure>
+<figure class="mid"><img width="1500" height="885" src="img/style_dropdown.png" alt="Hairstyle dropdown" loading="lazy"><figcaption>The hairstyle dropdown, here in the details drawer of the picker (Geralt). In the editor the same list opens from the breadcrumb.</figcaption></figure>
 <ul>
 <li>Choosing a style that has a build opens its best build. If you have unsaved edits the Studio first asks <b>Save</b>, <b>Discard</b> or <b>Cancel</b>.</li>
 <li>A style with no build yet shows a small panel in the inspector instead (<i>Start plain conversion</i> when possible, else <i>Not started yet</i>); the loaded build stays untouched.</li>
@@ -282,7 +285,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 
 <h2 id="export">Exporting a mod</h2>
 <p>Open the <b>Export</b> section from the inspector, or click the amber <b>Export mod</b> button.</p>
-<figure class="narrow"><img src="img/export.png" alt="Export section" loading="lazy"><figcaption>Export section: mod folder name, tag, the two export buttons, the Core status.</figcaption></figure>
+<figure class="narrow"><img width="620" height="1512" src="img/export.png" alt="Export section" loading="lazy"><figcaption>Export section: mod folder name, tag, the two export buttons, the Core status.</figcaption></figure>
 <ul>
 <li><b>mod folder</b>: the game mod folder name (starts with <code>mod</code>, for example <code>modGuillaumeHairworks</code>). <b>tag</b>: names this edit set in the file names (for example <code>desk1</code>).</li>
 <li><b>Export edits + mod</b> (the <i>dev export</i>): for your own testing. It has no Core check.</li>
@@ -305,6 +308,30 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 </ol>
 <p>The Studio checks the Core every few seconds in <code>&lt;game&gt;\mods\mod0000HairworkForAllCore</code> and shows its state in the status bar and in the Export section. A release export still works without the Core installed; only testing it in the game needs it.</p>
 <div class="note"><b>Budget:</b> export is disabled above 120 % of the approved build. See <a href="#budget">Budget and LOD</a>.</div>
+
+<h2 id="community">Community packs</h2>
+<p>The title bar has three big buttons: the green <b>Open User Guide</b> (opens this guide in your default web browser), the blue <b>Community</b> (opens the Community window) and the amber <b>Export mod</b>.</p>
+<figure><img width="1100" height="87" src="img/titlebar.png" alt="Title bar buttons" loading="lazy"><figcaption>Title bar: <b>Open User Guide</b> (green), <b>Community</b> (blue), <b>Export mod</b> (orange).</figcaption></figure>
+<p>A <b>pack</b> is a hair edit you can share: the list of edit operations made on a character, never a game file. Rules: packs contain edit operations only, never game files or NVIDIA SDK files. Browsing and applying packs needs no account; publishing needs a GitHub account.</p>
+<h3>Source and Browse</h3>
+<p>The source chip with the gear (top right) chooses where packs come from: a <b>Local folder</b> or a <b>GitHub repo</b> (with a channel, for example <code>main</code>). <b>Refresh</b> reloads the list. On the <b>Browse</b> tab, use the search box (name, author, tag or character) and the character chips to filter. Each card shows a preview, version, author, tags and a description, and one main button:</p>
+<figure><img width="1200" height="890" src="img/community_browse.png" alt="Community window, Browse tab" loading="lazy"><figcaption>Community &rarr; Browse.</figcaption></figure>
+<ul>
+<li><b>Install</b> downloads the pack (read-only copy). <b>Apply to groom</b> applies it to the loaded character. <b>Update</b> appears when a newer version exists.</li>
+<li>The <b>...</b> menu: <b>Reinstall</b>, <b>Create working copy</b> (an editable copy in My packs) and <b>Pin version</b> (stay on this version).</li>
+<li>Applying is one undo step: <kbd>Ctrl</kbd>+<kbd>Z</kbd> removes the whole pack.</li>
+</ul>
+<h3>My packs</h3>
+<figure><img width="1200" height="890" src="img/community_mine.png" alt="Community window, My packs tab" loading="lazy"><figcaption>Community &rarr; My packs.</figcaption></figure>
+<ul>
+<li><b>Export current project as pack</b> (<b>New pack</b>): fill in the form to turn your edits on the loaded project into a pack.</li>
+<li>Each of your packs is a card with a preview: <b>Apply to groom</b>; <b>Sync with upstream</b> (merges changes of the original pack; on a conflict a dialog asks <b>keep mine</b>, <b>take theirs</b> or <b>keep both</b>); <b>Update from project</b> (re-exports the current project into the pack and refreshes the preview); <b>Open folder</b>; <b>Publish...</b>.</li>
+</ul>
+<h3>GitHub and publishing</h3>
+<figure><img width="1200" height="890" src="img/community_github.png" alt="Community window, GitHub tab" loading="lazy"><figcaption>Community &rarr; GitHub: CLI status, pack to publish, pull requests.</figcaption></figure>
+<p>Publishing uses the GitHub CLI. The <b>GitHub</b> tab shows its state: <b>Install GitHub CLI</b> if missing, <b>Sign in</b> if not signed in, then choose the pack and press <b>Publish</b>. Publish opens a <b>pull request</b> on the community repo (set it in the source settings); nothing is sent until you press it. The <b>Pull requests</b> list shows the status of what you published.</p>
+<h3>What a pack carries</h3>
+<p>Every guide edit: move (including single point moves), comb, curl, shorten, duplicate, delete, mirrors (stored as resolved edits), deleted faces (found again by base-mesh index, with a check that the base mesh matches), and a <b>rebuild from cards</b> (stored as parameters, not as geometry).</p>
 
 <h2 id="keys">Keyboard shortcuts</h2>
 <p>Press <kbd>F1</kbd> in the Studio to see this list. Keys that need no modifier are ignored while you type in a text field.</p>

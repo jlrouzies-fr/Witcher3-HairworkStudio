@@ -1,9 +1,11 @@
 // Desktop Groom Studio - application state shared by the UI, the editor and the headless agent runner.
 // Our own code (MIT).
 #pragma once
+// the one community pack repo the Studio reads from and publishes to (not user-configurable)
+inline constexpr const char* kCommunityRepo = "jlrouzies-fr/Witcher3-HairworkCommunity";
 #include <windows.h>
 
-#define GSD_VERSION "0.1.0"
+#define GSD_VERSION "0.2.0"
 
 #include <atomic>
 #include <functional>
@@ -22,10 +24,15 @@
 #include "materials.h"
 #include "motion.h"
 #include "params.h"
+#include "pt_estimate.h"
 
 struct Settings {
     std::string repo, sdkDir, dll, python = "py", gameDir;   // gameDir: The Witcher 3 folder (content\content0 + mods), exported as HWFA_GAME to the Python tools
     bool bundled = false;   // tools bundled next to the exe (release folder): that folder is the repo
+    std::string commRepo = kCommunityRepo, commChannel = "main", commLocal;   // Community window: GitHub owner/name + channel, or a local checkout
+    int commSource = 1;   // 0 local folder, 1 GitHub (default)
+    std::string commAuthor;            // GitHub login used as pack author (filled from gh api user)
+    std::set<std::string> commPinned;  // installed packs (author__name) pinned to their version: no update prompts
     std::string file;   // %LOCALAPPDATA%\HairworkForAll\desktop_studio.json
     std::vector<std::string> recent;   // recently opened builds ("cfg") and projects (".groomproj.json" paths)
     void addRecent(const std::string& r);
@@ -35,7 +42,9 @@ struct Settings {
 };
 
 struct Args {
-    std::string cfg, screenshot, view = "back", motion, sdk, dll, agent, project, uiTest;
+    std::string cfg, screenshot, view = "back", motion, sdk, dll, agent, project, uiTest, out;
+    bool serve = false;
+    std::string ptEstimate, ptOpts;   // --pt-estimate <hwpack.json> [--pt-opts k=v,..]: print the path tracing cost metric and exit
     int frames = 240;
     bool exitAfter = false, guides = false, closeLod = false, noSplash = false;
 };
@@ -131,6 +140,7 @@ struct App {
     bool dragging = false, boxSel = false;
     float mx0 = 0, my0 = 0, mxl = 0, myl = 0;
     size_t strokeOps0 = 0;
+    int dragK = -1;   // Move tool: CV dragged alone (-1 = whole guide)
     std::map<int, V3> combOff;
     std::set<int> strokeSet;
     int grpId = 0;
@@ -161,10 +171,17 @@ struct App {
     // stats
     HairStats st;
     Budget bud;
+    PtWorker ptWorker;
+    PtCalib ptCalib;
+    bool ptCalibLoaded = false;
+    bool ptLoadSim = false;   // artificial GPU load proportional to the estimate (off by default)
+    double ptMs = 0;          // current estimate (ms/frame), 0 = none yet
     double sumFaceDensity = 0;
     float fps = 0;
     bool aboutOpen = false, helpOpen = false;
     std::string pendingShot;   // saved after the UI is drawn (F12)
+    std::string pendingPreview;   // community export: viewport (no UI) saved as <=300KB jpg right after drawScene; previewOk 1/0 when done
+    int previewOk = -1;
     // splash (startup): the rebuilt logo, ~1.75 s with a fade; click / key skips; off in agent / ui-test / --no-splash
     bool splashOn = false;
     double splashT0 = -1;
@@ -173,6 +190,24 @@ struct App {
     void drawSplash();
     DirectX::XMFLOAT4X4 viewM, projM;
     bool camOverride = false, maskPass = false;
+    // View > Vanilla reference: the in-game vanilla stills of the pack's HairLab shots (pack.shots[k]["ref"])
+    bool vanillaOpen = false;
+    bool communityOpen = false;   // View > Community
+    bool vanillaHair = false;   // View > Vanilla hair (cards): the game's hair cards instead of the HairWorks groom
+    // 2026-10-12 opt-in (serve "keep_cards"): hair-card mesh index -> per-triangle 1 = this vanilla card stays drawn WITH
+    // the groom (preview of the pipeline's split_cards: cards for one element, strands for the rest). Empty = off.
+    std::map<int, std::vector<uint8_t>> keepCards;
+    std::string vanillaShot;
+    struct RefTex { ID3D11ShaderResourceView* srv = nullptr; int w = 0, h = 0; };
+    std::map<std::string, RefTex> vanillaTex;   // shot id -> still, loaded on first view, freed when another build opens
+    void drawVanillaRef();
+    bool scalpOverlay = false;   // View > Scalp highlight / agent "overlay":"scalp": head scalp green, other skin grey
+    // scalp area of the head mesh from its painted diffuse (per vertex 0/1): the scalp overlay paints only it green,
+    // other skin grey (agent.cpp computeHeadScalp)
+    std::map<int, std::vector<float>> headScalp;
+    void computeHeadScalp();
+    bool scalpMesh(std::vector<V3>& pos, std::vector<float>& flag, std::vector<std::array<int, 3>>& tris) const;   // posed head mesh + scalp flags (hairline tools)
+    bool skinRay(const DirectX::XMFLOAT3& o, const DirectX::XMFLOAT3& d, DirectX::XMFLOAT3& hit, int& mesh) const;   // nearest posed skin triangle hit
     // viewport toolbar (toolbar.cpp)
     bool lightOpen = false;   // Light section open: the viewport shows the light-direction gizmo
     // sky-occlusion maps: refreshed round-robin (kAoPerFrame a frame) in the viewport, all at once for shots / changes
@@ -288,9 +323,14 @@ struct App {
     void ui();
     // headless (agent.cpp)
     int runAgent(const std::string& scriptPath);
+    json agentStep(const json& stp, const std::string& out, int& rc);
+    int finishAgent(json& report, const std::string& out, int rc);
+    int runServe(const std::string& out);   // serve.cpp: live headless session, JSON lines on stdin / stdout (MCP bridge)
+    json serveCommand(const json& c, const std::string& out, bool& quit);
     bool renderShot(const json& shot, const std::string& outPng, int size);
 };
 
+void drawCommunity(App& a, bool& open);   // community.cpp
 void logf(const char* fmt, ...);
 const std::vector<std::string>& logLines();
 int runCapture(const std::string& cmd, const std::string& cwd, std::string& out);

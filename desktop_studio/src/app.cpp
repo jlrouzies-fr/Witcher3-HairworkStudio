@@ -33,7 +33,7 @@ static std::ofstream g_logFile;
 static bool g_console = false;
 
 void openLog(const std::string& path, bool console) {
-    g_logFile.open(path);
+    g_logFile.open(path, path.size() > 9 && path.substr(path.size() - 9) == "serve.log" ? std::ios::app : std::ios::out);   // serve: keep the log of a crashed session
     g_console = console;
 }
 
@@ -122,6 +122,9 @@ void Settings::load() {
             python = j.value("python", "py");
             fileRepo = j.value("repo", "");
             gameDir = j.value("game_dir", "");
+            commRepo = kCommunityRepo; /* hardcoded: the official community repo only */ commChannel = j.value("community_channel", "main"); commLocal = j.value("community_local", ""); commSource = j.value("community_source", 1);
+            commAuthor = j.value("community_author", "");
+            if (j.contains("community_pinned") && j["community_pinned"].is_array()) for (auto& r : j["community_pinned"]) if (r.is_string()) commPinned.insert(r.get<std::string>());
             if (j.contains("recent") && j["recent"].is_array()) for (auto& r : j["recent"]) recent.push_back(r);
         } catch (...) {}
     }
@@ -176,7 +179,7 @@ void Settings::addRecent(const std::string& r) {
 
 void Settings::save() const {
     fs::create_directories(fs::path(file).parent_path());
-    json j = {{"sdk_dir", sdkDir}, {"dll", dll}, {"python", python == "\"" + exeDir() + "\\python\\python.exe\"" ? std::string() : python}, {"repo", bundled ? std::string() : repo}, {"game_dir", gameDir}, {"recent", recent}};
+    json j = {{"sdk_dir", sdkDir}, {"dll", dll}, {"python", python == "\"" + exeDir() + "\\python\\python.exe\"" ? std::string() : python}, {"repo", bundled ? std::string() : repo}, {"game_dir", gameDir}, {"community_repo", commRepo}, {"community_channel", commChannel}, {"community_local", commLocal}, {"community_source", commSource}, {"community_author", commAuthor}, {"community_pinned", commPinned}, {"recent", recent}};
     std::ofstream(file) << j.dump(2);
 }
 
@@ -294,10 +297,14 @@ bool App::openConfig(const std::string& cfg, bool rebuildPrep) {
     hw.setDensityTexture(densitySrv);
     for (auto& kv : meshTex) safeRelease(kv.second);
     meshTex.clear();
+    for (auto& kv : vanillaTex) safeRelease(kv.second.srv);
+    vanillaTex.clear();
+    keepCards.clear();   // per-mesh triangle masks of the previous pack
     for (auto& m : pack.meshes) {
         if (!m.texFile.empty() && !meshTex.count(m.texFile)) meshTex[m.texFile] = gfx.loadTexture(dir + "\\" + m.texFile, true);
         if (!m.nrmFile.empty() && !meshTex.count(m.nrmFile)) meshTex[m.nrmFile] = gfx.loadTexture(dir + "\\" + m.nrmFile, false);
     }
+    computeHeadScalp();
     safeRelease(colorSrv);
     if (!pack.colorFile.empty()) colorSrv = gfx.loadTexture(dir + "\\" + pack.colorFile, true);
     srcDensity.clear();
@@ -438,6 +445,35 @@ void App::computeBudget() {
         sumFaceDensity += (it != orig.end() && !pack.densityFace.empty()) ? pack.densityFace[it->second] : mean;
     }
     bud = look.budget((int)groom.faces.size(), sumFaceDensity, pack.K);
+    double tsum = 0, psum = 0;
+    int tn = 0;
+    for (size_t i = 0; i < groom.P.size(); i++) {
+        if (i < groom.alive.size() && !groom.alive[i]) continue;
+        const Guide& g = groom.P[i];
+        if (g.size() < 2) continue;
+        double len = 0;
+        for (size_t k = 1; k < g.size(); k++) { V3 e = g[k] - g[k - 1]; len += std::sqrt(e.x * e.x + e.y * e.y + e.z * e.z); }
+        V3 r = g.back() - g.front();
+        tsum += len / std::max(std::sqrt(double(r.x * r.x + r.y * r.y + r.z * r.z)), 1e-9);
+        psum += (double)g.size();
+        tn++;
+    }
+    look.pathTrace(bud, (int)groom.faces.size(), tn ? tsum / tn : 1.0, tn ? psum / tn : 0.0);
+    if (!ptCalibLoaded) { ptCalib = ptLoadCalib(set.repo); ptCalibLoaded = true; }
+    PtInput pi;
+    pi.guides.resize(groom.P.size());
+    for (size_t i = 0; i < groom.P.size(); i++)
+        if (!(i < groom.alive.size() && !groom.alive[i])) pi.guides[i] = groom.P[i];
+    for (auto& f : groom.faces) pi.faces.push_back(f.g);
+    pi.p.clump = look.f("physicalMaterials.clumping.clumpScale", 1.0f);
+    pi.p.clumpNoise = look.f("physicalMaterials.clumping.clumpNoise", 0.0f);
+    pi.p.width = look.f("physicalMaterials.strandWidth.width", 1.0f);
+    pi.p.wRoot = look.f("physicalMaterials.strandWidth.widthRootScale", 1.0f);
+    pi.p.wTip = look.f("physicalMaterials.strandWidth.widthTipScale", 1.0f);
+    pi.p.waveScale = look.f("physicalMaterials.waveness.waveScale", 0.0f);
+    pi.p.waveStrand = look.f("physicalMaterials.waveness.waveStrand", 0.0f);
+    pi.p.waveFreq = look.f("physicalMaterials.waveness.waveFreq", 3.0f);
+    ptWorker.request(std::move(pi));
 }
 
 void App::editsChanged() {
@@ -495,6 +531,13 @@ void App::step(double dt) {
 }
 
 // ================================================================================================ rendering
+// skin classes of the preview shader (head, body; not eyes / teeth / beard cards): what "Scalp highlight" paints green
+static bool isSkinMesh(const Mesh& m) {
+    auto has = [&](const char* k) { return m.texFile.find(k) != std::string::npos; };
+    if (m.alphaTest || has("teeth") || has("tongue") || has("mouth") || has("eye")) return false;
+    return m.kind == "head" || m.name.rfind("g_", 0) == 0 || has("man_average") || has("woman_average");
+}
+
 static void meshVerts(const App& a, std::vector<GVertex>& out, bool textured, int only = -1) {
     out.clear();
     const DeskPack& pk = a.pack;
@@ -507,8 +550,18 @@ static void meshVerts(const App& a, std::vector<GVertex>& out, bool textured, in
         if (only >= 0 && int(mi) != only) continue;
         // alpha-tested beard cards: drawn one by one (own blend / depth shader), never in the merged lists or the mask
         // pass, and hidden when the beard fur replaces them or the beard is switched off
-        if (m.alphaTest && (only < 0 || a.maskPass || a.beardOn || !a.showBeard)) continue;
-        bool tex = !m.texFile.empty() && m.uv.size() == m.v.size() && !a.maskPass;
+        if (m.alphaTest && (only < 0 || a.maskPass || (m.kind == "hair_cards" ? !a.vanillaHair && !a.keepCards.count(int(mi))
+                                                                              : (a.beardOn || !a.showBeard)))) continue;
+        // kept vanilla cards (keep_cards) next to the groom: only their triangles; the full set when the cards view is on
+        const std::vector<uint8_t>* keepT = nullptr;
+        if (m.kind == "hair_cards" && !a.vanillaHair) {
+            auto kc = a.keepCards.find(int(mi));
+            if (kc != a.keepCards.end()) keepT = &kc->second;
+        }
+        bool scalp = a.scalpOverlay && !a.maskPass && isSkinMesh(m);
+        // scalp highlight on a textured head: drawn textured so the shader follows the painted hairline per pixel
+        bool scalpTex = scalp && a.headScalp.count(int(mi)) && !m.texFile.empty() && m.uv.size() == m.v.size();
+        bool tex = !m.texFile.empty() && m.uv.size() == m.v.size() && !a.maskPass && (!scalp || scalpTex);
         if (tex != textured) continue;
         auto itN = m.nrmFile.empty() ? a.meshTex.end() : a.meshTex.find(m.nrmFile);
         float texMode = (itN != a.meshTex.end() && itN->second) ? 3.0f : 2.0f;   // 3 = with normal map
@@ -518,7 +571,7 @@ static void meshVerts(const App& a, std::vector<GVertex>& out, bool textured, in
         float cls = m.alphaTest ? 4.0f : has("teeth") || has("tongue") || has("mouth") ? 3.0f : has("eye") ? 2.0f
                   : (m.kind == "head" || m.name.rfind("g_", 0) == 0 || has("man_average") || has("woman_average")) ? 1.0f : 0.0f;
         // skin / cloth albedo (linear) close to the HairLab captures' average
-        XMFLOAT4 col = a.maskPass ? XMFLOAT4(0, 0, 0, 1) : m.kind == "head" ? XMFLOAT4(0.20f, 0.11f, 0.08f, 1) : XMFLOAT4(0.035f, 0.034f, 0.033f, 1);
+        XMFLOAT4 col = scalp ? XMFLOAT4(0, 1, 0, 5) : a.maskPass ? XMFLOAT4(0, 0, 0, 1) : m.kind == "head" ? XMFLOAT4(0.20f, 0.11f, 0.08f, 1) : XMFLOAT4(0.035f, 0.034f, 0.033f, 1);
         std::vector<XMFLOAT3> P(m.v.size());
         for (size_t i = 0; i < m.v.size(); i++) {
             XMVECTOR p = XMVectorSet(m.v[i].x, m.v[i].y, m.v[i].z, 1);
@@ -534,12 +587,21 @@ static void meshVerts(const App& a, std::vector<GVertex>& out, bool textured, in
             XMVECTOR fn = XMVector3Cross(XMVectorSubtract(a1, a0), XMVectorSubtract(a2, a0));
             for (int c = 0; c < 3; c++) N[t[c]] = XMVectorAdd(N[t[c]], fn);
         }
-        for (auto& t : m.t)
+        for (size_t ti = 0; ti < m.t.size(); ti++) {
+            const auto& t = m.t[ti];
+            if (keepT && (ti >= keepT->size() || !(*keepT)[ti])) continue;
             for (int c = 0; c < 3; c++) {
                 XMFLOAT3 n;
                 XMStoreFloat3(&n, XMVector3Normalize(N[t[c]]));
-                out.push_back({P[t[c]], n, tex ? XMFLOAT4(m.uv[t[c]][0], m.uv[t[c]][1], cls, texMode) : col});
+                XMFLOAT4 cc = col;
+                if (scalp) {   // scalp highlight: green only on the head's painted scalp area, other skin grey
+                    auto hs = a.headScalp.find(int(mi));
+                    float fl = hs != a.headScalp.end() ? hs->second[t[c]] : 0.0f;
+                    cc = scalpTex ? XMFLOAT4(m.uv[t[c]][0], m.uv[t[c]][1], fl, 6) : XMFLOAT4(0, 0, fl, 5);
+                }
+                out.push_back({P[t[c]], n, scalp ? cc : tex ? XMFLOAT4(m.uv[t[c]][0], m.uv[t[c]][1], cls, texMode) : cc});
             }
+        }
     }
 }
 
@@ -771,6 +833,10 @@ void App::drawScene() {
         gfx.ctx->OMSetDepthStencilState(gfx.dsOn, 0);
         gfx.ctx->RSSetState(gfx.rsSolid);
         hw.render(viewM, projM, fov, float(gfx.w), float(gfx.h), gfx.lightCb);
+        if (ptLoadSim && ptMs > 0) {   // PT load sim: repeat the hair pass so the GPU load follows the estimate (Vesemir ~ 1 pass per 14 ms)
+            int extra = std::min(12, std::max(0, int(std::round(ptMs / ptCalib.vesemir)) - 1));
+            for (int i = 0; i < extra; i++) hw.render(viewM, projM, fov, float(gfx.w), float(gfx.h), gfx.lightCb);
+        }
         if (beardOn && showBeard && !maskPass) {
             // the beard fur's own material values in the shared light constants (constant colours, no card texture)
             LightCB Lb = L;
@@ -786,11 +852,11 @@ void App::drawScene() {
     // guide overlay (rest pose = what you edit), stiffness paint shows the painted value per guide root
     lines.clear();
     bool overlay = showGuideOverlay || (tool != Tool::Select && tool != Tool::Paint);
-    for (size_t i = 0; i < groom.P.size() && !camOverride; i++) {
+    for (size_t i = 0; i < groom.P.size() && (!camOverride || showGuideOverlay); i++) {   // off-screen renders: only on request (overlay "guides")
         if (!groom.alive[i]) continue;
         bool s = sel.count((int)i) > 0, ed = groom.edited.count((int)i) > 0;
         if (!overlay && !s && tool != Tool::Paint) continue;
-        XMFLOAT4 c = s ? XMFLOAT4(1.0f, 0.62f, 0.2f, 1) : ed ? XMFLOAT4(0.95f, 0.85f, 0.7f, 0.7f) : XMFLOAT4(0.6f, 0.65f, 0.7f, 0.35f);
+        XMFLOAT4 c = s ? XMFLOAT4(0.15f, 0.55f, 1.0f, 1) : ed ? XMFLOAT4(0.95f, 0.85f, 0.7f, 0.7f) : XMFLOAT4(0.6f, 0.65f, 0.7f, 0.35f);
         int kmax = pack.K;
         if (tool == Tool::Paint) {
             float v = i < smap.guideS.size() ? (paintTarget == 2 ? smap.guideR[i] : smap.guideS[i]) : 1.0f;
@@ -802,6 +868,25 @@ void App::drawScene() {
         for (int k = 0; k + 1 < kmax; k++) {
             lines.push_back({{g[k].x, g[k].y, g[k].z}, {0, 0, 1}, c});
             lines.push_back({{g[k + 1].x, g[k + 1].y, g[k + 1].z}, {0, 0, 1}, c});
+        }
+        // selected guides (2026-10-13, user: bold, like the web editor): thick saturated blue line + big bright dots
+        if (s && tool != Tool::Paint) {
+            const float t = 0.0004f, r = 0.0022f;
+            const float off[7][3] = {{0, 0, 0}, {t, 0, 0}, {-t, 0, 0}, {0, t, 0}, {0, -t, 0}, {0, 0, t}, {0, 0, -t}};
+            XMFLOAT4 lc(0.05f, 0.4f, 1.0f, 1), dc(1.0f, 0.95f, 0.3f, 1);
+            for (int k = 0; k + 1 < kmax; k++)
+                for (auto& o : off) {
+                    lines.push_back({{g[k].x + o[0], g[k].y + o[1], g[k].z + o[2]}, {0, 0, 1}, lc});
+                    lines.push_back({{g[k + 1].x + o[0], g[k + 1].y + o[1], g[k + 1].z + o[2]}, {0, 0, 1}, lc});
+                }
+            for (int k = 0; k < kmax; k++)
+                for (int ax = 0; ax < 3; ax++)
+                    for (auto& o : off) {
+                        XMFLOAT3 a = {g[k].x + o[0], g[k].y + o[1], g[k].z + o[2]}, b = a;
+                        (&a.x)[ax] -= r; (&b.x)[ax] += r;
+                        lines.push_back({a, {0, 0, 1}, dc});
+                        lines.push_back({b, {0, 0, 1}, dc});
+                    }
         }
     }
     // symmetry plane (mid-sagittal plane of the head)
@@ -835,10 +920,15 @@ int App::pickGuide(float mx, float my) const {
     float bd = 12.0f * 12.0f;
     for (size_t i = 0; i < groom.P.size(); i++) {
         if (!groom.alive[i]) continue;
-        for (int k = 0; k < pack.K; k += 2) {
-            XMFLOAT2 s = project(posedPoint((int)i, k));
-            float d = (s.x - mx) * (s.x - mx) + (s.y - my) * (s.y - my);
+        // distance to the projected segments (clicking between two points selects too)
+        XMFLOAT2 a = project(posedPoint((int)i, 0));
+        for (int k = 1; k < pack.K; k++) {
+            XMFLOAT2 b = project(posedPoint((int)i, k));
+            float ex = b.x - a.x, ey = b.y - a.y, l2 = ex * ex + ey * ey;
+            float t = l2 > 1e-6f ? std::clamp(((mx - a.x) * ex + (my - a.y) * ey) / l2, 0.0f, 1.0f) : 0.0f;
+            float px = a.x + ex * t - mx, py = a.y + ey * t - my, d = px * px + py * py;
             if (d < bd) { bd = d; best = (int)i; }
+            a = b;
         }
     }
     return best;
@@ -1064,7 +1154,8 @@ void App::applyMaterial(int idx) {
 }
 
 // region selector used by the agent runner: {"all":true} | {"back":true,"front":true,"left":true,"right":true,
-// "z_min":m,"z_max":m (root height relative to the head top), "tip_below":m, "roots":[[x,y,z]...], "indices":[...]}
+// "z_min":m,"z_max":m (root height relative to the head top), "tip_below":m, "near":[x,y,z] + "radius":m (root distance),
+// "min_length" / "max_length":m, "roots":[[x,y,z]...], "indices":[...]}
 std::vector<int> App::selectGuides(const json& s) const {
     std::vector<int> out;
     if (s.is_string() && s == "selection") return selList();
@@ -1080,6 +1171,24 @@ std::vector<int> App::selectGuides(const json& s) const {
         if (s.contains("z_min") && zr < s["z_min"].get<float>()) continue;
         if (s.contains("z_max") && zr > s["z_max"].get<float>()) continue;
         if (s.contains("tip_below") && t.z > pack.headTop - s["tip_below"].get<float>()) continue;
+        if (s.contains("passes_near") && s["passes_near"].is_array() && s["passes_near"].size() == 3) {
+            // any point of the strand within radius (hair over an ear / eye / forehead spot)
+            V3 q{s["passes_near"][0].get<float>(), s["passes_near"][1].get<float>(), s["passes_near"][2].get<float>()};
+            float rad = s.value("radius", 0.015f);
+            bool hit = false;
+            for (auto& p : groom.P[i]) if (len(p - q) < rad) { hit = true; break; }
+            if (!hit) continue;
+        }
+        if (s.contains("near") && s["near"].is_array() && s["near"].size() == 3) {
+            V3 q{s["near"][0].get<float>(), s["near"][1].get<float>(), s["near"][2].get<float>()};
+            if (len(r - q) > s.value("radius", 0.01f)) continue;
+        }
+        if (s.contains("min_length") || s.contains("max_length")) {
+            float L = 0;
+            for (size_t k = 1; k < groom.P[i].size(); k++) L += len(groom.P[i][k] - groom.P[i][k - 1]);
+            if (s.contains("min_length") && L < s["min_length"].get<float>()) continue;
+            if (s.contains("max_length") && L > s["max_length"].get<float>()) continue;
+        }
         out.push_back((int)i);
     }
     if (s.contains("roots")) {
@@ -1303,7 +1412,7 @@ void App::pollJob() {
 // a pack is current when desk_prep's format version matches, none of the build's inputs (the config JSON and its edits
 // file: desk.json "src_files") is newer than desk.json and its fur still exists. A stale pack is re-prepped; desk_prep
 // then rebuilds the fur with the pipeline when the inputs' hash changed (desk_prep.py canonical_fur).
-static const int kPrepVersion = 7;      // desk_prep.py PREP_VERSION (7: material preset names without character names)
+static const int kPrepVersion = 8;      // desk_prep.py PREP_VERSION (8: vanilla hair cards)
 
 bool App::packUpToDate(const std::string& cfg) const {
     std::string d = set.repo + "\\build\\desktop_studio\\" + cfg + "\\desk.json";
@@ -1390,4 +1499,53 @@ bool App::loadProject(const std::string& path) {
     savedEdits = int(groom.ops.size() + look.over.size());
     status = "Project loaded: " + path;
     return true;
+}
+
+
+// ray (world) against the posed skin meshes (same pose / vertex blend as the render); nearest hit
+bool App::skinRay(const XMFLOAT3& o, const XMFLOAT3& d, XMFLOAT3& hit, int& mesh) const {
+    float best = 1e30f;
+    mesh = -1;
+    XMVECTOR O = XMLoadFloat3(&o), D = XMLoadFloat3(&d);
+    for (size_t mi = 0; mi < pack.meshes.size(); mi++) {
+        if (!isSkinMesh(pack.meshes[mi])) continue;
+        std::vector<GVertex> tv;
+        for (int pass = 0; pass < 2; pass++) {
+            tv.clear();
+            meshVerts(*this, tv, pass == 1, int(mi));
+            for (size_t i = 0; i + 2 < tv.size(); i += 3) {
+                XMVECTOR a0 = XMLoadFloat3(&tv[i].pos), e1 = XMVectorSubtract(XMLoadFloat3(&tv[i + 1].pos), a0), e2 = XMVectorSubtract(XMLoadFloat3(&tv[i + 2].pos), a0);
+                XMVECTOR pv = XMVector3Cross(D, e2);
+                float det = XMVectorGetX(XMVector3Dot(e1, pv));
+                if (std::fabs(det) < 1e-12f) continue;
+                XMVECTOR tvv = XMVectorSubtract(O, a0);
+                float u = XMVectorGetX(XMVector3Dot(tvv, pv)) / det;
+                if (u < 0 || u > 1) continue;
+                XMVECTOR qv = XMVector3Cross(tvv, e1);
+                float v = XMVectorGetX(XMVector3Dot(D, qv)) / det;
+                if (v < 0 || u + v > 1) continue;
+                float t = XMVectorGetX(XMVector3Dot(e2, qv)) / det;
+                if (t > 0 && t < best) { best = t; mesh = int(mi); XMStoreFloat3(&hit, XMVectorAdd(O, XMVectorScale(D, t))); }
+            }
+        }
+    }
+    return mesh >= 0;
+}
+
+// posed head mesh with its scalp flags (per original vertex): input of the serve hairline tools (serve.cpp)
+bool App::scalpMesh(std::vector<V3>& pos, std::vector<float>& flag, std::vector<std::array<int, 3>>& tris) const {
+    for (auto& [mi, f] : headScalp) {
+        const Mesh& m = pack.meshes[mi];
+        std::vector<GVertex> tv;
+        meshVerts(*this, tv, true, mi);
+        if (tv.size() != m.t.size() * 3) meshVerts(*this, tv, false, mi);
+        if (tv.size() != m.t.size() * 3) continue;
+        pos.assign(m.v.size(), V3{});
+        for (size_t j = 0; j < m.t.size(); j++)
+            for (int c = 0; c < 3; c++) pos[m.t[j][c]] = {tv[j * 3 + c].pos.x, tv[j * 3 + c].pos.y, tv[j * 3 + c].pos.z};
+        flag = f;
+        tris = m.t;
+        return true;
+    }
+    return false;
 }

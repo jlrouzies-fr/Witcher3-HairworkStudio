@@ -38,7 +38,7 @@ import hwpreview_pack as HP  # noqa: E402
 
 OUT_BASE = os.path.join(ROOT, 'build', 'desktop_studio')
 FUR_DIR = os.path.join(OUT_BASE, 'furs')
-PREP_VERSION = 7          # bump when desk.json changes; the Studio re-runs desk_prep for older packs (src/app.cpp kPrepVersion)
+PREP_VERSION = 8          # bump when desk.json changes; the Studio re-runs desk_prep for older packs (src/app.cpp kPrepVersion)
 
 
 def _rel(p):
@@ -478,7 +478,20 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
     except Exception as e:   # same fallback for the body / outfit meshes
         log('  outfit textures skipped: %r' % (e,))
     try:
-        D['beard_cards'] = beard_cards(C, out, log)
+        try:
+            D['beard_cards'] = beard_cards(C, out, log)
+        except Exception as e:   # a broken beard mesh must not cost the hair cards below
+            log('  beard cards: skipped (%r)' % (e,))
+            D['beard_cards'] = []
+        # vanilla hair cards of the appearance (from the player's own game files): the Studio's "Vanilla hair" view
+        try:
+            col = (D.get('graphical') or {}).get('color') or {}
+            rc, tc = col.get('rootColor') or {}, col.get('tipColor') or {}
+            tint = [(rc.get(k, 128) + tc.get(k, 128)) / 2 for k in ('Red', 'Green', 'Blue')] if rc or tc else None
+            D['hair_cards'] = beard_cards(C, out, log, kinds=('hair',), part='hair', tint=tint)
+        except Exception as e:
+            log('  hair cards: skipped (%s)' % e)
+            D['hair_cards'] = []
     except Exception as e:   # never breaks a prep; the renderer does not draw these yet (HAIRWORK.md "Beards")
         log('  beard cards skipped: %r' % (e,))
     bf = [f for f in glob.glob(os.path.join(os.path.dirname(fur), cfg + '__*.redfur')) if is_beard_fur(f)]
@@ -809,7 +822,7 @@ def outfit_textured(D, C, out, log=print):
     return parts
 
 
-def beard_cards(C, out, log=print):
+def beard_cards(C, out, log=print, kinds=('beard',), part='beard', tint=None):
     """2026-10-11: the vanilla beard / moustache cards (hb_* pbr_hair meshes) of the config's appearance, LOD0, one part
     per material, diffuse saved WITH its alpha (tex_<name>_rgba.png): alpha-tested cards. outfit_textured skips them
     (pbr_hair). Data only: drawing them needs an alpha-test hook in the renderer (not added yet)."""
@@ -818,7 +831,7 @@ def beard_cards(C, out, log=print):
     comps, _shifts = appearance_components(C, log)
     parts, cache = [], {}
     for comp, rel, kind in comps:
-        if kind != 'beard':
+        if kind not in kinds:
             continue
         m = GF.load_mesh(rel)
         mats = GF.tree(rel)[0].get('materials', [])
@@ -836,13 +849,22 @@ def beard_cards(C, out, log=print):
                 img = load_xbm(dif).convert('RGBA')
                 if max(img.size) > 1024:
                     img = img.resize((1024, 1024))
-                cache[dif] = 'tex_%s_rgba.png' % os.path.splitext(os.path.basename(dif))[0]
+                if tint is not None:
+                    # vanilla hair textures are grey, tinted in game by the appearance; no colour shift for the hair
+                    # component in the template, so use the groom's root / tip colour (normalised, keeps brightness)
+                    from PIL import Image as _I
+                    a = np.asarray(img, np.float32)
+                    lum = a[..., :3] @ np.array([0.299, 0.587, 0.114], np.float32)
+                    t = np.asarray(tint, np.float32)
+                    a[..., :3] = np.clip(lum[..., None] * (t / max(t.max(), 1e-3))[None, None, :], 0, 255)
+                    img = _I.fromarray(a.astype(np.uint8), 'RGBA')
+                cache[dif] = 'tex_%s_%s_rgba.png' % (os.path.splitext(os.path.basename(dif))[0], part)
                 img.save(os.path.join(out, cache[dif]))
             ch = GF.merge_chunks(m, ids)
-            parts.append(dict(name=comp, path=rel, part='beard', alpha=True, alpha_ref=0.3, file=cache[dif],
+            parts.append(dict(name=comp, path=rel, part=part, alpha=True, alpha_ref=0.3, file=cache[dif],
                               v=np.round(ch['pos'], 5).tolist(), uv=np.round(ch['uv'], 5).tolist(),
                               t=np.asarray(ch['idx'], int).reshape(-1, 3).tolist()))
-        log('  beard cards: %s (%d parts)' % (rel, len([p for p in parts if p['path'] == rel])))
+        log('  %s cards: %s (%d parts)' % (part, rel, len([p for p in parts if p['path'] == rel])))
     return parts
 
 

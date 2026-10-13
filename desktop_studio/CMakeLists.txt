@@ -25,7 +25,7 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/gen/gw_logo.rc" "201 RCDATA \"${GW_LOGO_
 
 set(IMGUI third_party/imgui)
 add_executable(HairworkStudio WIN32
-  src/main.cpp src/app.cpp src/ui.cpp src/agent.cpp src/curls.cpp src/gfx.cpp src/hairsdk.cpp src/deskpack.cpp src/groom.cpp src/params.cpp src/motion.cpp src/materials.cpp src/picker.cpp src/stylesw.cpp src/uitest.cpp src/lighting.cpp src/toolbar.cpp src/ui_widgets.cpp src/app.rc
+  src/main.cpp src/app.cpp src/ui.cpp src/agent.cpp src/serve.cpp src/curls.cpp src/gfx.cpp src/hairsdk.cpp src/deskpack.cpp src/groom.cpp src/params.cpp src/motion.cpp src/materials.cpp src/picker.cpp src/stylesw.cpp src/uitest.cpp src/lighting.cpp src/toolbar.cpp src/ui_widgets.cpp src/community.cpp src/community_gh.cpp src/pt_estimate.cpp src/app.rc
   "${CMAKE_CURRENT_BINARY_DIR}/gen/gw_logo.rc"
   ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp
   ${IMGUI}/imgui_impl_dx11.cpp ${IMGUI}/imgui_impl_win32.cpp)
@@ -53,3 +53,9 @@ add_custom_command(TARGET HairworkStudio POST_BUILD
   COMMAND ${FXC} /nologo /T ps_5_0 /E ps_depth_alpha /O3 /Fo ${OUT}/basic_ps_depth_alpha.cso ${SH}/basic.hlsl
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/assets ${OUT}/assets
   COMMENT "Compiling shaders, copying assets")
+
+# Unit-test helper for the community merge logic (header-only src/community_merge.h); compared with tools/hairworks/hwgroom.py
+# by tests/community/crosscheck.py.
+add_executable(community_merge_test tests/community/community_merge_test.cpp)
+target_compile_definitions(community_merge_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(community_merge_test PRIVATE /W3 /utf-8)

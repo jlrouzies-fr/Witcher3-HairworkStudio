@@ -29,6 +29,15 @@ SamplerState g_samp : register(s0);
 
 float4 ps_mesh(VSOut i) : SV_Target
 {
+    // Scalp highlight (col.w = 5): flat unlit pure green, no lighting / shadow / tonemap
+    // scalp highlight: w = 6 textured head (uv in xy, scalp-area flag in z: green where the painted short scalp hair is
+    // dark inside the flagged band, per pixel), w = 5 untextured skin (flag in z); grey = skin that needs no hair
+    if (i.col.w > 5.5f) {
+        float3 t = g_tex.SampleLevel(g_samp, i.col.xy, 2).rgb;
+        bool sc = i.col.z > 0.5f && dot(t, float3(0.3f, 0.59f, 0.11f)) < max(i.col.z - 1.0f, 0.02f);   // z = 1 + threshold
+        return sc ? float4(0.0f, 1.0f, 0.0f, 1.0f) : float4(0.12f, 0.12f, 0.12f, 1.0f);
+    }
+    if (i.col.w > 4.5f) return i.col.z > 0.5f ? float4(0.0f, 1.0f, 0.0f, 1.0f) : float4(0.12f, 0.12f, 0.12f, 1.0f);
     float3 n = normalize(i.nrm);
     float3 v = normalize(g_camPos.xyz - i.wpos);
     if (dot(n, v) < 0) n = -n;

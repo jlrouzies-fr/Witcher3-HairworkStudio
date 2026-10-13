@@ -43,15 +43,17 @@ private:
     std::vector<int> match(const json& roots);
     void applyOp(const json& op);
     void removeGuides(const std::vector<int>& dead);
-    void insertGuide(int newIdx);
+    void insertGuide(int newIdx, bool edgeFace = false, bool srcUv = false, const float* fixUv = nullptr);
     void applyMirror(const json& op);
+    void applyRebuild(const json& op);
 public:
+    void buildHead();
+    json resolveMirror(const json& op);    // explicit mirror form (source, plane_x, source_roots) for community packs
     float mirrorPlane();                   // x of the head's mid-sagittal plane (same search as strand_edits.mirror_plane)
     float headSigned(V3 p, V3* nrm) const; // signed distance to the head mesh (nearest vertex + its normal)
 private:
     float planeCache = 1e9f;
     std::vector<V3> headV, headN;
-    void buildHead();
 };
 
 std::vector<V3> shortenGuide(const Guide& p, float keep);

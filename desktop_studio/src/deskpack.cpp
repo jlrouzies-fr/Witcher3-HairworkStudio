@@ -123,12 +123,13 @@ bool DeskPack::load(const std::string& d, std::string& err) {
                      }), meshes.end());
     }
     // vanilla beard / moustache cards (desk_prep beard_cards, 2026-10-11): alpha-tested textured parts
-    if (j.contains("beard_cards") && j["beard_cards"].is_array()) {
-        for (auto& o : j["beard_cards"]) {
+    for (const char* key : {"beard_cards", "hair_cards"}) {
+        if (!j.contains(key) || !j[key].is_array()) continue;
+        for (auto& o : j[key]) {
             Mesh M;
             M.name = o.value("name", "");
             M.path = o.value("path", "");
-            M.kind = "beard";
+            M.kind = std::string(key) == "hair_cards" ? "hair_cards" : "beard";
             M.texFile = o.value("file", "");
             M.alphaTest = o.value("alpha", true);
             M.alphaRef = o.value("alpha_ref", 0.3f);

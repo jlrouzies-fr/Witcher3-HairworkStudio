@@ -48,6 +48,7 @@ bool switchRow(const char* label, bool* v, const char* tipText = nullptr);
 bool sliderRow(const char* label, const char* display, float* v, float lo, float hi, const char* fmt, float refValue,
                bool modified, bool* reset, const char* tipText);
 bool sectionHeader(const char* label, const char* display, const char* glyph, Custom ci, const char* summary, bool modDot, bool defOpen);
+extern unsigned g_primaryAlt;
 bool primaryButton(const char* label, const char* text, ImVec2 size, bool enabled, const char* glyph = nullptr, bool chamfer = false,
                    const char* kbdText = nullptr, const char* sub = nullptr);
 bool button(const char* label, const char* text, ImVec2 size, const char* glyph = nullptr, bool ghost = false, bool enabled = true,

@@ -91,6 +91,8 @@ def weights(K, falloff='carry', frm=0):
         w = k / max(K - 1, 1)
     elif falloff == 'tip':
         w = (k / max(K - 1, 1)) ** 2
+    elif falloff == 'point':   # one CV (+ half on its neighbours), Studio point drag (2026-10-13)
+        return np.clip(1.0 - np.abs(k - int(frm)) / 2.0, 0.0, None)
     else:
         w = np.ones(K)
     w[k < int(frm)] = 0.0

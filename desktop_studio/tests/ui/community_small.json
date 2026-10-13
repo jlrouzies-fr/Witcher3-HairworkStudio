@@ -1,0 +1,11 @@
+{"out": "build/desktop_studio/uitest_comm_small", "splash": false, "steps": [
+ {"do": "wait", "frames": 90},
+ {"do": "click", "label": "Community##title"}, {"do": "wait", "frames": 30},
+ {"do": "click", "label": "Refresh##comm"}, {"do": "wait", "frames": 60},
+ {"do": "drag", "xy": [634, 1100], "to": [1200, 1100]}, {"do": "wait", "frames": 15},
+ {"do": "shot", "name": "s1_browse"},
+ {"do": "click", "label": "My packs##ctab"}, {"do": "wait", "frames": 15},
+ {"do": "shot", "name": "s2_mine"},
+ {"do": "click", "label": "GitHub##ctab"}, {"do": "wait", "frames": 30},
+ {"do": "shot", "name": "s3_github"}
+]}
