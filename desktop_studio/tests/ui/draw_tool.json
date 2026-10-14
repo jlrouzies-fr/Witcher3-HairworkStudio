@@ -1,0 +1,12 @@
+{"splash": false, "steps": [
+ {"do": "wait", "frames": 30},
+ {"do": "dclick", "label": "card", "nth": 1}, {"do": "wait_job"}, {"do": "wait", "frames": 60},
+ {"do": "expect", "loaded": true, "picker": false},
+ {"do": "expect", "widget": "##draw"},
+ {"do": "key", "key": "A"}, {"do": "wait", "frames": 5},
+ {"do": "expect", "tool": 5, "alive_base": true},
+ {"do": "drag", "from_root": true, "dx": 60, "dy": 120}, {"do": "wait", "frames": 10},
+ {"do": "expect", "alive_delta": 1},
+ {"do": "key", "key": "Z", "ctrl": true}, {"do": "wait", "frames": 10},
+ {"do": "expect", "alive_delta": 0}
+]}

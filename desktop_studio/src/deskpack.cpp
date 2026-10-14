@@ -56,7 +56,10 @@ bool DeskPack::load(const std::string& d, std::string& err) {
         B.parent = b.value("parent", -1);
         bones.push_back(B);
     }
-    for (auto& s : j["spheres"]) spheres.push_back({s["bone"], v3(s["local"]), s["r"]});
+    for (auto& s : j["spheres"]) {
+        spheres.push_back({s["bone"], v3(s["local"]), s["r"]});
+        if (s.contains("c")) { spheres.back().c = v3(s["c"]); spheres.back().hasC = true; }
+    }
     for (auto& c : j["capsules"]) capsules.push_back({c[0], c[1]});
     physical = j["physical"];
     graphical = j["graphical"];
@@ -157,6 +160,12 @@ bool DeskPack::beardPack(DeskPack& o) const {
     o.config = config + " (beard)";
     o.character = character;
     o.furPath = b.value("fur_path", "");
+    if (o.furPath.empty() || o.furPath == furPath) return false;   // a beard-only build: its beard IS the groom
+    {   // component = file name after "<cfg>__" (hb_01_da__zoltan): the export finds the beard's in-game redfur by it
+        std::string fn = o.furPath.substr(o.furPath.find_last_of("\\/") + 1);
+        size_t s = fn.find("__"), e = fn.rfind(".redfur");
+        o.comp = s == std::string::npos ? "" : fn.substr(s + 2, (e == std::string::npos ? fn.size() : e) - s - 2);
+    }
     guidesFrom(b["guides"], o.guides);
     if (o.guides.empty()) return false;
     o.K = 0;
@@ -185,4 +194,17 @@ bool DeskPack::beardPack(DeskPack& o) const {
         o.boneW.assign(o.guides.size(), {1, 0, 0, 0});
     }
     return !o.F.empty();
+}
+
+void swapFur(DeskPack& a, DeskPack& b) {
+    using std::swap;
+    swap(a.comp, b.comp); swap(a.furPath, b.furPath); swap(a.editPath, b.editPath);
+    swap(a.K, b.K); swap(a.splineMultiplier, b.splineMultiplier);
+    swap(a.guides, b.guides); swap(a.guidesEdit, b.guidesEdit); swap(a.F, b.F); swap(a.uv, b.uv);
+    swap(a.boneIdx, b.boneIdx); swap(a.boneW, b.boneW); swap(a.bones, b.bones);
+    swap(a.spheres, b.spheres); swap(a.capsules, b.capsules);
+    swap(a.physical, b.physical); swap(a.graphical, b.graphical); swap(a.lod, b.lod);
+    swap(a.budgetRef, b.budgetRef); swap(a.budgetSelf, b.budgetSelf); swap(a.lookCfg, b.lookCfg);
+    swap(a.densityFile, b.densityFile); swap(a.densityChannel, b.densityChannel); swap(a.colorFile, b.colorFile);
+    swap(a.densityPixel, b.densityPixel); swap(a.densityFace, b.densityFace);
 }

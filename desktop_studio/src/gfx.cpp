@@ -401,7 +401,7 @@ bool Gfx::beginOffscreen(int size, int height) {
     return msaaRtv != nullptr;
 }
 
-bool Gfx::endOffscreen(const std::string& png) {
+bool Gfx::endOffscreen(const std::string& png, std::vector<unsigned char>* rgba) {
     if (!offscreen) return false;
     ctx->ResolveSubresource(resolveTex, 0, msaaTex, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
     D3D11_TEXTURE2D_DESC td;
@@ -419,7 +419,8 @@ bool Gfx::endOffscreen(const std::string& png) {
         for (UINT y = 0; y < td.Height; y++) memcpy(&px[size_t(y) * td.Width * 4], (char*)m.pData + size_t(y) * m.RowPitch, td.Width * 4);
         ctx->Unmap(st, 0);
         for (size_t i = 3; i < px.size(); i += 4) px[i] = 255;
-        ok = stbi_write_png(png.c_str(), td.Width, td.Height, 4, px.data(), td.Width * 4) != 0;
+        ok = png.empty() || stbi_write_png(png.c_str(), td.Width, td.Height, 4, px.data(), td.Width * 4) != 0;
+        if (rgba) rgba->swap(px);
     }
     safeRelease(st);
     safeRelease(msaaRtv); safeRelease(msaaTex); safeRelease(dsv); safeRelease(depthTex); safeRelease(resolveTex);

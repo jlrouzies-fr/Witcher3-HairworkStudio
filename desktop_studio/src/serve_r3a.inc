@@ -384,6 +384,136 @@ static Guide layAway(const HeadSkin& hs, const Guide& G, V3 away, float layM, fl
     for (int k = 1; k < K; k++) R[k] = R[k - 1] + nrmz(Q[k] - R[k - 1]) * (sl[k] - sl[k - 1]);
     return R;
 }
+// ---- band profile (headband / circlet / ribbon detection), shared by the headband op and the band_sim check (2026-10-14)
+struct BandProf {
+    static const int NB = 72;
+    V3 C{};
+    int mi = -1, nv = 0;
+    float cover = 0, h = 0, rMean = 0, zMin = 0, zMax = 0;
+    std::vector<float> rin, rout, zlo, zhi;
+    std::vector<char> valid;
+    // inner radius and z range of the band at the azimuth of p (false: no band there)
+    bool at(V3 p, float& rI, float& zL, float& zH, float* rO = nullptr) const {
+        float th = std::atan2(p.y - C.y, p.x - C.x);
+        float f = (th + 3.14159265f) / 6.2831853f * NB - 0.5f;
+        int b0 = (int)std::floor(f); float t = f - b0;
+        b0 = ((b0 % NB) + NB) % NB; int b1 = (b0 + 1) % NB;
+        if (!valid[b0] && !valid[b1]) return false;
+        if (valid[b0] && valid[b1]) { rI = rin[b0] * (1 - t) + rin[b1] * t; zL = zlo[b0] * (1 - t) + zlo[b1] * t; zH = zhi[b0] * (1 - t) + zhi[b1] * t; if (rO) *rO = rout[b0] * (1 - t) + rout[b1] * t; }
+        else { int bb = valid[b0] ? b0 : b1; rI = rin[bb]; zL = zlo[bb]; zH = zhi[bb]; if (rO) *rO = rout[bb]; }
+        return true;
+    }
+    // max over the samples of a polyline (densified, 3 mm; root point not tested) inside the band's height range of
+    // (distance from the head axis - inner radius), and the same against the band's outer radius (rOut, outer=true).
+    // -1e9 when no sample is in the band's height range at a band azimuth.
+    float excess(const std::vector<V3>& G, bool outer = false) const {
+        float best = -1e9f;
+        for (size_t k = 0; k + 1 < G.size(); k++) {
+            int ns = std::max(1, (int)std::ceil(len(G[k + 1] - G[k]) / 0.003f));
+            for (int s = (k == 0 ? 1 : 0); s <= ns; s++) {
+                V3 p = G[k] + (G[k + 1] - G[k]) * (float(s) / ns);
+                float rI, zL, zH, rO = 0;
+                if (!at(p, rI, zL, zH, &rO) || p.z < zL || p.z > zH) continue;
+                best = std::max(best, (float)std::hypot(p.x - C.x, p.y - C.y) - (outer ? rO : rI));
+            }
+        }
+        return best;
+    }
+    // a polyline passes OUTSIDE the band: a sample in the band's height range lies farther from the head axis than the
+    // inner surface minus margin
+    bool crosses(const std::vector<V3>& G, float margin) const { return excess(G) > -margin; }
+};
+// params: mesh, z_range, max_height_mm, min_coverage (see headband). Fills r["candidates"] (and r["error"] when none).
+static bool findBand(const App& a, const json& c, BandProf& B, json& r) {
+    const DeskPack& pk = a.pack;
+    const V3 C = pk.headC;
+    B.C = C;
+    struct Cand { int mi; float cover, h, rMean, zMin, zMax; int nv; std::vector<int> verts; };
+    std::vector<Cand> cands;
+    std::string meshSel = c.value("mesh", std::string());
+    float maxH = c.value("max_height_mm", 60.0f) / 1000, minCov = c.value("min_coverage", 0.6f);
+    bool zr = c.contains("z_range") && c["z_range"].is_array() && c["z_range"].size() == 2;
+    float zr0 = zr ? c["z_range"][0].get<float>() : -1e9f, zr1 = zr ? c["z_range"][1].get<float>() : 1e9f;
+    const int NB = 72;
+    for (size_t mi = 0; mi < pk.meshes.size(); mi++) {
+        const Mesh& m = pk.meshes[mi];
+        if (m.kind == "head" || m.kind == "beard" || m.v.empty()) continue;
+        if (!meshSel.empty() && m.name.find(meshSel) == std::string::npos && m.path.find(meshSel) == std::string::npos) continue;
+        // connected components over welded vertices
+        std::map<std::array<int, 3>, int> weld;
+        std::vector<int> rep(m.v.size());
+        for (size_t i = 0; i < m.v.size(); i++) {
+            std::array<int, 3> q{(int)std::lround(m.v[i].x * 5000), (int)std::lround(m.v[i].y * 5000), (int)std::lround(m.v[i].z * 5000)};
+            auto it = weld.emplace(q, (int)i).first;
+            rep[i] = it->second;
+        }
+        std::vector<int> par(m.v.size());
+        for (size_t i = 0; i < par.size(); i++) par[i] = (int)i;
+        std::function<int(int)> fnd = [&](int x) { while (par[x] != x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+        for (auto& t : m.t) {
+            int a0 = fnd(rep[t[0]]), b0 = fnd(rep[t[1]]);
+            par[b0] = a0;
+            int c0 = fnd(rep[t[2]]);
+            par[c0] = fnd(a0);
+        }
+        std::map<int, std::vector<int>> comps;
+        std::vector<char> used(m.v.size(), 0);
+        for (auto& t : m.t) for (int q = 0; q < 3; q++) if (!used[t[q]]) { used[t[q]] = 1; comps[fnd(rep[t[q]])].push_back(t[q]); }
+        for (auto& kv : comps) {
+            const std::vector<int>& vs = kv.second;
+            if (vs.size() < 12) continue;
+            float z0 = 1e9f, z1 = -1e9f; double rs = 0; int nin = 0;
+            std::vector<int> vsel;
+            for (int i : vs) {
+                const V3& p = m.v[i];
+                if (zr && (p.z < zr0 || p.z > zr1)) continue;
+                vsel.push_back(i); z0 = std::min(z0, p.z); z1 = std::max(z1, p.z);
+                rs += std::hypot(p.x - C.x, p.y - C.y); nin++;
+            }
+            if (nin < 12) continue;
+            float h = z1 - z0;
+            if (h > maxH || h < 0.004f) continue;
+            if (!zr && (z0 < C.z - 0.06f || z1 > pk.headTop + 0.01f)) continue;
+            float rm = (float)(rs / nin);
+            if (rm < 0.05f || rm > 0.16f) continue;
+            std::vector<char> occ(NB, 0);
+            for (int i : vsel) { float th = std::atan2(m.v[i].y - C.y, m.v[i].x - C.x); int b = (int)std::floor((th + 3.14159265f) / 6.2831853f * NB) % NB; occ[b] = 1; }
+            int nocc = 0; for (char o : occ) nocc += o;
+            float cov = nocc / float(NB);
+            if (cov < minCov) continue;
+            cands.push_back({(int)mi, cov, h, rm, z0, z1, nin, vsel});
+        }
+    }
+    std::sort(cands.begin(), cands.end(), [](const Cand& x, const Cand& y) { return x.cover - x.h * 2 > y.cover - y.h * 2; });
+    json cj = json::array();
+    for (auto& k : cands) cj.push_back({{"mesh", pk.meshes[k.mi].name}, {"path", pk.meshes[k.mi].path}, {"coverage", k.cover}, {"height_mm", k.h * 1000},
+                                          {"mean_radius_mm", k.rMean * 1000}, {"z_min", k.zMin}, {"z_max", k.zMax}, {"verts", k.nv}});
+    r["candidates"] = cj;
+    if (cands.empty()) { r["error"] = "no band-like geometry found (try mesh / z_range / max_height_mm / min_coverage)"; return false; }
+    const Cand& band = cands[0];
+    const Mesh& bm = pk.meshes[band.mi];
+    B.mi = band.mi; B.nv = band.nv; B.cover = band.cover; B.h = band.h; B.rMean = band.rMean; B.zMin = band.zMin; B.zMax = band.zMax;
+    std::vector<float>& rin = B.rin; std::vector<float>& rout = B.rout; std::vector<float>& zlo = B.zlo; std::vector<float>& zhi = B.zhi; std::vector<char>& valid = B.valid;
+    rin.assign(NB, 1e9f); rout.assign(NB, 0.0f); zlo.assign(NB, 1e9f); zhi.assign(NB, -1e9f); valid.assign(NB, 0);
+    // per-azimuth profile: inner radius, z range
+    for (int i : band.verts) {
+        const V3& p = bm.v[i];
+        float th = std::atan2(p.y - C.y, p.x - C.x);
+        int b = (int)std::floor((th + 3.14159265f) / 6.2831853f * NB) % NB;
+        rin[b] = std::min(rin[b], (float)std::hypot(p.x - C.x, p.y - C.y));
+        rout[b] = std::max(rout[b], (float)std::hypot(p.x - C.x, p.y - C.y));
+        zlo[b] = std::min(zlo[b], p.z); zhi[b] = std::max(zhi[b], p.z);
+    }
+    for (int b = 0; b < NB; b++) valid[b] = rin[b] < 1e8f;
+    for (int b = 0; b < NB; b++) if (!valid[b]) {   // fill small gaps from the nearest valid bins
+        for (int dd = 1; dd <= 2; dd++) {
+            int l = (b - dd + NB) % NB, rr = (b + dd) % NB;
+            if (valid[l] == 1 && valid[rr] == 1) { rin[b] = 0.5f * (rin[l] + rin[rr]); rout[b] = 0.5f * (rout[l] + rout[rr]); zlo[b] = 0.5f * (zlo[l] + zlo[rr]); zhi[b] = 0.5f * (zhi[l] + zhi[rr]); valid[b] = 2; break; }
+        }
+    }
+    for (int b = 0; b < NB; b++) if (valid[b] == 2) valid[b] = 1;
+    return true;
+}
 }  // namespace r3
 
 static json r3Command(App& a, const json& c, int& grpId, const std::string& d) {
@@ -437,6 +567,84 @@ static json r3Command(App& a, const json& c, int& grpId, const std::string& d) {
         }
         if (!c.value("list_only", false) && !ops.empty()) { for (auto& o : ops) gr.ops.push_back(o); gr.redo.clear(); gr.replay(); a.editsChanged(); }
         r["changed"] = n; r["points"] = pts; r["mean_move_mm"] = pts ? sumMove / pts * 1000 : 0.0;
+        return r;
+    }
+
+    // ------------------------------------------------------------------ headband (2026-10-14, generic)
+    // detects a thin closed band around the head (headband / circlet / ribbon: a connected triangle component of an outfit
+    // or card mesh, small vertical extent, wide azimuth coverage around the head axis, near the skull) and pulls the
+    // strand points that pass OUTSIDE it, where it wraps the head, to just under its inner surface (clearance_mm).
+    // The pull fades in / out above and below the band (blend_mm) so strands stay continuous; lengths are kept (re-walk),
+    // roots are unchanged. Opt-in: nothing changes unless called. Params: mesh (name / path substring), z_range
+    // [lo,hi] (absolute z window inside the selected mesh), max_height_mm (60), min_coverage (0.6),
+    // clearance_mm (1.5), standoff_mm (1.0, min height above the skin), passes (4), blend_mm (auto), where, list_only (detect + count only).
+    if (d == "headband") {
+        r3::BandProf BP;
+        if (!r3::findBand(a, c, BP, r)) return r;
+        const Mesh& bm = pk.meshes[BP.mi];
+        struct { float cover, h, rMean, zMin, zMax; int nv; } band{BP.cover, BP.h, BP.rMean, BP.zMin, BP.zMax, BP.nv};
+        auto prof = [&](V3 p, float& rI, float& zL, float& zH) { return BP.at(p, rI, zL, zH); };
+        float clr = c.value("clearance_mm", 1.5f) / 1000;
+        auto ix = a.selectGuides(c.value("where", json::object({{"all", true}})));
+        std::vector<float> segs;
+        for (int g : ix) { auto sl = arcLen(gr.P[g]); if (sl.size() > 1) segs.push_back(sl.back() / (sl.size() - 1)); }
+        std::sort(segs.begin(), segs.end());
+        float medSeg = segs.empty() ? 0.02f : segs[segs.size() / 2];
+        float blend = c.contains("blend_mm") ? c["blend_mm"].get<float>() / 1000 : std::max(0.012f, 0.7f * medSeg);
+        // a guide crosses the band when a sample of its (densified) path lies in the band's height range outside its inner surface
+        auto crossing = [&](const Guide& G) { return BP.crosses(G, 0.5f * clr); };
+        int before = 0, pts = 0; double sumMove = 0;
+        float standoff = c.value("standoff_mm", 1.0f) / 1000;   // how far above the skin a pulled strand may sit (the band is often 1-3 mm off the skin)
+        int passes = std::clamp(c.value("passes", 4), 1, 8);
+        std::map<int, Guide> cur;   // working copies of the guides that cross the band
+        for (int g : ix) if (crossing(gr.P[g])) { before++; cur[g] = gr.P[g]; }
+        for (int pass = 0; pass < passes; pass++) {
+            int fixedNow = 0;
+            for (auto& kv : cur) {
+                Guide& G = kv.second;
+                if (!crossing(G)) continue;
+                auto sl = arcLen(G);
+                Guide Q = G;
+                bool any = false;
+                float bl = blend * (1.0f + 0.5f * pass);   // later passes reach farther along a long segment
+                for (size_t k = 1; k < G.size(); k++) {
+                    V3 p = Q[k];
+                    float rI, zL, zH;
+                    if (!prof(p, rI, zL, zH)) continue;
+                    float w = p.z >= zL && p.z <= zH ? 1.0f : p.z < zL ? (p.z > zL - bl ? (p.z - (zL - bl)) / bl : 0.0f) : (p.z < zH + bl ? ((zH + bl) - p.z) / bl : 0.0f);
+                    w = w * w * (3 - 2 * w);
+                    if (w <= 0) continue;
+                    float rr = (float)std::hypot(p.x - C.x, p.y - C.y), tgt = rI - clr;
+                    if (rr <= tgt) continue;
+                    float rn = rr - w * (rr - tgt);
+                    V3 q = V3{C.x + (p.x - C.x) * rn / rr, C.y + (p.y - C.y) * rn / rr, p.z};
+                    sumMove += len(q - p); pts++; Q[k] = q; any = true;
+                }
+                if (!any) continue;
+                for (int it = 0; it < 2; it++) { Guide T = Q; for (size_t k = 1; k + 1 < Q.size(); k++) T[k] = Q[k] * 0.5f + (Q[k - 1] + Q[k + 1]) * 0.25f; Q = T; }
+                Guide R = Q;
+                for (size_t k = 1; k < G.size(); k++) R[k] = R[k - 1] + nrmz(Q[k] - R[k - 1]) * (sl[k] - sl[k - 1]);
+                skinOut(hs, R, standoff);
+                G = R; fixedNow++;
+            }
+            if (!fixedNow) break;
+        }
+        int after = 0, n = 0;
+        std::vector<json> ops;
+        for (auto& kv : cur) {
+            if (crossing(kv.second)) after++;
+            const Guide& G0 = gr.P[kv.first];
+            bool diff = false;
+            for (size_t k = 1; k < G0.size(); k++) if (len(G0[k] - kv.second[k]) > 1e-5f) { diff = true; break; }
+            if (!diff) continue;
+            ops.push_back({{"op", "reshape"}, {"root", t6::rootJ(G0[0])}, {"points", ptsJson(kv.second)}, {"id", ++id}, {"grp", grp}});
+            n++;
+        }
+        if (!c.value("list_only", false) && !ops.empty()) { for (auto& o : ops) gr.ops.push_back(o); gr.redo.clear(); gr.replay(); a.editsChanged(); }
+        r["band"] = {{"mesh", bm.name}, {"path", bm.path}, {"coverage", band.cover}, {"height_mm", band.h * 1000}, {"mean_radius_mm", band.rMean * 1000},
+                     {"z_min", band.zMin}, {"z_max", band.zMax}, {"verts", band.nv}};
+        r["crossing_before"] = before; r["crossing_after"] = after;
+        r["changed"] = n; r["points"] = pts; r["mean_move_mm"] = pts ? sumMove / pts * 1000 : 0.0; r["blend_mm"] = blend * 1000; r["passes_max"] = passes; r["standoff_mm"] = standoff * 1000;
         return r;
     }
 

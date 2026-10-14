@@ -28,19 +28,28 @@ sys.path.insert(0, HERE)
 # the characters it ships; APPROVED.json first, AIO_PICKS for those that are "settled / user OK" but not listed there
 # (characters.md 2026-10-06). Emhyr (user: DONE 2026-10-12) = his Groom Studio project big_c/emhyr_mcp_8 as a pipeline
 # config (opt-in studio_geo key: tools/hairworks/studio_geo.py)
-AIO_ORDER = ['vesemir', 'c04ma', 'avallach', 'sheala', 'dandelion', 'keira', 'lambert', 'triss', 'guillaume', 'regis', 'emhyr', 'ciri']
+AIO_ORDER = ['vesemir', 'c04ma', 'avallach', 'sheala', 'dandelion', 'keira', 'lambert', 'triss', 'guillaume', 'regis', 'emhyr', 'ciri', 'zoltan']   # yennefer out 2026-10-14: user 'GPU usage is disaster, not ready for release' (pick yennefer_l301_mcp33 kept below)
 AIO_PICKS = {'avallach': 'avallach_l85b_hl70_wv_ln_hc', 'sheala': 'sheala_l89_rec_sk6_sink5only',
              'keira': 'keira_l108_user1_c09', 'lambert': 'lambert_l76_ez10_vol5d_wr15_b07_f8',
              'emhyr': 'emhyr_l255_mcp8',
-             'ciri': 'ciri_l259_cr10rib'}
+             'ciri': 'ciri_l259_cr10rib',
+             'yennefer': 'yennefer_l301_mcp33',   # user 'perfect' 2026-10-14: Studio project yen6/yennefer_mcp_33 (studio_geo, L301)
+             'zoltan': 'zoltan_l302_perf'}   # user 'he is good' 2026-10-14: Studio zol1/zoltan_mcp_4 beard (studio_geo_beard); L302 GPU -2.2 ms vs Vesemir
 # path-tracing picks (user OK 2026-10-13, measured with fpsrun): these win over APPROVED.json, which stays frozen
 AIO_PT_PICKS = {'lambert': 'lambert_l285_me3', 'guillaume': 'guillaume_l275_p09r15c10', 'triss': 'triss_l275_c07'}
 # folder name overrides: Triss loads before the lore-friendly Triss mod (modtriss_lorehair), which otherwise overrides her hair
 AIO_MOD_NAMES = {'triss': 'mod000_TrissHairworks'}
+# optional folders (zip folder optional\<mod>, so "copy everything" does not install them): built with --release --mod-guard
+# --mod <mod>. Headband Ciri (user: add to the AIO 2026-10-14) converts bububull's "Ciri - long wavy hair" (Nexus 7063) and
+# needs it at runtime (mod_guard.py); it patches the same ciri.w2ent as modCiriHairworks, so users install one of the two
+AIO_OPTIONAL = {'ciri_headband': ('ciri_l313_guard', 'mod000_CiriWavyHairworks')}
+OPTIONAL_DIR = 'optional'
 AIO_EXTRA_MODS = {'vesemir': 'modVesemirScalp', 'triss': 'modTrissScalp'}
 AIO_NAMES = {'vesemir': 'Vesemir', 'c04ma': 'generic short-hair men (c04ma, 79 NPCs)', 'avallach': "Avallac'h", 'sheala': 'Sheala',
              'dandelion': 'Dandelion', 'keira': 'Keira Metz', 'lambert': 'Lambert', 'triss': 'Triss (needs the lore-friendly Triss mod)',
-             'guillaume': 'Guillaume', 'regis': 'Regis', 'emhyr': 'Emhyr var Emreis', 'ciri': 'Ciri'}
+             'guillaume': 'Guillaume', 'regis': 'Regis', 'emhyr': 'Emhyr var Emreis', 'ciri': 'Ciri',
+             'yennefer': 'Yennefer (travel outfit)', 'zoltan': 'Zoltan Chivay',
+             'ciri_headband': 'Ciri with headband (optional folder, needs "Ciri - long wavy hair" by bububull)'}
 
 README = """Hairwork for All - All In One %(v)s  (Nexus witcher3 mod 13996; patch 5.0 next-gen, DX12)
 by WinterElfeas
@@ -68,6 +77,15 @@ TRISS
   the lore-friendly hair mod does not override her HairWorks hair. Do not rename it.
   If you use a mods.settings priority list (Documents\\The Witcher 3\\mods.settings, written by Script Merger or Vortex),
   give mod000_TrissHairworks a higher priority than modtriss_lorehair there: that list overrides the alphabetical order.
+
+CIRI WITH HEADBAND (optional)
+  The folder optional\\mod000_CiriWavyHairworks is Ciri's long wavy hair with headband from the mod "Ciri - long wavy hair"
+  by bububull (Nexus 7063), converted to HairWorks. Install that mod yourself: it is NOT included here, and this folder needs
+  it. A small script in the folder checks for it while the game runs: without it, Ciri keeps her vanilla hair and the game
+  shows a message that asks for it.
+  Install ONE Ciri folder: modCiriHairworks (her vanilla haircut) OR mod000_CiriWavyHairworks (headband). Both change the
+  same Ciri template; with both installed, the headband one wins. Copy the mod000_CiriWavyHairworks folder itself into
+  <game>\\mods, not the optional folder.
 
 Mods that replace the same hair templates of these characters conflict (the later mod folder wins).
 Made with Hairwork Studio (same Nexus page). Uses NVIDIA HairWorks, NVIDIA GameWorks technology, (c) NVIDIA Corporation.
@@ -172,9 +190,18 @@ def build_allinone(out, aiover, core_version, jobs, det_zip, scan):
                                cwd=ROOT, env=env, stdout=fh, stderr=subprocess.STDOUT)
         print('  %-10s %-40s %s' % (ch, cfg, 'ok' if r.returncode == 0 else 'FAILED (see %s)' % log), flush=True)
         return r.returncode
+
+    def opt(t):
+        key, (cfg, mod) = t
+        log = os.path.join(stage, cfg + '.log')
+        with open(log, 'w', encoding='utf-8') as fh:
+            r = subprocess.run([py, os.path.join(ROOT, 'tools', 'hairworks', 'hairpipe.py'), cfg, 'build', '--release', '--mod-guard', '--mod', mod],
+                               cwd=ROOT, env=dict(env, HWFA_MOD_OUT=os.path.join(pkg, OPTIONAL_DIR)), stdout=fh, stderr=subprocess.STDOUT)
+        print('  %-10s %-40s %s' % (key, cfg, 'ok (optional)' if r.returncode == 0 else 'FAILED (see %s)' % log), flush=True)
+        return r.returncode
     print('All In One: %d release builds (skeleton = game, %d in parallel)' % (len(cfgs), jobs), flush=True)
     with ThreadPoolExecutor(jobs) as ex:
-        rcs = list(ex.map(one, cfgs))
+        rcs = list(ex.map(one, cfgs)) + list(ex.map(opt, AIO_OPTIONAL.items()))
     if any(rcs):
         sys.exit('All In One: a build failed')
     game_mods = os.path.join(os.path.dirname(ROOT), 'mods')
@@ -191,16 +218,23 @@ def build_allinone(out, aiover, core_version, jobs, det_zip, scan):
     errs = []
     for _ch, _cfg, mod in cfgs:
         errs += check_mod_dir(os.path.join(pkg, mod))
+    for _key, (_cfg, mod) in AIO_OPTIONAL.items():
+        md = os.path.join(pkg, OPTIONAL_DIR, mod)
+        errs += check_mod_dir(md)
+        sd = os.path.join(md, 'content', 'scripts', 'local')
+        if not (os.path.isdir(sd) and any(f.startswith('hwfa_') and f.endswith('_guard.ws') for f in os.listdir(sd))):
+            errs.append('%s: mod guard script missing' % mod)
     errs += scan(pkg)
     if errs:
         sys.exit('All In One check failed:\n' + '\n'.join(errs))
-    chars = '\n'.join('  - ' + AIO_NAMES[ch] for ch, _c, _m in cfgs)
+    chars = '\n'.join('  - ' + AIO_NAMES[ch] for ch in [c for c, _c, _m in cfgs] + list(AIO_OPTIONAL))
     with open(os.path.join(pkg, 'README.txt'), 'w', encoding='utf-8') as fh:
         fh.write(README % dict(v=aiover, chars=chars, core=core_version))
     with open(os.path.join(pkg, 'REQUIREMENTS.txt'), 'w', encoding='utf-8') as fh:
         fh.write('Requires Hairwork for All - Core v%s or newer (Nexus 13996, file "Hairwork for All - Core") and\n'
                  'Graphics Control (Nexus 13349) with PT hair > Hair root transparency mode = Mode 0.\n'
-                 'Triss also needs the lore-friendly Triss mod (Nexus 6457), not included.\n' % core_version)
+                 'Triss also needs the lore-friendly Triss mod (Nexus 6457), not included.\n'
+                 'The optional headband Ciri (optional\\mod000_CiriWavyHairworks) needs "Ciri - long wavy hair" (Nexus 7063), not included.\n' % core_version)
     r = subprocess.run([py, os.path.join(ROOT, 'tools', 'sdk_guard.py'), '--tree', pkg])
     if r.returncode:
         sys.exit('sdk_guard blocked the All In One package')
@@ -215,7 +249,8 @@ def build_allinone(out, aiover, core_version, jobs, det_zip, scan):
         if zf.testzip():
             sys.exit('All In One zip integrity failed')
         names = zf.namelist()
-    bad = [n for n in names if n.lower().endswith('fur02.redfur') or 'yennefer' in n.lower()]
+    # third-party Yennefer mod (modYenneferFurHairworks / fur02.redfur); our own modYenneferHairworks is fine
+    bad = [n for n in names if n.lower().endswith('fur02.redfur') or 'yenneferfur' in n.lower()]
     if bad:
         sys.exit('All In One zip holds third-party names: %s' % bad)
     print('%s: %d files, %.2f MB' % (os.path.basename(zp), len(names), os.path.getsize(zp) / 1e6))

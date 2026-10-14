@@ -258,6 +258,7 @@ void App::handleInput() {
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) pickerOpen = true;
     if (ImGui::IsKeyPressed(ImGuiKey_F1)) helpOpen = true;
     if (!loaded) return;
+    if (windBusy) return;   // Check > Max-wind strays running: no edits / camera moves until it is done
     if (pickerOpen) {
         if (!io.WantCaptureKeyboard && ImGui::IsKeyPressed(ImGuiKey_Escape)) pickerOpen = false;
         return;
@@ -267,6 +268,7 @@ void App::handleInput() {
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z)) { groom.undo(); editsChanged(); }
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y)) { groom.redoOp(); editsChanged(); }
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_O)) pickerOpen = true;
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_G)) { guideBody = !guideBody; if (guideBody) showGuideOverlay = true; }   // hide guides behind the body
         if (ctrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_H)) {   // hairstyle switcher (opens under the breadcrumb)
             styleMenuReq = true;
             styleMenuX = crumbStyleX;
@@ -284,6 +286,7 @@ void App::handleInput() {
             if (ImGui::IsKeyPressed(ImGuiKey_E)) tool = Tool::Comb;
             if (ImGui::IsKeyPressed(ImGuiKey_T)) tool = Tool::Curl;
             if (ImGui::IsKeyPressed(ImGuiKey_P)) tool = Tool::Paint;
+            if (ImGui::IsKeyPressed(ImGuiKey_A)) tool = Tool::Draw;
             // edits
             if (ImGui::IsKeyPressed(ImGuiKey_Delete)) opDelete();
             if (ImGui::IsKeyPressed(ImGuiKey_D)) opDuplicate();
@@ -291,7 +294,10 @@ void App::handleInput() {
             if (ImGui::IsKeyPressed(ImGuiKey_C)) opCurl(selList());
             if (ImGui::IsKeyPressed(ImGuiKey_X)) symmetry = !symmetry;
             // view
-            if (ImGui::IsKeyPressed(ImGuiKey_G)) showGuideOverlay = !showGuideOverlay;
+            if (ImGui::IsKeyPressed(ImGuiKey_G)) {
+                if (io.KeyShift) { guideFront = !guideFront; if (guideFront) showGuideOverlay = true; }   // Shift+G: front layer only
+                else showGuideOverlay = !showGuideOverlay;
+            }
             if (ImGui::IsKeyPressed(ImGuiKey_H)) showHair = !showHair;
             if (ImGui::IsKeyPressed(ImGuiKey_M)) showMeshes = !showMeshes;
             if (ImGui::IsKeyPressed(ImGuiKey_N)) showCollision = !showCollision;
@@ -357,8 +363,9 @@ void App::handleInput() {
                 boxSel = true;
             }
         } else if (tool == Tool::Move) {
-            int g = pickGuide(mx, my);
-            if (g >= 0 && !sel.count(g)) { sel.clear(); sel.insert(g); }
+            // a selection is locked while the button is held (user 2026-10-14): the drag moves it, never the hair under the
+            // cursor; a plain click re-selects on release (below); with nothing selected the press picks the guide to move
+            if (sel.empty()) { int g = pickGuide(mx, my); if (g >= 0) sel.insert(g); }
             if (sel.empty()) dragging = false;
             else {
                 // one selected guide and the click on one of its points (2026-10-13): drag that point only
@@ -368,7 +375,7 @@ void App::handleInput() {
                 if (sel.size() == 1) {
                     int gi = *sel.begin();
                     float bd = 9.0f * 9.0f;
-                    for (int k = 1; k < pack.K; k++) {
+                    for (int k = 1; k < groom.K; k++) {
                         XMFLOAT2 s = project(posedPoint(gi, k));
                         float d = (s.x - mx) * (s.x - mx) + (s.y - my) * (s.y - my);
                         if (d < bd) { bd = d; dragK = k; }
@@ -392,6 +399,12 @@ void App::handleInput() {
             strokeSet.clear();
         } else if (tool == Tool::Paint) {
             paintAt(mx, my);
+        } else if (tool == Tool::Draw) {
+            drawing = false;
+            drawPx.clear();
+            drawWorld.clear();
+            if (headRay(mx, my, drawRoot)) { drawing = true; drawUpdate(mx, my); }
+            else { dragging = false; status = "Draw: click on the head"; }
         }
     }
     if (dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -399,7 +412,7 @@ void App::handleInput() {
         if (tool == Tool::Move && (dx != 0 || dy != 0) && groom.ops.size() > strokeOps0) {
             auto ix = selList();
             V3 c{0, 0, 0};
-            for (int i : ix) c = c + posedPoint(i, dragK > 0 ? dragK : pack.K / 2);
+            for (int i : ix) c = c + posedPoint(i, dragK > 0 ? dragK : groom.K / 2);
             c = c * (1.0f / std::max<size_t>(ix.size(), 1));
             V3 w = restDelta(ix.empty() ? 0 : ix[0], screenDeltaToWorld(mx - mx0, my - my0, c));   // posed -> rest space
             for (size_t k = strokeOps0; k < groom.ops.size(); k++) {
@@ -411,12 +424,12 @@ void App::handleInput() {
         } else if (tool == Tool::Comb && (dx != 0 || dy != 0)) {
             for (int i : guidesUnderBrush(mx, my, brushPx)) {
                 float best = 1e9f;
-                for (int k = pack.K / 3; k < pack.K; k += 2) {
+                for (int k = groom.K / 3; k < groom.K; k += 2) {
                     XMFLOAT2 s = project(posedPoint(i, k));
                     best = std::min(best, (s.x - mx) * (s.x - mx) + (s.y - my) * (s.y - my));
                 }
                 float wgt = combStrength * (1.0f - std::sqrt(best) / brushPx);
-                V3 w = restDelta(i, screenDeltaToWorld(dx * wgt, dy * wgt, posedPoint(i, pack.K - 1)));
+                V3 w = restDelta(i, screenDeltaToWorld(dx * wgt, dy * wgt, posedPoint(i, groom.K - 1)));
                 combOff[i] = combOff[i] + w;
                 if (symmetry) for (int j : mirrorOf({i})) combOff[j] = combOff[j] + V3{-w.x, w.y, w.z};
             }
@@ -433,6 +446,8 @@ void App::handleInput() {
             for (int i : guidesUnderBrush(mx, my, brushPx)) strokeSet.insert(i);
         } else if (tool == Tool::Paint && (dx != 0 || dy != 0)) {
             paintAt(mx, my);
+        } else if (tool == Tool::Draw && (dx != 0 || dy != 0)) {
+            drawUpdate(mx, my);
         }
         mxl = mx;
         myl = my;
@@ -443,7 +458,16 @@ void App::handleInput() {
             if (x1 - x0 > 3 && y1 - y0 > 3)
                 for (size_t i = 0; i < groom.P.size(); i++) {
                     if (!groom.alive[i]) continue;
-                    XMFLOAT2 s = project(posedPoint((int)i, pack.K / 3));
+                    if (visFilter()) {   // guide views + "Select visible only": a shown guide with a drawn point in the box
+                        if (!pickVisible((int)i)) continue;
+                        for (int k = 1; k < groom.K; k++) {
+                            if (!pickPointVisible((int)i, k)) continue;
+                            XMFLOAT2 s = project(posedPoint((int)i, k));
+                            if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) { sel.insert((int)i); break; }
+                        }
+                        continue;
+                    }
+                    XMFLOAT2 s = project(posedPoint((int)i, groom.K / 3));
                     if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) sel.insert((int)i);
                 }
         }
@@ -451,6 +475,17 @@ void App::handleInput() {
             auto& o = groom.ops.back()["offset"];
             if (o[0] == 0.0f && o[1] == 0.0f && o[2] == 0.0f) { groom.ops.resize(strokeOps0); groom.replay(); }
         }
+        // a plain click (no drag) in Move still selects the hair under the cursor (user 2026-10-14): only a held drag is locked
+        if (tool == Tool::Move && std::abs(mx - mx0) < 3 && std::abs(my - my0) < 3) {
+            if (groom.ops.size() > strokeOps0) { groom.ops.resize(strokeOps0); groom.replay(); }
+            int g = pickGuide(mx, my);
+            if (g >= 0) {
+                if (io.KeyCtrl) { if (sel.count(g)) sel.erase(g); else sel.insert(g); }
+                else if (io.KeyShift) sel.insert(g);
+                else { sel.clear(); sel.insert(g); }
+            }
+        }
+        if (tool == Tool::Draw && drawing) opDrawGuide();
         if (tool == Tool::Curl && !strokeSet.empty()) opCurl(std::vector<int>(strokeSet.begin(), strokeSet.end()));
         dragging = false;
         boxSel = false;
@@ -596,7 +631,7 @@ static void drawTitleBar(App& a) {
     // menus (buttons opening popups: BeginMenu would open sideways outside a menu bar)
     ImGui::SetCursorScreenPos(ImVec2(x, cy - S(14)));
     ImVec2 pp;
-    const char* menus[] = {"File", "Edit", "View", "Help"};
+    const char* menus[] = {"File", "Edit", "View", "Check", "Help"};
     for (const char* m : menus) {
         if (menuButton(m, pp)) ImGui::OpenPopup((std::string("##menu_") + m).c_str());
         ImGui::SetNextWindowPos(pp);
@@ -634,6 +669,10 @@ static void drawTitleBar(App& a) {
                 for (size_t i = 0; i < a.groom.alive.size(); i++) if (a.groom.alive[i]) a.sel.insert((int)i);
             }
             if (ImGui::MenuItem("Mirror side", nullptr, false, a.loaded)) a.opMirror();
+            if (a.beardOn) {   // Beard mode (builds with a beard fur): same switch as the inspector's "Editing  Hair | Beard"
+                ImGui::Separator();
+                if (ImGui::MenuItem("Edit the beard fur", nullptr, a.fur == 1, a.loaded && !a.windBusy)) a.setFur(a.fur == 1 ? 0 : 1);
+            }
         } else if (!strcmp(m, "View")) {
             const char* vn[] = {"front", "back", "left", "right", "34", "back34"};
             const char* vl[] = {"Front (Num 1)", "Back (Num 7)", "Left side (Num 9)", "Right side (Num 3)", "Three-quarter front", "Three-quarter back"};
@@ -645,6 +684,38 @@ static void drawTitleBar(App& a) {
             ImGui::MenuItem("Vanilla reference...", nullptr, &a.vanillaOpen);
             if (ImGui::MenuItem("Vanilla hair (cards)", nullptr, &a.vanillaHair)) a.showHair = !a.vanillaHair;
             ImGui::MenuItem("Guide overlay", "G", &a.showGuideOverlay);
+            // guide visibility views (guidevis.cpp): live with the camera; both can be on
+            if (ImGui::MenuItem("Guides: front layer only", "Shift+G", &a.guideFront) && a.guideFront) a.showGuideOverlay = true;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Only the guides on the outside of the hair as seen from the camera (the first layer):\nguides covered by other hair or by the head / body are hidden.");
+            if (ImGui::MenuItem("Guides: hide behind the body", "Ctrl+G", &a.guideBody) && a.guideBody) a.showGuideOverlay = true;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Guide parts hidden by the head, body or outfit from the camera are not drawn.");
+            if (ImGui::BeginMenu("Guide view options", a.guideVisOn())) {
+                ImGui::MenuItem("Select visible only", nullptr, &a.selectVisibleOnly);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click, box and brush selection (and the comb / curl / paint brushes) only take the guides the view shows.");
+                ImGui::SetNextItemWidth(S(240));
+                ImGui::SliderFloat("front points %", &a.guideFrontPct, 10, 100, "%.0f");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Front layer: share of a guide's points that must be front-most for it to show.");
+                ImGui::SetNextItemWidth(S(240));
+                ImGui::SliderFloat("depth tolerance mm", &a.guideTolMm, 1, 40, "%.0f");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Front layer: how far behind the outermost hair a point may lie and still count as front.");
+                if (a.gvis.valid) ImGui::TextDisabled("%d of %d guides shown (%.1f ms in the background, %.1f ms a frame)", a.gvis.nShown, a.groom.numAlive(), a.gvis.ms, a.gvis.msMain);
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Guide colour")) {   // white hair (Ciri) hides the default grey guides; saved in the project
+                if (ImGui::ColorPicker3("##guidecol", a.guideRgb, ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_DisplayRGB)) {
+                    a.guideCustom = true;
+                    a.showGuideOverlay = true;
+                    a.rememberGuideColour();
+                }
+                const float presets[][3] = {{1.0f, 0.2f, 0.6f}, {0.1f, 0.9f, 0.3f}, {1.0f, 0.55f, 0.0f}, {0.1f, 0.1f, 0.1f}};
+                const char* names[] = {"Magenta", "Green", "Orange", "Black"};
+                for (int p = 0; p < 4; p++) {
+                    if (p) ImGui::SameLine();
+                    if (ImGui::SmallButton(names[p])) { for (int i = 0; i < 3; i++) a.guideRgb[i] = presets[p][i]; a.guideCustom = true; a.showGuideOverlay = true; a.rememberGuideColour(); }
+                }
+                if (ImGui::SmallButton("Default")) { a.guideCustom = false; a.guideRgb[0] = 0.6f; a.guideRgb[1] = 0.65f; a.guideRgb[2] = 0.7f; a.rememberGuideColour(); }
+                ImGui::EndMenu();
+            }
             ImGui::MenuItem("Simulated guides (SDK)", nullptr, &a.sdkGuides);
             ImGui::MenuItem("Collision capsules (SDK)", "N", &a.showCollision);
             ImGui::MenuItem("Growth mesh (SDK)", nullptr, &a.showGrowth);
@@ -654,6 +725,10 @@ static void drawTitleBar(App& a) {
             ImGui::MenuItem("Community...", nullptr, &a.communityOpen);
             ImGui::MenuItem("Light settings...", nullptr, &a.lightOpen);
             ImGui::MenuItem("Log", nullptr, &s_logOpen);
+        } else if (!strcmp(m, "Check")) {
+            if (ImGui::MenuItem("Unnatural endings...", nullptr, a.endingsOpen, a.loaded)) a.endingsOpen = !a.endingsOpen;
+            if (ImGui::MenuItem("Unwanted loops...", nullptr, a.loopsOpen, a.loaded)) a.loopsOpen = !a.loopsOpen;
+            if (ImGui::MenuItem("Max-wind strays...", nullptr, a.windOpen, a.loaded)) a.windOpen = !a.windOpen;
         } else {
             if (ImGui::MenuItem("Shortcuts", "F1")) a.helpOpen = true;
             if (ImGui::MenuItem("User guide")) openGuide(a);
@@ -668,7 +743,7 @@ static void drawTitleBar(App& a) {
         bool showChar = a.loaded && !a.pickerOpen;
         std::string name = ce ? w::upper(ce->value("name", "")) : (showChar ? w::upper(a.configName.substr(0, a.configName.find('_'))) : "CHARACTERS");
         std::string st = ce ? ce->value("status", "") : "";
-        int edits = a.loaded ? int(a.groom.ops.size() + a.look.over.size()) : 0;
+        int edits = a.loaded ? a.editCount() : 0;
         bool dirty = a.loaded && edits != a.savedEdits;
         std::string build = a.configName, dirtyT = std::to_string(edits) + (edits == 1 ? " edit" : " edits") + (dirty ? " unsaved" : "");
         // hairstyle (Character > Hairstyle > build): always shown in the editor; a dropdown ("##crumb_style", Ctrl+Shift+H)
@@ -880,7 +955,8 @@ static void drawRail(App& a) {
                  {Tool::Move, ICON_LC_MOVE, w::CI_NONE, "##mov", "W", "Move (W)\nDrag the selected guides in the view plane. Falloff and 'from CV' are in Edit guides."},
                  {Tool::Comb, nullptr, w::CI_COMB, "##comb", "E", "Comb (E)\nDrag over guides: they follow the stroke, roots stay fixed. Brush size in Edit guides."},
                  {Tool::Curl, nullptr, w::CI_CURL, "##curl", "T", "Curl brush (T)\nBrush over guides to curl them with the Curl settings (ringlet, roll, wave). C curls the selection."},
-                 {Tool::Paint, ICON_LC_PAINTBRUSH, w::CI_NONE, "##paint", "P", "Paint stiffness (P)\nPaint a stiffness / root-stiffness value on the scalp (exported as the redfur stiffnessTex)."}};
+                 {Tool::Paint, ICON_LC_PAINTBRUSH, w::CI_NONE, "##paint", "P", "Paint stiffness (P)\nPaint a stiffness / root-stiffness value on the scalp (exported as the redfur stiffnessTex)."},
+                 {Tool::Draw, ICON_LC_SPLINE, w::CI_NONE, "##draw", "A", "Draw (A)\nClick on the scalp where the hair grows, drag to trace its path; release to add the guide."}};
     for (auto& t : tools) if (railButton(t.id, t.glyph, t.ci, on && a.tool == t.t, false, t.key, t.tipText, on)) a.tool = t.t;
     // editing tools edit the bind pose (unless "edit while moving"); Select keeps the motion running
     if (a.loaded) {
@@ -1351,6 +1427,23 @@ static void whoHeader(App& a) {
     d->AddLine(ImVec2(wp.x, wp.y + h - 0.5f), ImVec2(wp.x + W, wp.y + h - 0.5f), tc(tok::IRON), 1);
 }
 
+// Beard mode switch, under the character card (only for builds with a beard fur): which fur the tools, Look, Physics,
+// Stiffness map, checks, budget and export edits act on; the other fur is drawn as a preview
+static void furSwitch(App& a) {
+    ImDrawList* d = ImGui::GetWindowDrawList();
+    ImVec2 wp = ImGui::GetWindowPos();
+    float y = ImGui::GetCursorScreenPos().y + S(10);
+    d->AddText(g_fontCap, g_fontCap->FontSize, ImVec2(wp.x + S(16), y + S(16) - g_fontCap->FontSize * 0.5f), tc(tok::MUTED), "EDITING");
+    ImGui::SetCursorScreenPos(ImVec2(wp.x + S(16) + w::textSize(g_fontCap, "EDITING").x + S(12), y));
+    const char* lb[] = {"Hair##fur", "Beard##fur"};
+    const char* tp[] = {"Hair mode\nThe tools, Look, Physics, Stiffness map, checks and the budget act on the hair; the beard is a preview.",
+                        "Beard mode\nThe tools, Look, Physics, Stiffness map, checks and the budget act on the beard fur; the hair is a preview.\n"
+                        "Both edit sets are kept apart, saved in the project and exported (the beard edits go into the build's beard fur)."};
+    int v = a.fur;
+    if (w::segmented("##fursw", lb, 2, &v, tp) && v != a.fur) a.setFur(v);
+    ImGui::SetCursorScreenPos(ImVec2(wp.x, ImGui::GetCursorScreenPos().y));
+}
+
 static void drawInspector(App& a) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     float top = vp->Pos.y + g_titleH, H = vp->Size.y - g_titleH - g_statusH;
@@ -1363,6 +1456,7 @@ static void drawInspector(App& a) {
                                            ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings);
     g_panelW = ImGui::GetWindowWidth();
     whoHeader(a);
+    if (a.beardOn) furSwitch(a);
     budgetCard(a);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(16), 0));
     ImGui::BeginChild("##sections", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding, 0);
@@ -1490,8 +1584,19 @@ static void drawInspector(App& a) {
             }
             if (a.curl.mode == "wave") w::switchRow("zigzag", &a.curl.zigzag, "Triangle wave instead of sine.");
             w::sliderRow("jitter", "Jitter", &a.curl.jitter, 0, 1, "%.2f", NAN, false, &r, "Per-strand random phase and radius.");
-            float cpt = curlCvsPerTurn(a.pack.K, a.curl);
+            float cpt = curlCvsPerTurn(a.groom.K, a.curl);
             if (cpt < 6) { char b[96]; snprintf(b, sizeof b, "Only %.1f CVs per turn: lower the turns or start earlier.", cpt); smallNote(b, tok::WARN); }
+            if (cpt < 6 && a.groom.K < kMaxCvs) {
+                // more CVs on every guide (same shape: old CVs kept, new ones on the smooth curve): the Studio resample op
+                int want = std::clamp(int(std::ceil((a.groom.K - 1) * 6.0f / std::max(cpt, 0.1f))) + 1, 16, kMaxCvs);   // 6 CVs per turn
+                std::string lbl = "Resample all guides to " + std::to_string(want) + " CVs";
+                if (w::button(lbl.c_str(), lbl.c_str(), ImVec2(-1, 0))) {
+                    a.groom.push({{"type", "resample"}, {"n", want}});
+                    a.editsChanged();
+                    a.status = "All guides resampled to " + std::to_string(a.groom.K) + " CVs (shape kept)";
+                }
+                tip("Every guide gets more control points along its own smooth curve (old points kept), so curls and lengthening keep their shape. Render cost grows with the CVs.");
+            }
             if (w::button("Curl selection (C)", "Curl selection (C)", ImVec2(-1, 0))) a.opCurl(a.selList());
             if (w::button("Hold curls in the simulation", "Hold curls in the simulation", ImVec2(-1, 0))) a.holdCurlsPhysics();
             tip("Raises stiffness / root / tip / bend stiffness and flattens the curves so HairWorks keeps the curled rest shape.");
@@ -1524,7 +1629,7 @@ static void drawInspector(App& a) {
             if (comboRow("move falloff", &fi, fo, 3, "carry: the whole strand moves; linear: root fixed, tip moves fully; tip: mostly the lower part.")) a.falloff = fo[fi];
             bool r = false;
             float fk = (float)a.fromK;
-            if (w::sliderRow("from CV", "From CV", &fk, 0, (float)std::max(a.pack.K - 1, 1), "%.0f", NAN, false, &r, "CVs before this one stay fixed.")) a.fromK = (int)std::lround(fk);
+            if (w::sliderRow("from CV", "From CV", &fk, 0, (float)std::max(a.groom.K - 1, 1), "%.0f", NAN, false, &r, "CVs before this one stay fixed.")) a.fromK = (int)std::lround(fk);
             w::sliderRow("comb strength", "Comb strength", &a.combStrength, 0.1f, 2.0f, "%.2f", NAN, false, &r, "How strongly the comb drags guides.");
             w::sliderRow("keep %", "Keep %", &a.keepPct, 10, 100, "%.0f", NAN, false, &r, "Shorten keeps this percentage of the length.");
             w::sliderRow("dup step mm", "Dup step mm", &a.dupStepMm, 1, 20, "%.0f", NAN, false, &r, "Distance of a duplicate from its source.");
@@ -1740,6 +1845,8 @@ void App::ui() {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGuiIO& io = ImGui::GetIO();
     pollJob();
+    bool windLock = windBusy;   // the wind check owns the groom and the simulation: everything but its panel is disabled
+    if (windLock) ImGui::BeginDisabled();
     drawTitleBar(*this);
     drawRail(*this);
     bool inspector = loaded && !pickerOpen;
@@ -1773,6 +1880,44 @@ void App::ui() {
 
     if (vanillaOpen) drawVanillaRef();
     if (communityOpen) drawCommunity(*this, communityOpen);
+
+    // Check > Unnatural endings
+    if (endingsOpen && loaded) {
+        checkEndings();
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + S(16), vp->Pos.y + g_titleH + S(110)), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ImVec2(S(360), 0), ImGuiCond_Appearing);
+        if (ImGui::Begin("Unnatural endings", &endingsOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped("Faces whose 3 guides go different ways: the hair between them fans across the gap and ends in a hard line. Flagged guides are orange in the viewport.");
+            ImGui::Text("%d flagged faces, %d guides", (int)endFaces.size(), (int)endGuides.size());
+            ImGui::SliderFloat("direction angle (deg)##enddiv", &endDiv, 10, 120, "%.0f");
+            ImGui::SliderFloat("tip spread (x root spacing)##endspread", &endSpread, 1, 12, "%.1f");
+            if (ImGui::Button("Select flagged guides##endsel")) { sel = endGuides; }
+            ImGui::SameLine();
+            if (ImGui::Button("Remove fanned hair##endrm")) removeFanned();
+            ImGui::TextWrapped("Removing faces deletes the hair between the guides (one undo step) and can open scalp: check the coverage afterwards.");
+        }
+        ImGui::End();
+    }
+
+    // Check > Unwanted loops
+    if (loopsOpen && loaded) {
+        checkLoops();
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + S(16), vp->Pos.y + g_titleH + S(110)), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ImVec2(S(360), 0), ImGuiCond_Appearing);
+        if (ImGui::Begin("Unwanted loops", &loopsOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped("Guides that come back to themselves: the strand returns close to a point it passed (or its root) after a long run of hair. Tight repeated turns (curls) are not flagged. Flagged guides are purple in the viewport.");
+            ImGui::Text("%d flagged guides", (int)loopList.size());
+            ImGui::SliderFloat("min hair between (mm)##looparc", &loopArc, 20, 300, "%.0f");
+            ImGui::SliderFloat("return distance (mm)##loopclose", &loopClose, 3, 40, "%.0f");
+            ImGui::SliderFloat("curl size, not a loop (mm)##loopcurl", &loopCurlR, 10, 100, "%.0f");
+            ImGui::SliderFloat("circling (deg)##loopturn", &loopTurn, 180, 720, "%.0f");
+            if (ImGui::Button("Select flagged guides##loopsel")) { sel = loopGuides; }
+            ImGui::SameLine();
+            if (ImGui::Button("Delete flagged guides##looprm")) removeLoops();
+            ImGui::TextWrapped("Deleting is one undo step.");
+        }
+        ImGui::End();
+    }
 
     // light settings (time-of-day popup "Advanced...", View > Light settings)
     if (lightOpen) {
@@ -1947,10 +2092,11 @@ void App::ui() {
     }
     if (helpOpen) { ImGui::OpenPopup("Shortcuts"); helpOpen = false; }
     if (ImGui::BeginPopupModal("Shortcuts", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        const char* rows[][2] = {{"Q W E T P", "Select, Move, Comb, Curl brush, Paint stiffness"}, {"Right drag / middle drag / wheel", "Orbit / pan / zoom"},
+        const char* rows[][2] = {{"Q W E T P A", "Select, Move, Comb, Curl brush, Paint stiffness, Draw a new guide"}, {"Right drag / middle drag / wheel", "Orbit / pan / zoom"},
                                  {"Click, Ctrl+click, Shift+click, drag", "Select, toggle, add, box select"}, {"Del / D / S / C", "Delete / duplicate / shorten / curl the selection"},
                                  {"Ctrl+Z / Ctrl+Y", "Undo / redo"}, {"Ctrl+S", "Save the project"}, {"Ctrl+O", "Characters"},
                                  {"Ctrl+Shift+H", "Hairstyle switcher (breadcrumb / inspector \"Hairstyle\")"}, {"X", "Live symmetry"}, {"G / H / M / N / B / Z / V", "Guides, hair, head+body mesh, colliders, bones, wireframe, symmetry plane"},
+                                 {"Shift+G / Ctrl+G", "Guides: front layer only / hide guides behind the body (View menu, toolbar)"},
                                  {"Space / Esc / .", "Play-pause / stop and reset to rest (Esc clears the selection first) / step one frame"},
                                  {"R / J", "Re-teleport the simulation / wind on-off"}, {"Tab", "Edit pose on / off"},
                                  {"1 2 3 4", "Front, 3/4, side, back cameras (HairLab shots)"}, {"F / O", "Frame the head / turntable"},
@@ -1959,6 +2105,59 @@ void App::ui() {
         for (auto& r : rows) { ImGui::TextColored(C_GLOW, "%s", r[0]); ImGui::SameLine(300 * g_ui); ImGui::TextUnformatted(r[1]); }
         if (w::button("Close##shortcuts", "Close", ImVec2(S(120), 0))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
+    }
+    if (windLock) ImGui::EndDisabled();
+
+    // Check > Max-wind strays (windcheck.cpp)
+    if ((windOpen || windBusy) && loaded) {
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + S(16), vp->Pos.y + g_titleH + S(110)), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ImVec2(S(460), 0), ImGuiCond_Appearing);
+        bool open = true;
+        if (ImGui::Begin("Max-wind strays", &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::PushTextWrapPos(S(440));
+            ImGui::TextWrapped("Runs the simulation at maximum wind (5) for 6 s, measures how far hair leaves the rest silhouette in 6 cameras "
+                               "and reads the simulated guides back from the GPU. The wind is not repeatable, so every measure is the envelope of several runs. "
+                               "Candidates are confirmed by hiding them and re-running the same wind. Confirmed culprits are red in the viewport. "
+                               "Takes about 2 minutes.");
+            if (windBusy) {
+                ImGui::ProgressBar(windProgress, ImVec2(S(440), 0), windPhase.c_str());
+                if (ImGui::Button("Cancel##windcancel")) windCancel = true;
+            } else {
+                ImGui::SliderFloat("threshold (px at 600)##windthr", &windThr, 4, 40, "%.0f");
+                if (ImGui::Button("Run##windrun")) windStart({{"threshold_px", windThr}});
+                if (windResult.contains("error")) ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "%s", windResult["error"].get<std::string>().c_str());
+                else if (windResult.contains("culprits")) {
+                    int fl = 0;
+                    for (auto& cm : windResult["cameras"]) fl += cm.value("flagged_px", 0);
+                    int nc = 0;
+                    for (auto& w : windRows) nc += w.confirmed;
+                    ImGui::Text("%d culprit(s), %d confirmed, %d px out of place in all cameras, %d runs, %.0f s", (int)windRows.size(), nc, fl,
+                                windResult.value("runs", 0), windResult.value("elapsed_s", 0.0));
+                    if (windResult.contains("repeatability")) {
+                        auto& rp = windResult["repeatability"];
+                        if (rp.value("identical", false)) ImGui::TextWrapped("Repeatability: identical runs (deterministic)");
+                        else ImGui::TextWrapped("Repeatability: runs differ (CV up to %.0f mm); measured as the envelope of %d runs",
+                                                rp.value("cv_max_diff_mm", 0.0), rp.value("runs", 0));
+                    }
+                }
+                ImGui::BeginChild("##windlist", ImVec2(S(440), S(220)), ImGuiChildFlags_Borders);
+                for (size_t i = 0; i < windRows.size(); i++) {
+                    auto& w = windRows[i];
+                    bool on = true;
+                    for (int g : w.guides) on &= sel.count(g) > 0;
+                    if (ImGui::Selectable((w.text + "##windrow" + std::to_string(i)).c_str(), on && !w.guides.empty()))
+                        sel = std::set<int>(w.guides.begin(), w.guides.end());
+                }
+                ImGui::EndChild();
+                if (ImGui::Button("Select all culprits##windsel")) sel = windGuides;
+                ImGui::SameLine();
+                if (ImGui::Button("Delete culprits##windrm")) windDeleteCulprits();
+                ImGui::TextWrapped("Deleting is one undo step (guides + culprit faces).");
+            }
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::End();
+        if (!open && !windBusy) windOpen = false;
     }
 }
 

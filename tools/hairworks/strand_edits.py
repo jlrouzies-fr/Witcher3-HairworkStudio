@@ -496,6 +496,8 @@ def export_json(C, res, head, info, comp=None, edits=None, base=None, out_dir=ED
     outf = list((C.get('outfits') or {}).get(app) or info.get('outfit', {}).get(app, []))
     hats = list((C['growth'].get('drop_near_meshes') or {}).get('meshes', []))
     seen = set()
+    _osrc = G.outfit_source(C['growth'].get('outfit_mods'))      # 2026-10-14 opt-in: show the installed outfit mod's meshes
+    _osrc.__enter__()
     for rel, kind in [(r, 'hat') for r in hats] + [(r, 'outfit') for r in outf]:
         if rel.lower() in seen:
             continue
@@ -512,6 +514,7 @@ def export_json(C, res, head, info, comp=None, edits=None, base=None, out_dir=ED
                 e['kind'] = kind; e['path'] = rel; meshes.append(e)
         except Exception as ex:          # an editor mesh must never break a build
             log('  edit export: mesh %s skipped (%r)' % (rel, ex))
+    _osrc.__exit__(None, None, None)
     D = dict(version=1, config=C['name'], character=C['name'].split('_')[0], comp=comp,
              K=int(len(res['S'][0]['p'])) if res['S'] else 0,
              head=dict(top=round(float(head.top), 4), c=_r4(head.c)),

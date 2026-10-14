@@ -1,0 +1,8 @@
+{"splash": false, "steps": [
+ {"do": "wait", "frames": 30},
+ {"do": "wait_job"}, {"do": "wait", "frames": 60},
+ {"do": "expect", "loaded": true, "picker": false},
+ {"do": "click", "label": "Check"}, {"do": "wait", "frames": 3},
+ {"do": "click", "label": "Unnatural endings..."}, {"do": "wait", "frames": 5},
+ {"do": "expect", "widget": "Remove fanned hair##endrm", "endings_min": 1}
+]}

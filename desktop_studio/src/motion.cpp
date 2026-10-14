@@ -96,9 +96,10 @@ XMMATRIX Motion::headM(const DeskPack& pk) const {
     return aboutPivot(neck, R) * rootM(pk);
 }
 
-void Motion::boneMatrices(const DeskPack& pk, std::vector<XMFLOAT4X4>& out) const {
+void Motion::boneMatrices(const DeskPack& pk, std::vector<XMFLOAT4X4>& out, const DeskPack* body) const {
     out.resize(pk.bones.size());
-    XMMATRIX H = headM(pk), Nk = neckM(pk), Rt = rootM(pk);
+    const DeskPack& bp = body ? *body : pk;
+    XMMATRIX H = headM(bp), Nk = neckM(bp), Rt = rootM(bp);
     for (size_t i = 0; i < pk.bones.size(); i++) {
         const std::string& n = pk.bones[i].name;
         XMMATRIX M = Rt;

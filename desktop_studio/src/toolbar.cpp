@@ -301,6 +301,10 @@ void App::drawToolbar() {
         ImGui::Dummy(ImVec2(ls.x + S(10), S(34)));
         ImGui::SameLine(0, 0);
         barToggle("##tb_guides", nullptr, w::CI_GUIDES, showGuideOverlay, "Guides overlay (G)", c); if (c) showGuideOverlay = !showGuideOverlay;
+        barToggle("##tb_gfront", ICON_LC_LAYERS, w::CI_NONE, guideFront, "Guides: front layer only (Shift+G)\nOnly the outermost guides seen from the camera; selection takes only them (View > Guide view options).", c);
+        if (c) { guideFront = !guideFront; if (guideFront) showGuideOverlay = true; }
+        barToggle("##tb_gbody", ICON_LC_PERSON_STANDING, w::CI_NONE, guideBody, "Guides: hide behind the body (Ctrl+G)\nGuide parts hidden by the head / body / outfit are not drawn or picked.", c);
+        if (c) { guideBody = !guideBody; if (guideBody) showGuideOverlay = true; }
         barToggle("##tb_hair", nullptr, w::CI_HAIR, showHair, "Rendered hair (H)", c); if (c) showHair = !showHair;
         barToggle("##tb_coll", nullptr, w::CI_COLLIDER, showCollision, "Collision capsules (N)", c); if (c) showCollision = !showCollision;
         barToggle("##tb_bones", ICON_LC_BONE, w::CI_NONE, showBones, "Bones (B)", c); if (c) showBones = !showBones;
@@ -451,7 +455,7 @@ void App::drawToolbar() {
         ImGui::PushFont(g_fontSmall);
         ImVec2 p = ImGui::GetCursorScreenPos();
         ImDrawList* d = ImGui::GetWindowDrawList();
-        std::string parts[4][2] = {{std::to_string(groom.numAlive()), " guides"}, {std::to_string(pack.K), " CVs"},
+        std::string parts[4][2] = {{std::to_string(groom.numAlive()), " guides"}, {std::to_string(groom.K), " CVs"},
                                    {std::to_string(groom.faces.size()), " faces"}, {std::to_string(pack.spheres.size()), " colliders"}};
         float x = p.x;
         for (int i = 0; i < 4; i++) {
@@ -508,6 +512,7 @@ void App::drawToolbar() {
         case Tool::Comb: name = "Comb"; ci = w::CI_COMB; hs = {{nullptr, ICON_LC_MOUSE, "Drag to comb"}, {nullptr, nullptr, brush}}; break;
         case Tool::Curl: name = "Curl brush"; ci = w::CI_CURL; hs = {{nullptr, ICON_LC_MOUSE, "Brush over guides"}, {"C", nullptr, "curls the selection"}, {nullptr, nullptr, brush}}; break;
         case Tool::Paint: name = "Paint stiffness"; glyph = ICON_LC_PAINTBRUSH; hs = {{nullptr, ICON_LC_MOUSE, "Paint the scalp"}, {nullptr, nullptr, brush}}; break;
+        case Tool::Draw: name = "Draw"; glyph = ICON_LC_SPLINE; hs = {{nullptr, ICON_LC_MOUSE, "Click the scalp, drag the path"}, {nullptr, nullptr, "Release adds the guide"}}; break;
         default: break;
         }
         hs.push_back({"RMB", nullptr, "Orbit"});

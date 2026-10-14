@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <map>
 #include <functional>
 #include <random>
 #include <unordered_map>
@@ -236,6 +237,27 @@ static int pushOut(const HeadRadial& h, Guide& G, float standoff, float depth = 
         if (s > 0 && r < s + standoff) G[k] = h.c + u * (s + standoff);
     }
     return n;
+}
+
+// 2026-10-14 read-only: deepest dip (m) of the straight SPANS between CVs under the skin, sampled every ~2 mm. pushOut
+// tests CVs only, so a long span (e.g. a 40 mm first segment across the forehead) can cut through the curved skull
+// between two CVs that both sit outside it; HairWorks then draws that hair half hidden by the skin (broken specks).
+static float spanDip(const HeadRadial& h, const Guide& G) {
+    if (!h.ok) return 0;
+    float worst = 0;
+    for (size_t k = 1; k < G.size(); k++) {
+        V3 a = G[k - 1], b = G[k];
+        int n = std::max(1, (int)(len(b - a) / 0.002f));
+        for (int j = 1; j < n; j++) {
+            V3 p = a + (b - a) * ((float)j / n);
+            V3 d = p - h.c;
+            float r = len(d);
+            if (r < 1e-5f || p.z < h.c.z - 0.01f) continue;
+            float s = h.surface(d * (1.0f / r));
+            if (s > 0 && s - r > worst) worst = s - r;
+        }
+    }
+    return worst;
 }
 
 // how much the root part (first span_m) points away from the scalp: degrees above the tangent plane (frizz = high)
@@ -2526,7 +2548,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
     json r = {{"do", d}};
     auto status_ = [&]() {
         computeBudget();
-        return json{{"config", configName}, {"guides", groom.numAlive()}, {"faces", groom.faces.size()}, {"ops", groom.ops.size()},
+        return json{{"config", configName}, {"fur", fur ? "beard" : "hair"}, {"has_beard", beardOn}, {"guides", groom.numAlive()}, {"faces", groom.faces.size()}, {"ops", groom.ops.size()},
                     {"redo", groom.redo.size()}, {"unmatched", groom.unmatched}, {"guides_over_face", overFace(*this)},
                     {"budget", {{"hairs", bud.hairs}, {"hairs_close", bud.hairsClose}, {"ref", bud.refName}, {"ratio", bud.ratio},
                                 {"limit", look.limit}, {"over_limit", bud.overLimit}}}};
@@ -2580,7 +2602,9 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         if (!cameraOf(*this, c, cam)) { r["error"] = "no such camera"; return r; }
         BaselineScope bs(*this, c.value("baseline", false));
         std::string ov = c.value("overlay", "none"), png = c.value("path", out + "\\render.png");
-        bool so = scalpOverlay, go = showGuideOverlay, sh = showHair, vh = vanillaHair;
+        bool so = scalpOverlay, go = showGuideOverlay, sh = showHair, vh = vanillaHair, gf = guideFront, gb = guideBody;
+        guideFront = c.value("guides_front", guideFront);   // guide views for this render (default: the session's guide_view)
+        guideBody = c.value("guides_body", guideBody);
         showHair = c.value("hair", true);   // "hair": false = skin / scalp only (check the scalp mask)
         vanillaHair = c.value("vanilla", false);   // "vanilla": true = the game's hair cards instead of the groom
         if (vanillaHair) showHair = false;
@@ -2590,7 +2614,8 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         if (ov == "mask") { colorize = 4; maskPass = true; step(0.0); }
         bool ok = renderShot(cam, png, c.value("size", 1400));
         if (ov == "mask") { colorize = cz; maskPass = false; step(0.0); }
-        scalpOverlay = so; showGuideOverlay = go; showHair = sh; vanillaHair = vh;
+        if (ov == "guides" && guideVisOn() && gvis.valid) r["guides_shown"] = gvis.nShown;
+        scalpOverlay = so; showGuideOverlay = go; showHair = sh; vanillaHair = vh; guideFront = gf; guideBody = gb;
         r["ok"] = ok; r["png"] = png; r["camera"] = cam; r["hairs_live"] = st.hairs;
         return r;
     }
@@ -2751,6 +2776,62 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         for (auto& o : ops) groom.ops.push_back(o);
         groom.redo.clear(); groom.replay(); editsChanged(); settleRest(*this, 0.5);
         r["guides"] = ix.size(); r["status"] = status_();
+        return r;
+    }
+    if (d == "guide_view") {
+        // guide visibility views (guidevis.cpp): set the modes (kept for the session: renders with overlay "guides", the
+        // UI) and, with camera keys, compute the shown guides from that camera; "select": true selects them (optionally
+        // only those with a drawn point inside rect [x, y, w, h] 0..1), as the UI's box select with "Select visible only"
+        if (c.contains("front")) guideFront = c["front"].get<bool>();
+        if (c.contains("body")) guideBody = c["body"].get<bool>();
+        if (c.contains("front_pct")) guideFrontPct = std::clamp(c["front_pct"].get<float>(), 1.0f, 100.0f);
+        if (c.contains("tol_mm")) guideTolMm = std::clamp(c["tol_mm"].get<float>(), 0.5f, 50.0f);
+        if (c.contains("select_visible")) selectVisibleOnly = c["select_visible"].get<bool>();
+        r["front"] = guideFront; r["body"] = guideBody; r["front_pct"] = guideFrontPct; r["tol_mm"] = guideTolMm;
+        r["select_visible"] = selectVisibleOnly;
+        json cam;
+        if ((c.contains("shot") || c.contains("view") || c.contains("eye")) && cameraOf(*this, c, cam)) {
+            if (!guideVisOn()) { r["error"] = "no guide view on (front / body)"; return r; }
+            int size = c.value("size", 1400);
+            XMFLOAT3 eye{cam["eye"][0], cam["eye"][1], cam["eye"][2]}, tg{cam["target"][0], cam["target"][1], cam["target"][2]};
+            XMFLOAT4X4 Vm, Pm;
+            XMStoreFloat4x4(&Vm, XMMatrixLookAtRH(XMLoadFloat3(&eye), XMLoadFloat3(&tg), XMVectorSet(0, 0, 1, 0)));
+            XMStoreFloat4x4(&Pm, XMMatrixPerspectiveFovRH(XMConvertToRadians(cam.value("fovy", 11.16f)), 1.0f, 0.05f, 100.0f));
+            computeGuideVis(Vm, Pm, size, size, nullptr, nullptr, false);
+            XMMATRIX VP = XMLoadFloat4x4(&Vm) * XMLoadFloat4x4(&Pm);
+            bool rect = c.contains("rect") && c["rect"].is_array() && c["rect"].size() == 4;
+            float rx = rect ? c["rect"][0].get<float>() : 0, ry = rect ? c["rect"][1].get<float>() : 0;
+            float rw = rect ? c["rect"][2].get<float>() : 1, rh = rect ? c["rect"][3].get<float>() : 1;
+            auto inside = [&](V3 p) {
+                XMVECTOR q = XMVector4Transform(XMVectorSet(p.x, p.y, p.z, 1), VP);
+                float w = XMVectorGetW(q);
+                if (w <= 1e-5f) return false;
+                float sx = XMVectorGetX(q) / w * 0.5f + 0.5f, sy = 1 - (XMVectorGetY(q) / w * 0.5f + 0.5f);
+                return sx >= rx && sx <= rx + rw && sy >= ry && sy <= ry + rh;
+            };
+            std::vector<int> vis;
+            int partial = 0;
+            for (int i = 0; i < gvis.N; i++) {
+                if (!groom.alive[i] || !gvis.shown[i]) continue;
+                bool in = false, cut = false;
+                for (int k = 0; k < gvis.K; k++) {
+                    if (!gvis.pt[size_t(i) * gvis.K + k]) { cut = true; continue; }
+                    if (!in && k > 0 && inside(gvis.pts[size_t(i) * gvis.K + k])) in = true;
+                }
+                if (!in) continue;
+                vis.push_back(i);
+                partial += cut;
+            }
+            int lim = c.value("limit", 0);
+            json l = json::array();
+            for (int i : vis) { if (lim > 0 && (int)l.size() >= lim) break; l.push_back(i); }
+            r["camera"] = cam; r["alive"] = groom.numAlive(); r["shown"] = gvis.nShown; r["in_rect"] = vis.size();
+            r["clipped_by_body"] = partial; r["ms"] = std::round(gvis.ms * 10) / 10;
+            r["ms_parts"] = {{"main_thread_total", std::round(gvis.msMain * 10) / 10}, {"body_raster", std::round(gvis.msBody * 10) / 10}, {"hair_splat", std::round(gvis.msHair * 10) / 10}};
+            r["body_tris"] = gvis.nTri; r["buffer_px"] = gvis.res;
+            if (lim > 0) r["guides"] = l;
+            if (c.value("select", false)) { sel = std::set<int>(vis.begin(), vis.end()); r["selected"] = sel.size(); }
+        }
         return r;
     }
     if (d == "pick_region") {
@@ -2982,9 +3063,13 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         int id = 0, grp = 1000 + (++grpId), n = 0, pts = 0;
         for (auto& o : groom.ops) if (o.contains("id")) id = std::max(id, o["id"].get<int>());
         std::vector<json> ops;
-        json l = json::array();
+        json l = json::array(), sp = json::array();
+        int nSpan = 0;
         for (int g : ix) {
             Guide Q = groom.P[g];
+            // read-only report: spans dipping under the skin between CVs (> 1 mm); delete those guides or re-space their CVs
+            float dip = spanDip(hr, Q);
+            if (dip > 0.001f) { nSpan++; if (sp.size() < 60) sp.push_back({{"i", g}, {"dip_mm", r4(dip * 1000)}}); }
             int m = pushOut(hr, Q, so, c.value("depth_mm", 8.0f) / 1000);
             if (!m) continue;
             V3 r0 = Q[0];
@@ -2998,12 +3083,43 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
             for (auto& o : ops) groom.ops.push_back(o);
             groom.redo.clear(); groom.replay(); editsChanged(); settleRest(*this, 0.5);
         }
-        r["guides_inside"] = n; r["points_moved"] = pts; r["guides"] = l; r["status"] = status_();
+        r["guides_inside"] = n; r["points_moved"] = pts; r["guides"] = l;
+        r["spans_under_skin"] = nSpan; r["span_guides"] = sp; r["status"] = status_();
+        return r;
+    }
+    if (d == "resample") {
+        // 2026-10-14 opt-in: give EVERY guide n CVs (3..32), evenly spaced along the smooth (centripetal Catmull-Rom)
+        // curve through its current CVs, root and tip exact. One "resample" op (the Studio keeps one CV count for all
+        // guides; "where" is not taken). More CVs = curls / waves / lengthening keep their shape (6+ CVs per curl turn);
+        // render cost grows with the CVs ((n-1) x splineMultiplier + 1 vertices per hair). Reports the shape change.
+        int n = std::clamp(c.value("n", 16), 3, kMaxCvs);
+        int K0 = groom.K;
+        if (n == K0) { r["changed"] = 0; r["cvs"] = n; r["note"] = "already " + std::to_string(n) + " CVs"; r["status"] = status_(); return r; }
+        float mx = 0, sum = 0;
+        int cnt = 0, worst = -1;
+        for (size_t i = 0; i < groom.P.size(); i++) {
+            if (!groom.alive[i]) continue;
+            Guide Q = resampleSmooth(groom.P[i], n);
+            float a, m;
+            curveDeviation(groom.P[i], Q, a, m);
+            if (a > mx) { mx = a; worst = (int)i; }
+            sum += m; cnt++;
+        }
+        int id = 0, grp = 1000 + (++grpId);
+        for (auto& o : groom.ops) if (o.contains("id")) id = std::max(id, o["id"].get<int>());
+        groom.ops.push_back({{"op", "resample"}, {"n", n}, {"id", id + 1}, {"grp", grp}});
+        groom.redo.clear(); groom.replay(); editsChanged(); settleRest(*this, 0.5);
+        r["changed"] = cnt; r["cvs_before"] = K0; r["cvs"] = groom.K;
+        r["max_dev_mm"] = r4(mx * 1000.0); r["mean_dev_mm"] = r4(cnt ? sum / cnt * 1000.0 : 0.0); r["worst_guide"] = worst;
+        r["render_vertices_per_hair"] = (groom.K - 1) * std::max(1, pack.splineMultiplier) + 1;
+        r["status"] = status_();
         return r;
     }
     if (d == "lengthen") {
-        // make guides longer (factor > 1) or shorter (< 1) keeping the point count: the strand is resampled along its own
-        // arc; past the old tip it continues along its last direction, bending toward gravity (droop 0..1)
+        // make guides longer (factor > 1) or shorter (< 1) keeping the point count: the CVs are re-placed evenly along the
+        // SMOOTH curve through the old CVs (centripetal Catmull-Rom, not the chords: chord resampling of few CVs cut the
+        // waves into straight hay-like spikes); past the old tip the strand continues along its tip tangent, bending
+        // toward gravity (droop 0..1) a little more at each CV. Under 12 CVs it warns: resample first (studio_resample).
         auto ix = selectGuides(c.value("where", json::object()));
         float fac = std::clamp(c.value("factor", 1.2f), 0.3f, 3.0f), droop = std::clamp(c.value("droop", 0.5f), 0.0f, 1.0f);
         int id = 0, grp = 1000 + (++grpId), n = 0;
@@ -3012,27 +3128,29 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         HeadRadial hr = headRadial(*this);
         for (int g : ix) {
             const Guide& G = groom.P[g];
-            auto sl = arcLen(G);
-            float L = sl.back();
-            if (L < 1e-4f) continue;
             size_t K = G.size();
-            V3 lastDir = nrmz(G[K - 1] - G[K - 2]);
-            Guide Q(K);
-            for (size_t k = 0; k < K; k++) {
+            if (K < 3) continue;
+            std::vector<V3> dense = smoothDense(G, 24);
+            float L = 0;
+            for (size_t q = 1; q < dense.size(); q++) L += len(dense[q] - dense[q - 1]);
+            if (L < 1e-4f) continue;
+            float stepL = L * fac / float(K - 1);
+            std::vector<float> sv;
+            for (size_t k = 0; k < K; k++) sv.push_back(std::min(L * fac * float(k) / float(K - 1), L));
+            Guide Q = sampleSmoothAt(G, sv);
+            V3 lastDir = nrmz(dense.back() - dense[dense.size() - 2]);
+            for (size_t k = 1; k < K; k++) {
                 float s = L * fac * float(k) / float(K - 1);
-                if (s <= L) {
-                    size_t j = 1;
-                    while (j < K - 1 && sl[j] < s) j++;
-                    float t = (s - sl[j - 1]) / std::max(sl[j] - sl[j - 1], 1e-6f);
-                    Q[k] = G[j - 1] + (G[j] - G[j - 1]) * t;
-                } else {
-                    // extension: from the previous point, the last direction blended toward straight down
-                    float stepL = L * fac / float(K - 1);
-                    V3 dir = nrmz(lastDir * (1 - droop) + V3{0, 0, -1} * droop);
-                    Q[k] = Q[k - 1] + dir * stepL;
-                    lastDir = dir;
-                }
+                if (s <= L + 1e-6f) continue;
+                // extension: the remaining part of this step past the old tip, then whole steps, each turning toward down
+                float prevS = L * fac * float(k - 1) / float(K - 1);
+                float seg = prevS < L ? s - L : stepL;
+                V3 from = prevS < L ? dense.back() : Q[k - 1];
+                V3 dir = nrmz(lastDir * (1 - droop) + V3{0, 0, -1} * droop);
+                Q[k] = from + dir * seg;
+                lastDir = dir;
             }
+            Q[0] = G[0];
             pushOut(hr, Q, 0.003f);
             V3 r0 = G[0];
             ops.push_back({{"op", "reshape"}, {"root", {r4(r0.x), r4(r0.y), r4(r0.z)}}, {"points", ptsJson(Q)}, {"id", ++id}, {"grp", grp}});
@@ -3041,6 +3159,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         for (auto& o : ops) groom.ops.push_back(o);
         groom.redo.clear(); groom.replay(); editsChanged(); settleRest(*this, 0.5);
         r["changed"] = n; r["status"] = status_();
+        if (groom.K < 12 && fac > 1.05f) r["warning"] = "guides have only " + std::to_string(groom.K) + " CVs: studio_resample (n 16-24) first keeps the shape when lengthening";
         return r;
     }
     if (d == "clear_ear") {
@@ -4344,17 +4463,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
             }
             if (why.empty() && stretched && edges[f] > maxEdge) { why = "stretched"; nStr++; }
             if (why.empty() && divergent) {
-                // guide directions (root to mid-strand) disagree AND the tips spread far wider than the roots
-                V3 dv[3];
-                for (int q = 0; q < 3; q++) {
-                    auto& G = groom.P[F.g[q]];
-                    dv[q] = nrmz(G[G.size() / 2] - G[0]);
-                }
-                float mx = 0;
-                for (int q = 0; q < 3; q++) mx = std::max(mx, std::acos(std::clamp(dot(dv[q], dv[(q + 1) % 3]), -1.0f, 1.0f)) * 57.2958f);
-                float rootSp = edges[f], tipSp = 0;
-                for (int q = 0; q < 3; q++) tipSp = std::max(tipSp, len(groom.P[F.g[q]].back() - groom.P[F.g[(q + 1) % 3]].back()));
-                if (mx > divDeg && tipSp > spreadK * std::max(rootSp, 1e-4f)) { why = "divergent"; nDiv++; }
+                if (faceDivergent(groom, F, edges[f], divDeg, spreadK)) { why = "divergent"; nDiv++; }
             }
             if (why.empty()) continue;
             json rr = json::array();
@@ -4370,6 +4479,234 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
             r["removed"] = ops.size();
         }
         r["status"] = status_();
+        return r;
+    }
+    if (d == "wind_check") {
+        // read-only measured max-wind check (windcheck.cpp): restores the groom / simulation / motion state, adds no ops
+        if (c.contains("threshold_px")) windThr = c["threshold_px"].get<float>() * 600.0f / std::max(1, c.value("size", 600));
+        json res = windCheck(c, out);
+        for (auto& [k, v] : res.items()) r[k] = v;
+        r["status"] = status_();
+        return r;
+    }
+    if (d == "band_sim") {
+        // read-only (2026-10-14): the SIMULATED guide CVs (GPU read-back, every 1/60 s step) tested against a headband with
+        // the headband op's geometry (r3::findBand / BandProf::crosses): per wind amount, the number of guides passing
+        // OUTSIDE the band per step (max / mean over time, over `repeats` runs: the runtime's wind is random), the guides
+        // that cross most often, and the sway envelope (per guide max displacement from rest of its CVs that rest below
+        // sway_below_z, default head centre - 0.2 m: the hair below the shoulders). "outside" = beyond the inner surface minus
+        // margin (inside the band's thickness counts: what studio_headband fixes); "over_outer" = beyond the band's outer
+        // radius at that azimuth (visibly on top of the band). Params: amounts ([0, 1.5, 5]),
+        // seconds (6), repeats (2), wind_noise (fur value), margin_mm (0.75 = headband clearance 1.5 / 2), worst (15),
+        // sway_below_z, band params (mesh, z_range, max_height_mm, min_coverage). Restores simulation / motion / look.
+        r3::BandProf BP;
+        if (!r3::findBand(*this, c, BP, r)) return r;
+        r["band"] = {{"mesh", pack.meshes[BP.mi].name}, {"z_min", BP.zMin}, {"z_max", BP.zMax}, {"mean_radius_mm", BP.rMean * 1000}, {"coverage", BP.cover}};
+        const float margin = c.value("margin_mm", 0.75f) / 1000;
+        const double seconds = std::clamp(c.value("seconds", 6.0), 0.5, 60.0);
+        const int nSteps = std::max(1, int(seconds * 60.0 + 0.5));
+        const int reps = std::clamp(c.value("repeats", 2), 1, 8), nWorst = std::clamp(c.value("worst", 15), 1, 200);
+        const float swayZ = c.value("sway_below_z", pack.headC.z - 0.2f);
+        json amounts = c.value("amounts", json::array({0.0, 1.5, 5.0}));
+        const char* kNoise = "physicalMaterials.simulation.windNoise";
+        auto lookOver = look.over;
+        bool sSim = simulate, sPaused = paused, sWind = windOn;
+        Motion sMotion = motion;
+        double sAcc = simAcc;
+        if (c.contains("wind_noise") && c["wind_noise"].is_number()) look.setF(kNoise, c["wind_noise"].get<float>());
+        r["wind_noise"] = look.f(kNoise, 0.0f);
+        const size_t NG = groom.P.size();
+        hideGuide.clear(); hideFace.clear();
+        rebuildHair();
+        simulate = false; paused = false; windOn = false;
+        motion.preset = MotionPreset::Rest; motion.speed = 1; motion.amount = 1; motion.t = 0; simAcc = 0; teleport = true;
+        for (int i = 0; i < 3; i++) step(1.0 / 60.0);
+        std::vector<float> xyz;
+        int PG = 0;
+        std::string info;
+        bool ok = hw.readGuides(xyz, PG, &info) && PG > 0 && xyz.size() >= guideOfAsset.size() * size_t(PG) * 3;
+        auto restore = [&]() {
+            look.over = lookOver;
+            hideGuide.clear(); hideFace.clear();
+            rebuildHair();
+            motion = sMotion; motion.preset = MotionPreset::Rest; windOn = false; teleport = true;
+            for (int i = 0; i < 30; i++) step(1.0 / 60.0);
+            motion = sMotion; simulate = sSim; paused = sPaused; windOn = sWind; simAcc = sAcc; aoRefreshAll = true;
+        };
+        if (!ok) { restore(); r["error"] = "guide read-back failed: " + info; return r; }
+        const size_t NA = guideOfAsset.size();
+        std::vector<V3> rest(xyz.size() / 3);
+        for (size_t i = 0; i < rest.size(); i++) rest[i] = {xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]};
+        auto strand = [&](const std::vector<float>& v, size_t a, Guide& G) {
+            G.resize(PG);
+            for (int j = 0; j < PG; j++) { size_t q = (a * PG + j) * 3; G[j] = {v[q], v[q + 1], v[q + 2]}; }
+        };
+        Guide G;
+        int restCross = 0, restOver = 0;
+        for (size_t a = 0; a < NA; a++) { strand(xyz, a, G); if (BP.crosses(G, margin)) restCross++; if (BP.excess(G, true) > 0) restOver++; }
+        r["rest_crossing"] = restCross; r["rest_over_outer"] = restOver;
+        r["cvs_per_guide"] = PG;
+        json res = json::array();
+        for (auto& am : amounts) {
+            float wind = am.get<float>();
+            std::vector<int> stepsOut(NG, 0), stepsOver(NG, 0);
+            std::vector<float> sway(NG, 0.0f), exMax(NG, -1e9f), exOMax(NG, -1e9f);
+            int maxNow = 0, maxStep = -1, maxOver = 0; double sumNow = 0, sumOver = 0; long nStepsAll = 0;
+            for (int rep = 0; rep < reps; rep++) {
+                rebuildHair();
+                simulate = true; paused = false; windOn = wind > 0;
+                motion.preset = MotionPreset::Rest; motion.speed = 1; motion.amount = 1; motion.windStrength = wind; motion.t = 0; simAcc = 0; teleport = true;
+                for (int s = 0; s < nSteps; s++) {
+                    step(1.0 / 60.0);
+                    int pg = PG;
+                    if (!hw.readGuides(xyz, pg) || pg != PG || xyz.size() < NA * size_t(PG) * 3) continue;
+                    int now = 0, over = 0;
+                    for (size_t a = 0; a < NA; a++) {
+                        int g = guideOfAsset[a];
+                        strand(xyz, a, G);
+                        float ex = BP.excess(G);
+                        exMax[g] = std::max(exMax[g], ex);
+                        if (ex > -margin) { now++; stepsOut[g]++; }
+                        float exO = BP.excess(G, true);
+                        exOMax[g] = std::max(exOMax[g], exO);
+                        if (exO > 0) { over++; stepsOver[g]++; }
+                        for (int j = 0; j < PG; j++) {
+                            const V3& p0 = rest[a * PG + j];
+                            if (p0.z < swayZ) sway[g] = std::max(sway[g], len(G[j] - p0));
+                        }
+                    }
+                    if (now > maxNow) { maxNow = now; maxStep = s; }
+                    maxOver = std::max(maxOver, over);
+                    sumNow += now; sumOver += over; nStepsAll++;
+                }
+            }
+            int ever = 0, everOver = 0;
+            std::vector<std::pair<long, int>> wl;   // worst: most steps over the outer radius, then most steps outside
+            for (size_t g = 0; g < NG; g++) { if (stepsOver[g] > 0) everOver++; if (stepsOut[g] > 0) { ever++; wl.push_back({long(stepsOver[g]) * 100000 + stepsOut[g], int(g)}); } }
+            std::sort(wl.rbegin(), wl.rend());
+            json worst = json::array();
+            for (size_t i = 0; i < wl.size() && (int)i < nWorst; i++) {
+                const V3& rt = groom.P[wl[i].second][0];
+                worst.push_back({{"guide", wl[i].second}, {"steps_outside", stepsOut[wl[i].second]}, {"steps_over_outer", stepsOver[wl[i].second]},
+                                 {"max_excess_mm", std::round(exMax[wl[i].second] * 1e4) / 10}, {"max_over_outer_mm", std::round(exOMax[wl[i].second] * 1e4) / 10}, {"root", {rt.x, rt.y, rt.z}}});
+            }
+            std::vector<float> sw;
+            for (size_t a = 0; a < NA; a++) { int g = guideOfAsset[a]; bool low = false; for (int j = 0; j < PG; j++) if (rest[a * PG + j].z < swayZ) { low = true; break; } if (low) sw.push_back(sway[g]); }
+            std::sort(sw.begin(), sw.end());
+            auto pct = [&](double q) { return sw.empty() ? 0.0 : std::round(sw[std::min(sw.size() - 1, size_t(q * (sw.size() - 1) + 0.5))] * 1e4) / 10; };
+            res.push_back({{"amount", wind}, {"steps", nSteps}, {"repeats", reps}, {"max_crossing", maxNow}, {"max_at_step", maxStep},
+                           {"mean_crossing", nStepsAll ? std::round(sumNow / nStepsAll * 100) / 100 : 0.0}, {"guides_ever_outside", ever},
+                           {"max_over_outer", maxOver}, {"mean_over_outer", nStepsAll ? std::round(sumOver / nStepsAll * 100) / 100 : 0.0}, {"guides_ever_over_outer", everOver}, {"worst", worst},
+                           {"sway_guides", (int)sw.size()}, {"sway_mm", {{"p50", pct(0.5)}, {"p90", pct(0.9)}, {"max", pct(1.0)}}}});
+        }
+        r["runs"] = res;
+        r["sway_below_z"] = swayZ;
+        restore();
+        r["status"] = status_();
+        return r;
+    }
+    if (d == "collision_band") {
+        // opt-in (2026-10-14, Ciri wavy headband): collision spheres / capsules that reach OUT through a headband push the
+        // simulated hair over it (band_sim: 47 guides over the band with no wind, 0 with collision off; stiffness 1 does not
+        // help). Detects the band (r3::findBand, same params as headband) and shrinks every sphere whose surface, inside the
+        // band's height range, comes closer than clearance_mm (2) to the band's inner surface; capsules (sphere pairs) are
+        // sampled between their ends and both ends shrink until they fit. A sphere left under min_r_mm (3) gets 0.1 mm (off).
+        // The radii are project state (colR, saved as "collision_r", exported in the geo json and written into the fur by
+        // desk_export.set_geometry, so the Studio export and the pipeline's studio_geo build carry them). list_only: report
+        // only. set {"<sphere>": r_m | -1}: explicit radii (-1 = back to the pack's). reset: clear all overrides.
+        auto finish = [&]() {
+            json cr = json::object();
+            for (auto& [i, rr] : colR) cr[std::to_string(i)] = {{"r", rr}, {"r_pack", pack.spheres[i].r}};
+            r["collision_r"] = cr;
+            rebuildHair(); settleRest(*this, 0.5);
+            r["status"] = status_();
+            return r;
+        };
+        if (c.value("reset", false)) { colR.clear(); r["reset"] = true; return finish(); }
+        if (c.contains("set")) {
+            for (auto& [k, v] : c["set"].items()) {
+                int i = std::stoi(k);
+                if (i < 0 || i >= (int)pack.spheres.size()) continue;
+                float rr = v.get<float>();
+                if (rr < 0) colR.erase(i); else colR[i] = rr;
+            }
+            return finish();
+        }
+        r3::BandProf BP;
+        if (!r3::findBand(*this, c, BP, r)) return r;
+        const float clr = c.value("clearance_mm", 2.0f) / 1000, rMin = c.value("min_r_mm", 3.0f) / 1000;
+        const int NS = (int)pack.spheres.size();
+        const V3 C = BP.C;
+        std::vector<float> R0(NS), R(NS);
+        for (int i = 0; i < NS; i++) { R0[i] = colR.count(i) ? colR[i] : pack.spheres[i].r; R[i] = R0[i]; }
+        // most a sphere reaches beyond (band inner radius - clearance) inside the band's height range, m (<= 0: fits)
+        auto pierce = [&](V3 cc, float rr) {
+            float ex = -1e9f;
+            const int NLA = 24, NLO = 48;
+            for (int a = 0; a <= NLA; a++) {
+                float th = 3.14159265f * a / NLA, sz = std::cos(th), sr = std::sin(th);
+                for (int o = 0; o < (a == 0 || a == NLA ? 1 : NLO); o++) {
+                    float ph = 6.2831853f * o / NLO;
+                    V3 p{cc.x + rr * sr * std::cos(ph), cc.y + rr * sr * std::sin(ph), cc.z + rr * sz};
+                    float rI, zL, zH;
+                    if (!BP.at(p, rI, zL, zH) || p.z < zL || p.z > zH) continue;
+                    ex = std::max(ex, (float)std::hypot(p.x - C.x, p.y - C.y) - (rI - clr));
+                }
+            }
+            return ex;
+        };
+        json list = json::array();
+        int noC = 0;
+        std::vector<float> before(NS, -1e9f);
+        for (int i = 0; i < NS; i++) {
+            const Sphere& s = pack.spheres[i];
+            if (!s.hasC) { noC++; continue; }
+            float ex = pierce(s.c, R[i]);
+            before[i] = ex;
+            if (ex <= 0) continue;
+            float lo = 0, hi = R[i];
+            for (int it = 0; it < 24; it++) { float m = 0.5f * (lo + hi); if (pierce(s.c, m) > 0) hi = m; else lo = m; }
+            R[i] = lo;
+        }
+        int capFixed = 0;
+        for (auto& cp : pack.capsules) {
+            int a = cp[0], b = cp[1];
+            if (a < 0 || b < 0 || a >= NS || b >= NS || !pack.spheres[a].hasC || !pack.spheres[b].hasC) continue;
+            bool fixedHere = false;
+            for (int it = 0; it < 80; it++) {
+                float ex = -1e9f;
+                for (int q = 1; q < 10; q++) {
+                    float t = q / 10.0f;
+                    ex = std::max(ex, pierce(pack.spheres[a].c * (1 - t) + pack.spheres[b].c * t, R[a] * (1 - t) + R[b] * t));
+                }
+                if (ex <= 0) break;
+                R[a] *= 0.95f; R[b] *= 0.95f; fixedHere = true;
+            }
+            capFixed += fixedHere;
+        }
+        std::map<int, float> nr = colR;
+        for (int i = 0; i < NS; i++) {
+            if (R[i] >= R0[i] - 1e-5f) continue;
+            float v = R[i] < rMin ? 0.0001f : R[i];
+            nr[i] = v;
+            const Sphere& s = pack.spheres[i];
+            list.push_back({{"sphere", i}, {"bone", s.bone}, {"c", {s.c.x, s.c.y, s.c.z}}, {"r_old_mm", R0[i] * 1000}, {"r_new_mm", v * 1000},
+                            {"excess_mm", before[i] > -1e8f ? before[i] * 1000 : 0.0f}, {"off", v < rMin}});
+        }
+        r["band"] = {{"mesh", pack.meshes[BP.mi].name}, {"z_min", BP.zMin}, {"z_max", BP.zMax}};
+        r["changed"] = list; r["capsules_shrunk"] = capFixed; r["spheres_without_centre"] = noC;
+        r["clearance_mm"] = clr * 1000;
+        if (c.value("list_only", false)) { r["status"] = status_(); return r; }
+        colR = nr;
+        return finish();
+    }
+    if (d == "check_loops") {
+        // read-only: guides whose strand comes back to itself (see guideLoop); curls are exempt
+        loopArc = c.value("min_arc_mm", loopArc); loopClose = c.value("return_mm", loopClose); loopCurlR = c.value("curl_radius_mm", loopCurlR); loopTurn = c.value("circling_deg", loopTurn);
+        checkLoops();
+        json l = json::array();
+        for (size_t i = 0; i < loopList.size(); i++) l.push_back({{"guide", loopList[i]}, {"reason", loopWhy[i]}});
+        r["flagged"] = l; r["count"] = (int)loopList.size(); r["status"] = status_();
         return r;
     }
     if (d == "dedupe") {
@@ -4483,7 +4820,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
                     for (size_t g = 0; g < groom.P.size(); g++) {
                         if (!groom.alive[g]) continue;
                         int hits = 0;
-                        for (int k = 1; k < pack.K; k++) {
+                        for (int k = 1; k < groom.K; k++) {
                             V3 p = posedPoint(int(g), k);
                             if (len(p - E) > eyeDist) continue;
                             XMVECTOR v = XMVector4Transform(XMVectorSet(p.x, p.y, p.z, 1), VP);
@@ -5021,7 +5358,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         r["planted"] = n; r["faces"] = groom.faces.size(); r["status"] = status_();
         return r;
     }
-    if (d == "regrow" || d == "route_behind_ears" || d == "twist_roll" || d == "plant_fringe" || d == "parting_roots" || d == "unzigzag" || d == "hairnet" ||
+    if (d == "regrow" || d == "route_behind_ears" || d == "twist_roll" || d == "plant_fringe" || d == "parting_roots" || d == "unzigzag" || d == "hairnet" || d == "headband" ||
         d == "layer_lift" || d == "inflate") {
         json res = r3Command(*this, c, grpId, d);
         if (res.contains("error")) { r["error"] = res["error"]; return r; }
@@ -5108,7 +5445,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
     }
     if (tmpShot) pack.shots.erase("999");
     bool edit = d == "ops" || d == "curl" || d == "delete" || d == "shorten" || d == "duplicate" || d == "look" || d == "material" ||
-                d == "hold_curls" || d == "stiffness";
+                d == "hold_curls" || d == "stiffness" || d == "fur";
     if (edit) { smap.ensure(groom.P.size()); settleRest(*this, 0.5); r["status"] = status_(); }
     if (rc) r["error"] = r.value("error", std::string("step failed (code ") + std::to_string(rc) + ")");
     return r;

@@ -55,7 +55,8 @@ struct Gfx {
     int w = 0, h = 0, samples = 4;
     // offscreen target (headless shots): swaps the scene targets for a square one
     bool beginOffscreen(int size, int height = 0);   // height 0 = square
-    bool endOffscreen(const std::string& png);   // resolves + writes the scene (no UI) and restores the window targets
+    // resolves + writes the scene (no UI) and restores the window targets; png "" = no file, rgba = the pixels (RGBA8, rows top down)
+    bool endOffscreen(const std::string& png, std::vector<unsigned char>* rgba = nullptr);
     // pipeline objects
     ID3D11VertexShader* vs = nullptr;
     ID3D11PixelShader* psMesh = nullptr, * psLine = nullptr, * psDepthAlpha = nullptr;

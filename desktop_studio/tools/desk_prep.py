@@ -448,6 +448,10 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
     # performance reference: the approved build of this character, else this build
     import approved as A                 # APPROVED.json with per-hairstyle entries (2026-10-11)
     ref_cfg = A.approved_for(A.load(), character, C.get('style'))
+    if not ref_cfg and C.get('budget_ref'):
+        # opt-in (2026-10-14): a character with no approved build can name another approved build as its budget
+        # reference (Yennefer: her plain conversion has 8.8k hairs, so every fill tool stopped at 1.2 x that)
+        ref_cfg = C['budget_ref']
     ref = None
     if ref_cfg and ref_cfg != cfg:
         rf = find_fur(ref_cfg)
@@ -474,7 +478,13 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
     except Exception as e:   # game files not readable: the Studio falls back to the untextured EDIT head
         log('  head texture skipped: %r' % (e,))
     try:
-        D['outfit_tex'] = outfit_textured(D, C, out, log)
+        import gamefiles as GF
+        # 2026-10-14 opt-in growth.outfit_mods: draw the meshes of the named INSTALLED outfit mods (what the player sees, fit
+        # only, nothing is shipped); growth.back_items: scabbard / sword meshes in rest pose, shown as outfit parts
+        with GF.outfit_source((C.get('growth') or {}).get('outfit_mods')):
+            D['outfit_tex'] = outfit_textured(D, C, out, log)
+            if (C.get('growth') or {}).get('back_items'):
+                D['outfit_tex'] += backitem_parts(C, out, log)
     except Exception as e:   # same fallback for the body / outfit meshes
         log('  outfit textures skipped: %r' % (e,))
     try:
@@ -819,6 +829,56 @@ def outfit_textured(D, C, out, log=print):
             n += 1
         log('  %s: %s (%d textured parts%s%s)' % (kind, rel, n, ', colour shift' if comp in shifts else '',
                                                  '; skipped ' + ', '.join(sorted(skipped)) if skipped else ''))
+    return parts
+
+
+def backitem_parts(C, out, log=print):
+    """growth.back_items (backitems.py) as textured parts in model space: the scabbard (skinned, already in model space)
+    and the sword (static mesh moved to its slot bone), whole mesh (blade included), one part per material."""
+    import gamefiles as GF
+    import backitems
+    main = C.get('rig') or 'characters/base_entities/woman_base/woman_base.w2rig'.replace('/', chr(92))
+    parts, cache = [], {}
+    for it in C['growth']['back_items']:
+        rel = it['mesh']
+        if (it.get('box') and not it.get('show')) or it.get('hide'):
+            continue                      # a region of an outfit mesh (hood): the outfit already draws it
+        try:
+            mats = GF.tree(rel)[0].get('materials', [])
+            if it.get('static'):
+                R, t = backitems.static_transform(it, main)
+                chunks = [dict(c, pos=c['pos'] @ R + t) for c in GF.load_static_mesh(rel)]
+            else:
+                m = GF.load_mesh(rel)
+                chunks = [m['chunks'][ci] for ci in m['lod0']]
+        except Exception as e:
+            log('  back item %s skipped: %r' % (rel, e))
+            continue
+        groups = {}
+        for c in chunks:
+            groups.setdefault(c['mat'], []).append(c)
+        n = 0
+        for mi, cs in sorted(groups.items()):
+            if mi >= len(mats):
+                continue
+            chain, prm = _resolve_mat(mats[mi])
+            if any(k in ' '.join(chain).lower() for k in SKIP_MAT):
+                continue
+            dif, nrm = _mat_maps(prm)
+            if not dif:
+                continue
+            dfile = _albedo(dif, chain[-1].lower() if chain else '', prm, None, out, cache, log)
+            if not dfile:
+                continue
+            nfile = _tex_png(nrm, out, cache, log) if nrm else None
+            off = np.cumsum([0] + [len(c['pos']) for c in cs[:-1]])
+            pos = np.concatenate([c['pos'] for c in cs])
+            uv = np.concatenate([c['uv'] for c in cs])
+            idx = np.concatenate([np.asarray(c['idx'], int) + o for c, o in zip(cs, off)]).reshape(-1, 3)
+            parts.append(dict(name=it.get('name', os.path.basename(rel)), path=rel, part='outfit', file=dfile, normal=nfile,
+                              v=np.round(pos, 5).tolist(), uv=np.round(uv, 5).tolist(), t=idx.tolist()))
+            n += 1
+        log('  back item %s: %s (%d textured parts)' % (it.get('name', ''), rel, n))
     return parts
 
 

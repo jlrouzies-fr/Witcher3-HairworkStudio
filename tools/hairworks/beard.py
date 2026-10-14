@@ -39,6 +39,7 @@ Design (HAIRWORK.md "Beards"):
     and stops when it leaves the card volume (env). Resampled to K points.
   * material = Geralt's beard material (textures dropped; usePixelDensity off, lengthScale 1) + look overrides.
 """
+import json
 import os
 import sys
 
@@ -62,7 +63,20 @@ DEFAULT = dict(comp=None, hair=True, keep_brows=True, alpha_vis=0.25, root_sd=0.
                remesh=None, tip_tex=False, tip_brightness=0.6, fade_min_loop=0,
                # L249 opt-ins (zones from the lip bones: below / moustache / side / cheek): zone_spacing {zone: m} (remesh
                # root spacing), zone_len {zone: factor}, zone_max_sd {zone: m}
-               zone_spacing=None, zone_len=None, zone_max_sd=None)
+               zone_spacing=None, zone_len=None, zone_max_sd=None,
+               # L250 opt-in (Zoltan: scalp hair inside the hb_ mesh): scalp = {z: m, <any beard key>, look: {}}: cards whose centroid
+               # lies above z become a SECOND fur '<comp>_scalp' on the head mesh (own look / simulate), the beard fur keeps the rest
+               scalp=None,
+               # L287 opt-in: up_edge {band m, len_min, sparse, zmin}: soft UPPER border (cheek line / under the nose): guide length ramps
+               # from len_min (at the border) to 1 over `band`, Poisson spacing grows up to `sparse` x (remesh only)
+               up_edge=None,
+               # L287 opt-ins: close (rings: dilate then erode the root-region vertex mask on the head mesh graph = fills holes, e.g. the
+               # chin patch where cards are thin), zone_env {zone: m} (envelope per zone), zone_grav {zone: [outward, down]} (guide
+               # direction bias: moustache drooping down / outward over the mouth)
+               squeeze=0.0, close=0,
+               # L288 opt-ins: lip_gap {below, above, x} (m around the mouth line: no roots on the lips -> parting under the moustache),
+               # no_under (skin normal z below this: no roots, e.g. -0.5 = jaw underside / neck), up_edge.drop / up_edge.jitter
+               lip_gap=None, mouth=None, no_under=None, root_zmin=None, zone_env=None, zone_grav=None)
 DEFAULT_LOOK = dict(root_color=[40, 32, 26], tip_color=[52, 44, 36])
 BROW = ('eyebrow',)
 
@@ -295,7 +309,71 @@ def zones(skin, P):
     return z
 
 
-def remesh(skin, T, sp, log=print, seed=7, edge_k=2.2, cen_k=0.35, zone_sp=None):
+def upper_border(skin, T, band_r=0.015, zmin=None, log=print):
+    """L287: outline vertices of the root-region triangles T that face UP (the region lies below them, within band_r) and lie
+    above zmin (default: upper lip bone z - 6 mm, so the lower lip / mouth-hole edge is not a border). -> (n, 3) points."""
+    from collections import Counter
+    ec = Counter()
+    for a_, b_, c_ in T:
+        for e_ in ((a_, b_), (b_, c_), (c_, a_)):
+            ec[tuple(sorted(e_))] += 1
+    bnd = np.array(sorted({v for e_, n_ in ec.items() if n_ == 1 for v in e_}), int)
+    if zmin is None:
+        up = np.linalg.inv(np.array(skin.rig[skin.names.index('upper_lip')], float))[3, :3] if 'upper_lip' in skin.names else None
+        zmin = (up[2] - 0.006) if up is not None else 1e9
+    used = np.unique(T)
+    tr = cKDTree(skin.v[used])
+    out = []
+    for b in bnd:
+        p = skin.v[b]
+        if p[2] < zmin:
+            continue
+        idx = tr.query_ball_point(p, band_r)
+        if len(idx) > 3 and skin.v[used][idx][:, 2].mean() < p[2] - 0.002:
+            out.append(p)
+    log('  beard: up_edge: %d outline vertices, %d on the upper border (z > %.3f)' % (len(bnd), len(out), zmin))
+    return np.array(out) if out else np.zeros((0, 3))
+
+
+def _smooth(x):
+    x = np.clip(x, 0.0, 1.0)
+    return x * x * (3 - 2 * x)
+
+
+def mouth_fns(skin, mo):
+    """L290 opt-in (beard.mouth): -> (mz, in_cut(P), in_soul(P)). mz = mean z of the corner-lip bones; in_cut = the box
+    |x| < mo.x, mz - mo.below < z < mz + mo.above (lips + corners: no roots, no growth faces, also from remesh samples);
+    in_soul = the band under it (mo.soul {z0, z1, x}: mz - z1 < z < mz - z0) where hair is sparse and short."""
+    cz = [np.linalg.inv(np.array(skin.rig[skin.names.index(n)], float))[3, 2] for n in
+          ('left_corner_lip1', 'right_corner_lip1', 'left_corner_lip2', 'right_corner_lip2') if n in skin.names]
+    mz = float(np.mean(cz)) if cz else 1e9
+    xc, bl, ab = float(mo.get('x', 0.046)), float(mo.get('below', 0.018)), float(mo.get('above', 0.008))
+    so = mo.get('soul') or {}
+    def in_cut(P):
+        P = np.atleast_2d(P)
+        return (np.abs(P[:, 0]) < xc) & (P[:, 2] > mz - bl) & (P[:, 2] < mz + ab)
+    def in_soul(P):
+        P = np.atleast_2d(P)
+        if not so:
+            return np.zeros(len(P), bool)
+        return (np.abs(P[:, 0]) < float(so.get('x', 0.03))) & (P[:, 2] < mz - float(so.get('z0', 0.018))) & (P[:, 2] > mz - float(so.get('z1', 0.045)))
+    return mz, in_cut, in_soul
+
+
+def _cut_below(g, zlim):
+    """truncate a guide where it first drops below zlim (linear crossing), resampled to the same point count."""
+    z = g[:, 2]
+    if z.min() >= zlim:
+        return g
+    i = int(np.argmax(z < zlim))
+    if i == 0:
+        return g
+    t = (z[i - 1] - zlim) / max(z[i - 1] - z[i], 1e-9)
+    pts = np.concatenate([g[:i], (g[i - 1] + t * (g[i] - g[i - 1]))[None]])
+    return _resample(pts, len(g))
+
+
+def remesh(skin, T, sp, log=print, seed=7, edge_k=2.2, cen_k=0.35, zone_sp=None, ub=None, up=None, mouth=None):
     """opt-in (beard.remesh = root spacing in m, L248): HairWorks grows a fixed number of hairs PER FACE, so the head
     mesh's uneven triangles gave uneven hair density (Lambert: faces at the mouth corners 3x smaller than the median ->
     3x the hairs there = the dark specks of L247beard). New roots = a Poisson-disk sample (spacing sp) of the root-region
@@ -317,7 +395,39 @@ def remesh(skin, T, sp, log=print, seed=7, edge_k=2.2, cen_k=0.35, zone_sp=None)
         zz = zones(skin, P)
         for zn, v in zone_sp.items():
             spi[zz == zn] = float(v)
+    P_cut = np.zeros(n, bool)
+    if mouth is not None:
+        _mz, _cut, _soul = mouth_fns(skin, mouth)
+    if ub is not None and len(ub) and up:
+        # L287 opt-in: sparser roots toward the upper border (hairs per face is fixed, so bigger faces = fewer hairs / cm2)
+        dub, _ = cKDTree(ub).query(P)
+        bnd_ = float(up.get('band', 0.012))
+        if up.get('mband') is not None and mouth is not None:
+            bnd_ = np.where((np.abs(P[:, 0]) < float(up.get('mx', 0.04))) & (P[:, 2] > _mz - 0.02), float(up['mband']), bnd_)
+        spf_ = float(up.get('sparse', 2.5))
+        if up.get('msparse') is not None and mouth is not None:
+            spf_ = np.where((np.abs(P[:, 0]) < float(up.get('mx', 0.04))) & (P[:, 2] > _mz - 0.02), float(up['msparse']), spf_)
+        spi = spi * (1.0 + (spf_ - 1.0) * (1.0 - _smooth(dub / bnd_)))
+    if mouth is not None:
+        P_cut = _cut(P)
+        spi = spi * np.where(_soul(P), float((mouth.get('soul') or {}).get('sparse', 2.0)), 1.0)
+        log('  beard: mouth: mouth line z %.4f, %d remesh samples in the lip box rejected, %d in the soul-patch band' % (_mz, int(P_cut.sum()), int(_soul(P).sum())))
+    if ub is not None and len(ub) and up and up.get('drop'):
+        dub2, _ = cKDTree(ub).query(P)
+        bnd2 = float(up.get('band', 0.012))
+        if up.get('mband') is not None and mouth is not None:
+            bnd2 = np.where((np.abs(P[:, 0]) < float(up.get('mx', 0.04))) & (P[:, 2] > _mz - 0.02), float(up['mband']), bnd2)
+        dr_ = float(up['drop'])
+        if up.get('mdrop') is not None and mouth is not None:
+            dr_ = np.where((np.abs(P[:, 0]) < float(up.get('mx', 0.04))) & (P[:, 2] > _mz - 0.02), float(up['mdrop']), dr_)
+        rej = rng.random(n) < dr_ * (1.0 - _smooth(dub2 / bnd2))
+        P_ok = ~rej
+    else:
+        P_ok = np.ones(n, bool)
+    P_ok &= ~P_cut
     for i in range(n):
+        if not P_ok[i]:
+            continue
         if not keep or np.min(np.linalg.norm(P[keep] - P[i], axis=1)) >= spi[i]:
             keep.append(i)
     keep = np.array(keep)
@@ -357,6 +467,8 @@ def remesh(skin, T, sp, log=print, seed=7, edge_k=2.2, cen_k=0.35, zone_sp=None)
     cen = Pu[F].mean(1)
     dc, _ = cKDTree(P).query(cen)
     ok = dc < cen_k * spi[keep][used][F].max(1)
+    if mouth is not None:
+        ok &= ~_cut(cen)
     F = F[ok]
     base = len(skin.v)
     skin.v = np.concatenate([skin.v, Pu])
@@ -373,7 +485,8 @@ def guides(skin, S, roots, o, log=print, lfac=None):
     tree = cKDTree(S['p'])
     out, lens, stopped = [], [], 0
     zl, zsd = o.get('zone_len') or {}, o.get('zone_max_sd') or {}
-    zr = zones(skin, skin.v[np.asarray(roots)]) if (zl or zsd) else None
+    zenv, zgrav = o.get('zone_env') or {}, o.get('zone_grav') or {}
+    zr = zones(skin, skin.v[np.asarray(roots)]) if (zl or zsd or zenv or zgrav) else None
     K = int(o['K'])
     r = o['radius']
     for ri, vi in enumerate(roots):
@@ -382,9 +495,14 @@ def guides(skin, S, roots, o, log=print, lfac=None):
         f0, L = _field(S, tree, p0, r)
         L = float(np.clip(L * o['len_scale'], o['min_len'], o['max_len']))
         msd = o.get('max_sd')
+        env = o['env']
+        gv = None
         if zr is not None:
             L *= float(zl.get(zr[ri], 1.0))          # L249 opt-in: per-zone length factor
             msd = zsd.get(zr[ri], msd)               # L249 opt-in: per-zone skin hold
+            env = float(zenv.get(zr[ri], env))
+            if zr[ri] in zgrav:
+                gv = np.array([float(zgrav[zr[ri]][0]) * (1.0 if p0[0] >= 0 else -1.0), 0.0, -float(zgrav[zr[ri]][1])])
         if lfac is not None:
             L = max(L * float(lfac[ri]), 0.0008)
         d = n0 if f0 is None else f0 + o['lift'] * n0
@@ -398,6 +516,9 @@ def guides(skin, S, roots, o, log=print, lfac=None):
             if f is not None:
                 d = 0.55 * f + 0.45 * d
                 d /= max(np.linalg.norm(d), 1e-12)
+            if gv is not None:
+                d = d + gv * (k + 1) / nsub
+                d /= max(np.linalg.norm(d), 1e-12)
             q = p + h * d
             sd, nq = skin.signed(q[None])
             floor = 0.0004 + 0.6 * h * (k + 1) / nsub        # rises off the skin a little along the strand
@@ -405,7 +526,7 @@ def guides(skin, S, roots, o, log=print, lfac=None):
                 q = q + (floor - sd[0]) * nq[0]
             elif msd is not None and sd[0] > msd:
                 q = q - (sd[0] - msd) * nq[0]          # L247 opt-in: no tufts standing off the skin
-            if k > nsub * 0.3 and tree.query(q)[0] > o['env']:
+            if k > nsub * 0.3 and tree.query(q)[0] > env:
                 stopped += 1
                 break
             pts.append(q)
@@ -531,13 +652,31 @@ def material(o, area_mm2, log=print, tex=None, mean_alpha=1.0):
     return dict(mat_src=o['mat_src'], set=s, textures=textures, drop_textures=True)
 
 
-def generate(C, info, log=print):
+def scalp_cards(ch, z):
+    """L250: per-vertex bool, True on the cards whose centroid z is above `z` (the scalp hair of a scalp_beard hb_ mesh)."""
+    lab = G.components(ch['nv'], ch['idx'])
+    out = np.zeros(ch['nv'], bool)
+    for l in np.unique(lab):
+        v = lab == l
+        if ch['pos'][v, 2].mean() > z:
+            out[v] = True
+    return out
+
+
+def generate(C, info, log=print, part='beard'):
     """-> dict(fur, template, comp, mesh, res, head, brows) or None when the appearance has no beard component."""
     import redfur
     import growth
     from texread import load_xbm
     import hairpipe as H
     o = cfg(C)
+    sc = o.get('scalp')
+    if part == 'scalp':
+        if not sc:
+            return None
+        o = dict(o)
+        o.update({k: v for k, v in sc.items() if k not in ('z', 'look')})
+        lk = dict(o['look']); lk.update(sc.get('look') or {}); o['look'] = lk
     hit = find(C, info, o.get('comp'))
     if not hit:
         log('  beard: no beard component in appearance %r: skipped' % C.get('appearance'))
@@ -558,6 +697,10 @@ def generate(C, info, log=print):
     for _ in range(int(o['subdivide'])):
         skin.subdivide()
     conv = (cls == 'beard') if o['keep_brows'] else np.ones(len(cls), bool)
+    if sc:
+        szm = scalp_cards(ch, float(sc.get('z', 1.34)))
+        conv = (conv & szm) if part == 'scalp' else (conv & ~szm)
+        log('  beard: scalp split z > %.3f: %d scalp card vertices, part %s keeps %d' % (float(sc.get('z', 1.34)), int(szm.sum()), part, int(conv.sum())))
     S = card_samples(ch, alpha, conv, skin.tree, skin.n, o)
     log('  beard: %d visible card samples on %d cards (%d oriented by skin distance, atlas majority %+d), card length mm p50 %.1f' % (
         len(S['p']), S['cards'], S['oriented'], int(S['majority']), float(np.median(S['L'])) * 1000))
@@ -566,6 +709,15 @@ def generate(C, info, log=print):
     rt = cKDTree(S['p'][rr])
     d, _ = rt.query(skin.v)
     root = d < o['reach']
+    if o.get('close'):
+        e = np.concatenate([skin.t[:, [0, 1]], skin.t[:, [1, 2]], skin.t[:, [2, 0]]])
+        e = np.concatenate([e, e[:, ::-1]])
+        n0 = int(root.sum())
+        for _ in range(int(o['close'])):
+            m2 = root.copy(); np.logical_or.at(m2, e[:, 0], root[e[:, 1]]); root = m2
+        for _ in range(int(o['close'])):
+            bad = np.zeros(len(root), bool); np.logical_or.at(bad, e[:, 0], ~root[e[:, 1]]); root = root & ~bad
+        log('  beard: close %d rings: %d -> %d root vertices' % (int(o['close']), n0, int(root.sum())))
     if nb and o['keep_brows']:
         Sb = card_samples(ch, alpha, cls == 'brow', skin.tree, skin.n, o)
         if len(Sb['p']):
@@ -574,9 +726,25 @@ def generate(C, info, log=print):
             log('  beard: %d candidate roots nearer an eyebrow card than a beard card dropped' % int((root & near_brow).sum()))
             root &= ~near_brow
     T = skin.t[root[skin.t].all(1)]
+    if o.get('lip_gap'):
+        lg = o['lip_gap']
+        cz = [np.linalg.inv(np.array(skin.rig[skin.names.index(n)], float))[3, 2] for n in ('left_corner_lip1', 'right_corner_lip1', 'left_corner_lip2', 'right_corner_lip2') if n in skin.names]
+        mz = float(np.mean(cz)) if cz else 1e9
+        gm = (skin.v[:, 2] > mz - float(lg.get('below', 0.016))) & (skin.v[:, 2] < mz + float(lg.get('above', 0.006))) & (np.abs(skin.v[:, 0]) < float(lg.get('x', 0.042)))
+        log('  beard: lip_gap: mouth line z %.4f, %d root vertices removed' % (mz, int((root & gm).sum())))
+        root &= ~gm
+    if o.get('root_zmin') is not None:
+        nz_ = root & (skin.v[:, 2] < float(o['root_zmin']))
+        log('  beard: root_zmin %.3f: %d root vertices removed' % (float(o['root_zmin']), int(nz_.sum())))
+        root &= ~nz_
+    if o.get('no_under') is not None:
+        nu = root & (skin.n[:, 2] < float(o['no_under']))
+        log('  beard: no_under: %d root vertices (normal z < %.2f) removed' % (int(nu.sum()), float(o['no_under'])))
+        root &= ~nu
+    ub = upper_border(skin, T, zmin=(o['up_edge'] or {}).get('zmin'), log=log) if o.get('up_edge') else None
     if o.get('remesh'):
         T = remesh(skin, T, float(o['remesh']), log, edge_k=o.get('remesh_edge', 2.2), cen_k=o.get('remesh_cen', 0.35),
-                   zone_sp=o.get('zone_spacing'))
+                   zone_sp=o.get('zone_spacing'), ub=ub, up=o.get('up_edge'), mouth=o.get('mouth'))
     used = np.unique(T)
     remap = -np.ones(len(skin.v), int)
     remap[used] = np.arange(len(used))
@@ -625,7 +793,73 @@ def generate(C, info, log=print):
         lfac = 0.15 + 0.85 * x_ * x_ * (3 - 2 * x_)
         log('  beard: fade %.0f mm: %d outline roots, length factor p10 %.2f / p50 %.2f' % (
             o['fade'] * 1000, len(bnd), np.percentile(lfac, 10), np.percentile(lfac, 50)))
+    if ub is not None and len(ub):
+        ue = o['up_edge']
+        du, _ = cKDTree(ub).query(V)
+        bnd3 = float(ue.get('band', 0.012))
+        if ue.get('mband') is not None and o.get('mouth'):
+            _mz3 = mouth_fns(skin, o['mouth'])[0]
+            bnd3 = np.where((np.abs(V[:, 0]) < float(ue.get('mx', 0.04))) & (V[:, 2] > _mz3 - 0.02), float(ue['mband']), bnd3)
+        lu = float(ue.get('len_min', 0.25)) + (1 - float(ue.get('len_min', 0.25))) * _smooth(du / bnd3)
+        if ue.get('jitter'):
+            rj = np.random.default_rng(11).random(len(V))
+            jt_ = float(ue['jitter'])
+            if ue.get('mjitter') is not None and o.get('mouth'):
+                jt_ = np.where((np.abs(V[:, 0]) < float(ue.get('mx', 0.04))) & (V[:, 2] > _mz3 - 0.02), float(ue['mjitter']), jt_)
+            lu = lu * (1.0 - jt_ * rj * (1.0 - _smooth(du / bnd3)))
+        lfac = lu if lfac is None else lfac * lu
+        log('  beard: up_edge length factor p10 %.2f / p50 %.2f' % (np.percentile(lu, 10), np.percentile(lu, 50)))
+    mo = o.get('mouth')
+    if mo:
+        mz_, cut_, soul_ = mouth_fns(skin, mo)
+        zrv = zones(skin, V)
+        so = mo.get('soul') or {}
+        if so:
+            if so.get('len0') is not None:
+                # L291: short hair at the top of the soul band lengthening into the chin beard (smoothstep over the band)
+                t_ = np.clip(((mz_ - float(so.get('z0', 0.018))) - V[:, 2]) / max(float(so.get('z1', 0.045)) - float(so.get('z0', 0.018)), 1e-6), 0.0, 1.0)
+                lf = np.where(soul_(V), float(so['len0']) + (1.0 - float(so['len0'])) * _smooth(t_), 1.0)
+            else:
+                lf = np.where(soul_(V), float(so.get('len', 0.35)), 1.0)
+            lfac = lf if lfac is None else lfac * lf
+        ms = mo.get('stop') or {}
+        if ms:
+            sl = np.where((zrv == 'moustache') & (np.abs(V[:, 0]) > float(ms.get('x', 0.02))), float(ms.get('side_len', 1.0)), 1.0)
+            lfac = sl if lfac is None else lfac * sl
     Gd = guides(skin, S, used, o, log, lfac=lfac)
+    so_ = (mo or {}).get('soul') or {}
+    if so_.get('down'):
+        # L291 opt-in: guides rooted in the soul-patch band only grow down (z never rises along the strand)
+        ns_ = 0
+        for i, g in enumerate(Gd):
+            if soul_(V[i:i + 1])[0]:
+                g2 = g.copy()
+                g2[:, 2] = np.minimum.accumulate(g2[:, 2])
+                ns_ += int(np.abs(g2 - g).max() > 1e-6)
+                Gd[i] = g2
+        log('  beard: soul.down: %d guides clamped to grow down' % ns_)
+    if mo and mo.get('stop'):
+        ms = mo['stop']
+        nc = 0
+        xs, w_, drop_ = float(ms.get('x', 0.02)), float(ms.get('w', 0.02)), float(ms.get('side_drop', 0.0))
+        for i, g in enumerate(Gd):
+            if V[i, 2] > mz_ + 0.005 and abs(V[i, 0]) < xs + w_ + 0.03:
+                zl_ = mz_ + float(ms.get('dz', 0.002)) - drop_ * _smooth((abs(V[i, 0]) - xs) / w_)
+                if ms.get('jitter'):
+                    zl_ -= float(ms['jitter']) * float(np.random.default_rng(100 + i).random())
+                g2 = _cut_below(g, zl_)
+                nc += int(g2 is not g)
+                Gd[i] = g2
+        if ms.get('lift'):
+            _, nrm_ = skin.signed(V)
+            for i, g in enumerate(Gd):
+                if V[i, 2] > mz_ + 0.005 and abs(V[i, 0]) < xs + w_ + 0.03:
+                    f_ = _smooth(np.linspace(0.0, 1.0, len(g)))[:, None]
+                    Gd[i] = g + f_ * float(ms['lift']) * nrm_[i][None]
+        log('  beard: mouth.stop: %d centre moustache guides cut at the lip line' % nc)
+    if o.get('squeeze'):
+        # L287 opt-in: guide points' x offset from the root scaled by (1 - squeeze) (narrower fan of a mohawk)
+        Gd = [np.concatenate([g[:, :1] * 0 + g[:1, :1] + (g[:, :1] - g[:1, :1]) * (1 - float(o['squeeze'])), g[:, 1:]], axis=1) for g in Gd]
     # skinning: the head vertex's own weights
     bone_used = set()
     for vi in used:
@@ -658,7 +892,7 @@ def generate(C, info, log=print):
     head = growth.Head(head_rel)
     res = dict(S=strands, F=F, roots=V)
     log('fur %s (beard): %d guides, %d faces, %d bytes' % (comp, len(strands), len(F), len(data)))
-    return dict(fur=data, template=tpl, comp=comp, mesh=mesh, res=res, head=head, brows=bool(nb and o['keep_brows']),
+    return dict(fur=data, template=tpl, comp=comp if part == 'beard' else (sc.get('name') or 'scalp_' + (comp[3:] if comp.startswith('hb_') else comp)), src_comp=comp, mesh=mesh, res=res, head=head, brows=bool(nb and o['keep_brows']),
                 tex=tex, skin=skin, samples=S)
 
 
@@ -667,6 +901,26 @@ def brow_mask(ch_mesh_names):
         _lab, cls = card_classes(ch, ch_mesh_names)
         return cls == 'brow'
     return fn
+
+
+def studio_beard(C, fur, log=print):
+    """opt-in "studio_geo_beard" (2026-10-14): the Groom Studio's Beard-mode result (geometry + look values) replaces the
+    generated beard fur's, with the Studio export's own function (desk_export.edit_fur). Made by studio_to_config.py."""
+    import tempfile
+    import studio_geo
+    DE = studio_geo._desk_export()
+    sg = C['studio_geo_beard']
+    geo = studio_geo.load_geo(sg['geo'])
+    look = json.load(open(studio_geo._path(sg['look']))) if sg.get('look') else {}
+    fd, tmp = tempfile.mkstemp(suffix='.redfur')
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(fur)
+        out, changed = DE.edit_fur(tmp, {'ops': ['studio']}, look, geo, False, True, None, log)
+    finally:
+        os.remove(tmp)
+    log('  studio_geo_beard %s: %d guides, %d faces; changed: %s' % (sg['geo'], len(geo['guides']), len(geo['F']), ', '.join(changed)))
+    return out
 
 
 def add_to_build(C, info, files, bufs, tpls, P, log=print):
@@ -679,6 +933,8 @@ def add_to_build(C, info, files, bufs, tpls, P, log=print):
     B = generate(C, info, log)
     if B is None:
         return None
+    if C.get('studio_geo_beard'):
+        B['fur'] = studio_beard(C, B['fur'], log)
     fp = P(H.fur_path(C, B['comp']))
     files.append((fp, B['fur']))
     extra, fallback = [], None
@@ -691,7 +947,12 @@ def add_to_build(C, info, files, bufs, tpls, P, log=print):
         files.append((bm, w)); bufs.append((bm + '.1.buffer', b))
         extra.append((B['comp'] + '_brows', bm))
         fb = P(B['mesh'][:-len('.w2mesh')] + '_nobrows.w2mesh')
-        w, b, stt = template.subset_mesh(B['mesh'], lambda ch: ~keep(ch))
+        zs = cfg(C).get('scalp')
+        if zs:
+            zz = float(zs.get('z', 1.34))
+            w, b, stt = template.subset_mesh(B['mesh'], lambda ch: ~keep(ch) & ~scalp_cards(ch, zz))
+        else:
+            w, b, stt = template.subset_mesh(B['mesh'], lambda ch: ~keep(ch))
         log('  beard: fallback (HairWorks off) = beard cards without the eyebrows %s: %s' % (fb, stt))
         files.append((fb, w)); bufs.append((fb + '.1.buffer', b))
         fallback = fb
@@ -705,6 +966,28 @@ def add_to_build(C, info, files, bufs, tpls, P, log=print):
     else:
         files.append((tp, new))
         tpls.append((B['template'], tp))
+    sc = cfg(C).get('scalp')
+    if sc:
+        # L250 opt-in: scalp hair = a second fur component cloned from the beard component (own cards subset as fallback)
+        B2 = generate(C, info, log, part='scalp')
+        zz = float(sc.get('z', 1.34))
+        fp2 = P(H.fur_path(C, B2['comp']))
+        files.append((fp2, B2['fur']))
+        sm = P(B['mesh'][:-len('.w2mesh')] + '_scalpcards.w2mesh')
+        w, b, stt = template.subset_mesh(B['mesh'], lambda ch: scalp_cards(ch, zz))
+        log('  beard: scalp cards (HairWorks off fallback) %s: %s' % (sm, stt))
+        files.append((sm, w)); bufs.append((sm + '.1.buffer', b))
+        i = next(k for k, (rel, _d) in enumerate(files) if rel == tp)
+        def _f(d):
+            template._add_mesh_component(d, B['comp'], B2['comp'], sm)
+            template._swap(d, B2['comp'], fp2, sm)
+        files[i] = (tp, template._edit_both(files[i][1], _f))
+        template.validate(files[i][1], B['template'])
+        try:
+            ep2 = strand_edits.export_json(C, B2['res'], B2['head'], dict(info), comp=B2['comp'], log=log, index=2)
+            strand_edits.export_hw_pack(C, B2['fur'], ep2, tex=None, comp=B2['comp'], index=2, log=log)
+        except Exception as ex:
+            log('  scalp exports FAILED: %r' % (ex,))
     try:
         info_ = dict(info)
         ep = strand_edits.export_json(C, B['res'], B['head'], info_, comp=B['comp'], log=log, index=1)

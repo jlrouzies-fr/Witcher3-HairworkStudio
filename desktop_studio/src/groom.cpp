@@ -13,6 +13,93 @@
 
 double r4(double v) { return std::round(v * 10000.0) / 10000.0; }
 
+bool faceDivergent(const Groom& g, const Face& F, float rootSp, float divDeg, float spreadK) {
+    V3 dv[3];
+    for (int q = 0; q < 3; q++) {
+        auto& G = g.P[F.g[q]];
+        V3 d = G[G.size() / 2] - G[0];
+        float l = len(d);
+        dv[q] = l > 1e-9f ? d * (1.0f / l) : V3{0, 0, 1};
+    }
+    float mx = 0;
+    for (int q = 0; q < 3; q++) mx = std::max(mx, std::acos(std::clamp(dot(dv[q], dv[(q + 1) % 3]), -1.0f, 1.0f)) * 57.2958f);
+    float tipSp = 0;
+    for (int q = 0; q < 3; q++) tipSp = std::max(tipSp, len(g.P[F.g[q]].back() - g.P[F.g[(q + 1) % 3]].back()));
+    return mx > divDeg && tipSp > spreadK * std::max(rootSp, 1e-4f);
+}
+
+LoopInfo guideLoop(const Guide& p, float arcMin, float closeMax, float curlR, float turnDeg) {
+    LoopInfo out;
+    if (p.size() < 3) return out;
+    float L = 0;
+    for (size_t k = 1; k < p.size(); k++) L += len(p[k] - p[k - 1]);
+    if (L < arcMin) return out;
+    // (1) return: resample evenly (4 mm, at most 250 points) so sparse guides cannot step over a return; for each point the FIRST
+    // later point (after arcMin of hair) within closeMax closes a loop whose radius is the farthest loop point from its centroid
+    float step = std::max(0.004f, L / 250.0f);
+    std::vector<V3> q;
+    float next = 0, acc = 0;
+    for (size_t k = 1; k < p.size(); k++) {
+        float seg = len(p[k] - p[k - 1]);
+        while (next <= acc + seg && seg > 1e-9f) { q.push_back(p[k - 1] + (p[k] - p[k - 1]) * ((next - acc) / seg)); next += step; }
+        acc += seg;
+    }
+    q.push_back(p.back());
+    int n = (int)q.size(), minGap = std::max(1, (int)std::ceil(arcMin / step));
+    for (int i = 0; i + minGap < n; i++)
+        for (int j = i + minGap; j < n; j++) {
+            float d = len(q[j] - q[i]);
+            if (d >= closeMax) continue;
+            V3 c;
+            for (int k = i; k <= j; k++) c = c + q[k];
+            c = c * (1.0f / (j - i + 1));
+            float R = 0;
+            for (int k = i; k <= j; k++) R = std::max(R, len(q[k] - c));
+            if (R > curlR && (!out.flag || R > out.radius)) { out.flag = true; out.arc = (j - i) * step; out.dist = d; out.radius = R; }
+            break;   // first return only: later ones are the same loop (or more turns of a curl)
+        }
+    if (out.flag) return out;
+    // (2) circling: net turning (about the best axis) of the corners that are not tight curl turns reaches turnDeg
+    std::vector<V3> cr;
+    std::vector<float> ang, loose;
+    for (size_t k = 1; k + 1 < p.size(); k++) {
+        V3 a = p[k] - p[k - 1], b = p[k + 1] - p[k];
+        float la = len(a), lb = len(b);
+        if (la < 1e-6f || lb < 1e-6f) continue;
+        a = a * (1.0f / la); b = b * (1.0f / lb);
+        V3 x = cross(a, b);
+        float th = std::atan2(len(x), dot(a, b));
+        float r = 0.5f * (la + lb) / std::max(2.0f * std::sin(std::min(th, 3.14159f) * 0.5f), 1e-6f);
+        cr.push_back(x); ang.push_back(th); loose.push_back(r > 0.03f ? 1.0f : 0.0f);
+    }
+    V3 ax;
+    for (size_t k = 0; k < cr.size(); k++) if (loose[k] > 0) ax = ax + cr[k];
+    float al = len(ax);
+    if (al < 1e-12f) return out;
+    ax = ax * (1.0f / al);
+    float tot = 0;
+    for (size_t k = 0; k < cr.size(); k++) if (loose[k] > 0) tot += dot(cr[k], ax) >= 0 ? ang[k] : -ang[k];
+    out.turn = std::fabs(tot) * 57.2958f;
+    if (out.turn < turnDeg) return out;
+    // helical curl exemption (sparse CVs per turn make curl corners look "loose"): the strand never climbs back up more than
+    // 30 mm (z up) AND, over the loose-corner span, it advances along the turning axis at least 0.75x its spread across it.
+    // A whirl over the head climbs; a flat circle does not advance along its axis.
+    float lowest = p[0].z, climb = 0;
+    for (auto& v : p) { lowest = std::min(lowest, v.z); climb = std::max(climb, v.z - lowest); }
+    int k0 = -1, k1 = -1;
+    for (size_t k = 0; k < cr.size(); k++) if (loose[k] > 0) { if (k0 < 0) k0 = (int)k; k1 = (int)k; }
+    float hmin = 1e9f, hmax = -1e9f;
+    V3 cen;
+    int cnt = 0;
+    for (int k = k0; k <= k1 + 2 && k < (int)p.size(); k++) { float h = dot(p[k], ax); hmin = std::min(hmin, h); hmax = std::max(hmax, h); cen = cen + (p[k] - ax * h); cnt++; }
+    cen = cen * (1.0f / std::max(cnt, 1));
+    float spread = 0;
+    for (int k = k0; k <= k1 + 2 && k < (int)p.size(); k++) spread = std::max(spread, len(p[k] - ax * dot(p[k], ax) - cen));
+    if (climb < 0.03f && (hmax - hmin) >= 0.75f * spread) return out;
+    out.flag = true;
+    return out;
+}
+
 static std::vector<float> falloffWeights(int K, const std::string& falloff, int from) {
     std::vector<float> w(K, 1.0f);
     for (int k = 0; k < K; k++) {
@@ -55,6 +142,132 @@ std::vector<V3> shortenGuide(const Guide& p, float keep) {
     return resample(q, K);
 }
 
+// centripetal Catmull-Rom (alpha 0.5, Barry-Goldman) on segment p1-p2; phantom end points mirror the end segments
+static V3 crPoint(V3 p0, V3 p1, V3 p2, V3 p3, float u) {
+    auto kn = [](V3 a, V3 b, float t) { return t + std::max(std::sqrt(len(b - a)), 1e-4f); };
+    float t0 = 0, t1 = kn(p0, p1, t0), t2 = kn(p1, p2, t1), t3 = kn(p2, p3, t2);
+    float t = t1 + (t2 - t1) * u;
+    auto L = [](V3 a, V3 b, float ta, float tb, float t) { return a * ((tb - t) / (tb - ta)) + b * ((t - ta) / (tb - ta)); };
+    V3 a1 = L(p0, p1, t0, t1, t), a2 = L(p1, p2, t1, t2, t), a3 = L(p2, p3, t2, t3, t);
+    V3 b1 = L(a1, a2, t0, t2, t), b2 = L(a2, a3, t1, t3, t);
+    return L(b1, b2, t1, t2, t);
+}
+
+std::vector<V3> smoothDense(const Guide& p, int perSeg) {
+    int K = (int)p.size();
+    if (K < 3) return p;
+    std::vector<V3> out;
+    out.reserve(size_t(K - 1) * perSeg + 1);
+    for (int i = 0; i + 1 < K; i++) {
+        V3 p0 = i > 0 ? p[i - 1] : p[0] * 2.0f - p[1];
+        V3 p3 = i + 2 < K ? p[i + 2] : p[K - 1] * 2.0f - p[K - 2];
+        if (len(p[i + 1] - p[i]) < 1e-7f) { for (int s = 0; s < perSeg; s++) out.push_back(p[i]); continue; }
+        for (int s = 0; s < perSeg; s++) out.push_back(s == 0 ? p[i] : crPoint(p0, p[i], p[i + 1], p3, float(s) / perSeg));
+    }
+    out.push_back(p[K - 1]);
+    return out;
+}
+
+std::vector<V3> sampleSmoothAt(const Guide& p, const std::vector<float>& s) {
+    std::vector<V3> q = smoothDense(p, 24);
+    std::vector<float> d(q.size(), 0.0f);
+    for (size_t i = 1; i < q.size(); i++) d[i] = d[i - 1] + len(q[i] - q[i - 1]);
+    std::vector<V3> out(s.size(), q[0]);
+    V3 tipDir = q.size() > 1 ? q.back() - q[q.size() - 2] : V3{0, 0, -1};
+    float tl = len(tipDir);
+    tipDir = tl > 1e-9f ? tipDir * (1.0f / tl) : V3{0, 0, -1};
+    size_t j = 1;
+    for (size_t k = 0; k < s.size(); k++) {
+        float t = s[k];
+        if (t >= d.back()) { out[k] = q.back() + tipDir * (t - d.back()); continue; }
+        if (t <= 0) { out[k] = q[0]; continue; }
+        if (k == 0 || s[k] < s[k - 1]) j = 1;
+        while (j < q.size() - 1 && d[j] < t) j++;
+        float a = std::clamp((t - d[j - 1]) / std::max(d[j] - d[j - 1], 1e-12f), 0.0f, 1.0f);
+        out[k] = q[j - 1] + (q[j] - q[j - 1]) * a;
+    }
+    return out;
+}
+
+Guide resampleSmooth(const Guide& p, int n) {
+    n = std::clamp(n, 2, kMaxCvs);
+    const int K = (int)p.size();
+    if (K < 2) return Guide(n, p.empty() ? V3{} : p[0]);
+    if (n < K || K < 3) {   // fewer CVs: evenly along the arc of the smooth curve
+        std::vector<V3> q = smoothDense(p, 24);
+        float L = 0;
+        for (size_t i = 1; i < q.size(); i++) L += len(q[i] - q[i - 1]);
+        std::vector<float> s(n);
+        for (int k = 0; k < n; k++) s[k] = L * k / float(n - 1);
+        Guide out = sampleSmoothAt(p, s);
+        out.front() = p.front();
+        out.back() = p.back();
+        return out;
+    }
+    // more CVs: every old CV is kept exactly; each old segment gets new CVs on the smooth curve in proportion to its arc
+    // length (largest remainder), so the strand does not change shape (only gains points along the same curve)
+    const int per = 24;
+    std::vector<V3> q = smoothDense(p, per);   // K-1 segments x per samples (+ tip)
+    std::vector<float> segL(K - 1, 0.0f);
+    float L = 0;
+    for (int j = 0; j + 1 < K; j++) {
+        for (int s = 0; s < per; s++) { size_t a = size_t(j) * per + s; segL[j] += len(q[a + 1] - q[a]); }
+        L += segL[j];
+    }
+    std::vector<int> m(K - 1, 1);
+    int extra = (n - 1) - (K - 1);
+    std::vector<std::pair<float, int>> rem;
+    if (L > 1e-9f) {
+        int used = 0;
+        for (int j = 0; j + 1 < K; j++) {
+            float want = segL[j] / L * float(n - 1) - 1.0f;   // ideal extra subdivisions of this segment
+            int w = std::max(0, (int)std::floor(want));
+            w = std::min(w, extra - used);
+            m[j] += w; used += w;
+            rem.push_back({want - float(w), j});
+        }
+        std::sort(rem.begin(), rem.end(), [](auto& x, auto& y) { return x.first > y.first; });
+        for (size_t r = 0; used < extra; r = (r + 1) % rem.size()) { m[rem[r].second]++; used++; }
+    } else {
+        for (int u = 0; u < extra; u++) m[u % (K - 1)]++;
+    }
+    Guide out;
+    out.reserve(n);
+    for (int j = 0; j + 1 < K; j++) {
+        out.push_back(p[j]);
+        // arc positions inside the segment's dense samples
+        std::vector<float> d(per + 1, 0.0f);
+        for (int s = 0; s < per; s++) { size_t a = size_t(j) * per + s; d[s + 1] = d[s] + len(q[a + 1] - q[a]); }
+        for (int t = 1; t < m[j]; t++) {
+            float target = d[per] * float(t) / float(m[j]);
+            int s = 1;
+            while (s < per && d[s] < target) s++;
+            float a = std::clamp((target - d[s - 1]) / std::max(d[s] - d[s - 1], 1e-12f), 0.0f, 1.0f);
+            size_t b = size_t(j) * per + s;
+            out.push_back(q[b - 1] + (q[b] - q[b - 1]) * a);
+        }
+    }
+    out.push_back(p[K - 1]);
+    return out;
+}
+
+void curveDeviation(const Guide& a, const Guide& b, float& maxD, float& meanD) {
+    std::vector<V3> qa = smoothDense(a, 8), qb = smoothDense(b, 8);
+    maxD = 0; meanD = 0;
+    for (auto& x : qa) {
+        float bd = 1e9f;
+        for (size_t j = 0; j + 1 < qb.size(); j++) {
+            V3 e = qb[j + 1] - qb[j];
+            float ee = dot(e, e);
+            float t = ee > 1e-14f ? std::clamp(dot(x - qb[j], e) / ee, 0.0f, 1.0f) : 0.0f;
+            bd = std::min(bd, len(x - (qb[j] + e * t)));
+        }
+        maxD = std::max(maxD, bd);
+        meanD += bd;
+    }
+    if (!qa.empty()) meanD /= float(qa.size());
+}
+
 void Groom::init(const DeskPack* p) {
     pack = p;
     N0 = (int)p->guidesEdit.size();
@@ -73,8 +286,14 @@ int Groom::baseOf(int i) const {
 
 V3 Groom::renderPoint(int i, int k) const {
     int b = baseOf(i);
-    V3 d = pack->guides[b][k] - pack->guidesEdit[b][k];
-    return P[i][k] + d;
+    const int K0 = pack->K;
+    if (K == K0) return P[i][k] + (pack->guides[b][k] - pack->guidesEdit[b][k]);
+    // resampled groom: the build's per-CV fur-frame offset taken at the same fraction of the guide
+    float f = K > 1 ? float(k) * float(K0 - 1) / float(K - 1) : 0.0f;
+    int k0 = std::clamp(int(f), 0, K0 - 1), k1 = std::min(k0 + 1, K0 - 1);
+    float a = f - float(k0);
+    V3 d0 = pack->guides[b][k0] - pack->guidesEdit[b][k0], d1 = pack->guides[b][k1] - pack->guidesEdit[b][k1];
+    return P[i][k] + d0 * (1.0f - a) + d1 * a;
 }
 
 Guide Groom::renderGuide(int i) const {
@@ -484,6 +703,17 @@ void Groom::applyOp(const json& op) {
     std::string kind = op.contains("type") ? op["type"].get<std::string>() : op.value("op", "");
     if (kind == "mirror") { applyMirror(op); return; }
     if (kind == "rebuild") { applyRebuild(op); return; }
+    if (kind == "resample") {
+        // 2026-10-14 opt-in (Studio resample): EVERY guide gets n CVs, evenly spaced along the arc of the smooth
+        // (centripetal Catmull-Rom) curve through its old CVs, root and tip exact. The Studio keeps one CV count for all
+        // guides, so the op has no roots; later ops use n points. Studio-only (the HairLab pipeline does not know it;
+        // Studio exports write the guides shown, any CV count).
+        int n = std::clamp(op.value("n", K), 3, kMaxCvs);
+        if (n == K) return;
+        for (auto& G : P) G = resampleSmooth(G, n);
+        K = n;
+        return;
+    }
     if (kind == "duplicate") {
         if (!op.contains("root")) return;
         auto g = match(json::array({op["root"]}));
@@ -567,6 +797,7 @@ void Groom::applyOp(const json& op) {
 
 void Groom::replay() {
     P = pack->guidesEdit;
+    K = pack->K;
     alive.assign(P.size(), 1);
     src.assign(P.size(), -1);
     edited.clear();

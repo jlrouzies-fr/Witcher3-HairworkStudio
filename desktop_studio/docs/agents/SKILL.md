@@ -48,8 +48,8 @@ Start plain: look first, then fix one defect at a time, only defects you can SEE
 
 ## 4. Tools
 
-Session: `studio_list_configs`, `studio_open`, `studio_status`, `studio_shots`, `studio_save`, `studio_batch` (several tools in one call), `studio_undo`, `studio_redo`, `studio_reset_edits`.
-Seeing: `studio_render`, `studio_closeup`, `studio_compare`, `studio_scalp_coverage`, `studio_pick` (what is under a pixel), `studio_pick_region`, `studio_guides`, `studio_guide`, `studio_faces`, `studio_select`.
+Session: `studio_list_configs`, `studio_open`, `studio_status`, `studio_fur` (Beard mode: edit the beard fur instead of the hair, on builds with `has_beard`), `studio_shots`, `studio_save`, `studio_batch` (several tools in one call), `studio_undo`, `studio_redo`, `studio_reset_edits`.
+Seeing: `studio_render`, `studio_closeup`, `studio_compare`, `studio_scalp_coverage`, `studio_pick` (what is under a pixel), `studio_pick_region`, `studio_guides`, `studio_guide`, `studio_faces`, `studio_select`, `studio_guide_view` (front layer only / hide behind the body; `select: true` selects the visible guides).
 Basic edits: `studio_delete`, `studio_duplicate`, `studio_densify`, `studio_shorten`, `studio_lengthen`, `studio_move`, `studio_move_root_to_scalp`, `studio_set_point`, `studio_reshape`, `studio_curl`, `studio_mirror`, `studio_ops` (raw edit ops).
 Hairline, parting and cleanup: `studio_hairline_check`, `studio_align_to_hairline`, `studio_flow_comb`, `studio_fill_scalp`, `studio_plant_parting`, `studio_hairline_fill`, `studio_feather_hairline`, `studio_fill_below_hairline`, `studio_centre_parting`, `studio_plant_fringe`, `studio_parting_roots`, `studio_lay_down`, `studio_smooth_flow`, `studio_push_out`, `studio_trim_growth`, `studio_dedupe`, `studio_unzigzag`, `studio_hairnet`, `studio_layer_lift`, `studio_inflate`, `studio_free_budget`.
 Face and ears: `studio_clear_ear`, `studio_route_behind_ears`, `studio_clear_eye`, `studio_eye_check`, `studio_outside_vanilla`.

@@ -1,0 +1,5 @@
+{"splash": false, "steps": [
+ {"do": "wait", "frames": 30},
+ {"do": "wait_job"}, {"do": "wait", "frames": 30},
+ {"do": "expect", "loaded": true, "picker": false, "guide_colour": true}
+]}

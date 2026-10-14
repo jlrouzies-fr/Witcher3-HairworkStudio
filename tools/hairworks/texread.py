@@ -12,6 +12,11 @@ import texcache as T
 from PIL import Image
 
 _cache = None
+_mod_caches = []   # texture.cache of source_mods (gamefiles.use_mods), read before the game's
+
+
+def use_mod_caches(paths):
+    _mod_caches[:] = [T.TextureCache(p) for p in paths if os.path.isfile(p)]
 
 
 def cache():
@@ -22,7 +27,7 @@ def cache():
 
 
 def raw_mip0(rel):
-    c = cache()
+    c = next((m for m in _mod_caches if rel.lower() in m.by_name), None) or cache()
     e = c.by_name[rel.lower()]
     with open(c.path, 'rb') as f:
         f.seek(e.page * 4096)

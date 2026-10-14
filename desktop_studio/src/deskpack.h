@@ -25,7 +25,7 @@ struct Bone {
     int parent = -1;
 };
 
-struct Sphere { int bone; V3 local; float r; };
+struct Sphere { int bone; V3 local; float r; V3 c{}; bool hasC = false; };   // c: rest world centre (desk.json "c")
 
 struct Mesh {
     std::string name, kind, texFile, nrmFile, path;   // texFile / nrmFile: diffuse / normal PNG (game files)
@@ -63,3 +63,8 @@ struct DeskPack {
     // HairWorks instance. false when the pack has no beard fur.
     bool beardPack(DeskPack& out) const;
 };
+
+// Beard mode (2026-10-14): exchanges everything one fur owns (geometry, skinning, bones, collision, materials, LOD,
+// budget reference, density / colour maps, fur path and component) between the open pack and the second fur's pack.
+// The rest (meshes, shots, head, character, config, mod, textures) stays where it is.
+void swapFur(DeskPack& a, DeskPack& b);

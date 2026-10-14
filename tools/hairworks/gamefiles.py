@@ -70,15 +70,75 @@ def use_mods(names):
     _over_key = key
     _over.clear()
     _tree_cache.clear()
+    caches = []
     for n in names or []:
         c = n if os.path.isabs(n) else os.path.join(GAME, 'mods', n, 'content')
         if not os.path.isdir(c):
             raise SystemExit('source mod not found: %s' % c)
+        caches.append(os.path.join(c, 'texture.cache'))
         for f in sorted(os.listdir(c)):
             if f.endswith('.bundle'):
                 bp = os.path.join(c, f)
                 for e in w3lib.bundle_entries(bp):
                     _over.setdefault(e.name.lower(), (bp, e))
+    try:   # the mods' own textures (e.g. a headband atlas) for card previews / density
+        import texread
+        texread.use_mod_caches(caches)
+    except Exception:
+        pass
+
+
+class outfit_source(object):
+    """2026-10-14 (opt-in, growth.outfit_mods): with outfit_source(['modCiri']): reads the files of the named INSTALLED
+    outfit mods first (the meshes the user actually sees), restores the previous use_mods() state on exit. Used only to
+    FIT colliders / show meshes in the Studio: nothing from these mods is ever written to a build. No names = no-op."""
+
+    def __init__(self, names, then=()):
+        self.names = list(names or [])
+        self.then = list(then or [])
+
+    def __enter__(self):
+        self.prev = _over_key
+        if self.names:
+            use_mods(self.names + [n for n in self.prev if n not in self.names])
+        return self
+
+    def __exit__(self, *a):
+        if self.names:
+            use_mods(list(self.prev))
+        return False
+
+
+def load_static_mesh(rel):
+    """Unskinned w2mesh (sword blades, props): stream A = 8 bytes quantised position per vertex, 37-byte chunk records
+    (offset of stream A first). -> list of dict(pos, idx, mat, nv) for the LOD0 chunks listed in the mesh tree
+    (checked on the Ciri sword mesh: the blade axis maps onto the scabbard bone chain)."""
+    f = CR2WFile(get(rel))
+    t = f.tree()[0]
+    cd = t['cookedData']
+    sc = np.array([cd['quantizationScale'][k] for k in 'XYZ'])
+    off = np.array([cd['quantizationOffset'][k] for k in 'XYZ'])
+    allb = []
+    _walk_bytes(f.exports[0].props['cookedData'], allb)
+    rc = [b for b in allb if len(b) >= 38 and (len(b) - 1) % 37 == 0][0]
+    buf = get_buffer(rel + '.1.buffer')
+    ibo = cd['indexBufferOffset']
+    out, seen = [], set()
+    chunks = list(t['chunks'])
+    use = [i for i, ch in enumerate(chunks) if not ch.get('useForShadowmesh')] or list(range(len(chunks)))   # a mesh that is only a shadow chunk
+    for i in use:
+        ch = chunks[i]
+        if ch.get('materialID', 0) in seen:
+            break                  # chunks come LOD0 first: the first repeated material starts LOD1
+        seen.add(ch.get('materialID', 0))
+        o = struct.unpack_from('<I', rc, 1 + i * 37 + 1)[0]
+        nv = ch['numVertices']
+        q = np.frombuffer(buf, dtype='<u2', count=nv * 4, offset=o).reshape(nv, 4)[:, :3].astype(np.float64) / 65535.0
+        idx = np.frombuffer(buf, dtype='<u2', count=ch['numIndices'], offset=ibo + ch.get('firstIndex', 0) * 2).astype(int)
+        o2 = struct.unpack_from('<I', rc, 1 + i * 37 + 5)[0]            # stream B = half2 UV
+        uv = np.frombuffer(buf, dtype='<f2', count=nv * 2, offset=o2).reshape(nv, 2).astype(float)
+        out.append(dict(pos=q * sc + off, uv=uv, idx=idx, mat=ch.get('materialID', 0), nv=nv))
+    return out
 
 
 def exists(rel):
@@ -177,7 +237,8 @@ def merge_chunks(m, ids):
     return dict(pos=np.concatenate([c['pos'] for c in cs]), uv=np.concatenate([c['uv'] for c in cs]),
                 bi=np.concatenate([c['bi'] for c in cs]), bw=np.concatenate([c['bw'] for c in cs]),
                 idx=np.concatenate([c['idx'] + o for c, o in zip(cs, off)]), nv=int(sum(c['nv'] for c in cs)),
-                mat=cs[0]['mat'], parts=list(zip(ids, off.tolist())))
+                mat=cs[0]['mat'], parts=list(zip(ids, off.tolist())),
+                vmat=np.concatenate([np.full(c['nv'], c['mat']) for c in cs]))   # per-vertex material (accessory 'materials')
 
 
 def components(nv, idx):

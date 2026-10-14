@@ -342,14 +342,20 @@ def push_out(S, col, margin=0.002):
 
 
 # ------------------------------------------------------------------------------------------ outfit (armour) colliders
-def outfit_points(meshes):
+def outfit_points(meshes, skip_bad=False, log=print):
     """LOD0 vertices of the outfit meshes with vertex normals and the name of the bone that dominates each
     vertex's skin weights (mesh bone table from the CMesh custom data)."""
     import gamefiles as G
     P, N, Bn = [], [], []
     for rel in meshes:
-        m = G.load_mesh(rel)
-        names = G.mesh_bones(rel)['names']
+        try:
+            m = G.load_mesh(rel)
+            names = G.mesh_bones(rel)['names']
+        except Exception as ex:
+            if not skip_bad:
+                raise
+            log('  outfit mesh %s skipped (%r)' % (rel, ex))       # opt-in outfit_mods: some mod meshes are 4-vertex stubs
+            continue
         for ci in m['lod0']:
             ch = m['chunks'][ci]
             v = ch['pos']
@@ -367,11 +373,11 @@ def outfit_points(meshes):
 
 
 def outfit_shapes(head, meshes, region=None, radii=(0.015, 0.02, 0.03, 0.045, 0.06), nmax=36, band=0.008, tol=0.006,
-                  min_gain=6, log=print, hair_pts=None, reach=0.08):
+                  min_gain=6, log=print, hair_pts=None, reach=0.08, skip_bad=False):
     """Spheres inscribed in the outfit surface (the armour / collar / pauldrons the hair falls on), each bound to the
     bone that dominates the skin of the vertices it touches, plus capsules between neighbouring spheres that stay
     inside the surface. Returns [(bone name, centre, radius)], [(i, j)] capsule pairs (indices into the list)."""
-    P, N, Bn = outfit_points(meshes)
+    P, N, Bn = outfit_points(meshes, skip_bad=skip_bad, log=log)
     c = head.c
     z0, z1 = head.top - 0.62, head.top - 0.17
     sel = (P[:, 2] > z0) & (P[:, 2] < z1) & (P[:, 1] < c[1] + 0.03) & (np.abs(P[:, 0]) < 0.28)

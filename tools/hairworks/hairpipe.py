@@ -60,6 +60,13 @@ def load_config(name):
     return C
 
 
+def _studio_hair_pts(C):
+    """all guide points (model space, every 2nd) of the Studio geometry the config applies (opt-in growth.outfit_hair)"""
+    import studio_geo
+    g_ = studio_geo.load_geo(C['studio_geo']['geo'])
+    return np.concatenate([np.asarray(s_, float).reshape(-1, 3)[::2] for s_ in g_['guides']])
+
+
 def discover(C, log=print):
     import discover as D
     G.use_mods(C.get('source_mods', []))     # R81: read the character's files from an installed hair mod first
@@ -87,8 +94,13 @@ def acc_mask(acc, ch):
     """R81 accessory selection on a mesh chunk -> bool vertex mask. 'uv_box' [u0,v0,u1,v1] (classic), or 'pos_boxes'
     [[xmin,xmax,ymin,ymax,zmin,zmax], ...] in mesh space ('mirror_x': true also takes -x) for pieces that are not
     separated in the atlas (Avallach's braid: unwelded quads / triangles in front of each ear), optionally limited to
-    small components ('max_comp_verts') so the regular hair cards passing through the box are not taken."""
-    if acc.get('uv_box'):
+    small components ('max_comp_verts') so the regular hair cards passing through the box are not taken.
+    'materials' [ids] (2026-10-14, hairband Ciri: the headband is its own leather material in the card mesh) takes
+    every vertex of the chunks with those material ids."""
+    if acc.get('materials') is not None:
+        vm = ch.get('vmat')
+        m = np.isin(vm if vm is not None else np.full(len(ch['pos']), ch['mat']), acc['materials'])
+    elif acc.get('uv_box'):
         m = uv_box(acc['uv_box'])(ch['uv'], ch['pos'])
     else:
         P = ch['pos']
@@ -419,6 +431,8 @@ def generate(C, hair=None, log=print, prefix=''):
         ch = dict(ch, idx=_t[~kept_].reshape(-1))
     gathers = []
     for acc in C.get('accessories', []):
+        if acc.get('strand_source', True) is False:
+            continue        # 2026-10-14 opt-in: kept as a mesh only, the strand generation stays as without it (Studio geo match)
         _am = acc_mask(acc, ch)
         for c, r, msk in growth.gather_points(ch, lambda uv, pos, _am=_am: _am):
             if acc.get('gather', True):
@@ -466,12 +480,28 @@ def generate(C, hair=None, log=print, prefix=''):
         if meshes:
             hp = np.concatenate([s_['p'] for s_ in res['S']])
             g_ = C['growth']
+            if g_.get('outfit_hair') == 'studio_geo' and C.get('studio_geo'):
+                hp = _studio_hair_pts(C)      # 2026-10-14 opt-in: fit the colliders to the hair the Studio geometry really has
             kw = {}
             if g_.get('outfit_old_fit'):          # R3 fit: all outfit vertices are targets, coarser radii
                 kw = dict(radii=(0.02, 0.03, 0.045, 0.06), band=0.006, tol=0.003, min_gain=12)
                 hp = None
-            outfit = collision.outfit_shapes(head, meshes, nmax=g_.get('outfit_spheres', 36), log=log, hair_pts=hp,
-                                             reach=g_.get('outfit_reach', 0.06), **kw)
+            # 2026-10-14 opt-in growth.outfit_mods: ["modCiri"] = fit on the meshes of these INSTALLED outfit mods (what the
+            # player really sees); nothing of them is shipped. Default: the game's own meshes.
+            _om = g_.get('outfit_mods') or []
+            with G.outfit_source(_om):
+                outfit = collision.outfit_shapes(head, meshes, nmax=g_.get('outfit_spheres', 36), log=log, hair_pts=hp,
+                                                 reach=g_.get('outfit_reach', 0.06), skip_bad=bool(_om), **kw)
+    if C['growth'].get('back_items'):
+        # 2026-10-14 opt-in growth.back_items (backitems.py): sword / scabbard capsules fitted from the item meshes in rest pose
+        import backitems
+        _main = C.get('rig') or next((x for x in info.get('rigs', []) if 'base_entities' in x), None) or info['rigs'][0]
+        _bs, _bc = backitems.fit(C['growth']['back_items'], _studio_hair_pts(C) if (C['growth'].get('outfit_hair') == 'studio_geo' and C.get('studio_geo'))
+                                 else np.concatenate([s_['p'] for s_ in res['S']]), main_rig=_main, log=log, mods=C['growth'].get('outfit_mods') or ())
+        if _bs:
+            _o0, _c0 = outfit if outfit else ([], [])
+            outfit = (list(_o0) + _bs, list(_c0) + [(i + len(_o0), j + len(_o0)) for i, j in _bc])
+    C['_n_outfit_spheres'] = len(outfit[0]) if outfit else 0
     extra = sorted({b for b, _c, _r in outfit[0]}) if outfit else []
     bones = bone_table(C, info, log, extra)
     # R61 (user): flat oval ears (small chained spheres) are the DEFAULT for every character; approved builds made
@@ -535,7 +565,8 @@ def generate(C, hair=None, log=print, prefix=''):
             app_ = C.get('appearance') or next(iter(info.get('outfit', {})), '')
             om = (C.get('outfits') or {}).get(app_) or info.get('outfit', {}).get(app_, [])
             if om:
-                kdo = _KD(collision.outfit_points(om)[0])
+                with G.outfit_source(g_t.get('outfit_mods')):
+                    kdo = _KD(collision.outfit_points(om, skip_bad=bool(g_t.get('outfit_mods')))[0])
         n_cut = {'outfit': 0, 'max_off': 0, 'face': 0, 'face_skin': 0}
         fs = tr.get('face_skin')          # 2026-10-04 (HairLab L10): vanilla hair never lies ON the face skin
         if fs is True:
@@ -1597,9 +1628,16 @@ def build(C, install=False, log=print, prefix='', assemble=False):
             # (mod missing: vanilla Triss + an on-screen message). See lore_guard.py.
             import lore_guard
             extra = list(extra) + [(hair['comp'] + lore_guard.CARDS_SUFFIX, hair['mesh'])]
+        if C.get('mod_guard'):
+            # 2026-10-14 opt-in (hairband Ciri, release builds): the same requirement for any third-party hair mod, checked
+            # by loading a file only that mod ships (mod_guard.py)
+            import mod_guard
+            extra = list(extra) + [(hair['comp'] + mod_guard.CARDS_SUFFIX, hair['mesh'])]
         new = template.patch(_tsrc, hair['comp'], fp, extra, fallback)
         if C.get('lore_guard'):
             new = template.add_script_component(new, lore_guard.CLASS, lore_guard.COMP)
+        if C.get('mod_guard'):
+            new = template.add_script_component(new, *mod_guard.names(C['mod_guard']))
         template.validate(new, hair['template'])
         files.append((P(hair['template']), new))
         tpls.append((hair['template'], P(hair['template'])))
@@ -1634,6 +1672,11 @@ def build(C, install=False, log=print, prefix='', assemble=False):
             import lore_guard
             lore_guard.write_script(mod, hair['comp'], hair['mesh'])
             log('lore guard: script + scripted component (Nexus 6457 required at runtime)')
+        if C.get('mod_guard'):
+            import mod_guard
+            accs = [x['name'] for x in C.get('accessories', []) if x.get('keep_mesh', True)]
+            mod_guard.write_script(mod, C['mod_guard'], hair['comp'], accs, C['mod'])
+            log('mod guard: script + scripted component (%s required at runtime)' % C['mod_guard']['label'])
         log('release: %s (requires_core %s, %s)' % (K.requirement_line(meta['requires_core'], ascii=True),
                                                     meta['requires_core'], meta['core_check']))
     if install:
@@ -1692,7 +1735,8 @@ if __name__ == '__main__':
         import collision
         app = C.get('appearance') or ''
         meshes = (C.get('outfits') or {}).get(app) or st['info'].get('outfit', {}).get(app, [])
-        op = collision.outfit_points(meshes)[0] if meshes else None
+        with G.outfit_source(C['growth'].get('outfit_mods')):
+            op = collision.outfit_points(meshes, skip_bad=bool(C['growth'].get('outfit_mods')))[0] if meshes else None
         plot.plot(st['growth'], st['head'], out, col=st['col'], outfit_pts=op)
         print(out)
     elif cmd == 'build':
@@ -1704,6 +1748,9 @@ if __name__ == '__main__':
             C['name'] += '__release'        # own editor / preview exports: the dev build's build\hairbatch files stay
         if '--lore-guard' in a:
             C['lore_guard'] = True       # opt-in, release builds of Triss (see lore_guard.py)
+        if '--mod-guard' in a:
+            assert C.get('mod_guard_cfg'), 'config has no mod_guard_cfg (see mod_guard.py)'
+            C['mod_guard'] = C['mod_guard_cfg']     # opt-in, release builds of third-party hair conversions
         if '--mod' in a:
             C['mod'] = a[a.index('--mod') + 1]
         build(C, '--install' in a)

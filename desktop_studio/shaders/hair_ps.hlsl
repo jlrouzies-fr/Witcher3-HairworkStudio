@@ -18,7 +18,17 @@ cbuffer HairCb : register(b0)          // filled by HairWorks (renderHairs)
     NvHair_ConstantBuffer g_hair;
 }
 
-float Strand_Hash(float x) { return frac(sin(x * 12.9898f) * 43758.5453f); }
+// per-strand random in [0, 1). Integer hash of the float's bits: the old frac(sin(x)) form lost all precision for large
+// hair ids (sin of 1e6+), so whole regions of strands (e.g. a moustache of added guides) got the same value
+float Strand_Hash(float x)
+{
+    uint u = asuint(x);
+    u ^= u >> 16; u *= 0x7feb352du; u ^= u >> 15; u *= 0x846ca68bu; u ^= u >> 16;
+    return float(u & 0xffffffu) / 16777216.0f;
+}
+// signed per-strand variation for the calibrated terms. The looks were calibrated (Vesemir r31a vs the game) while the
+// old hash returned ~0 for most strands, i.e. a variation of -0.5: keep that mean, spread +-0.25 around it
+float Strand_Var(float x) { return Strand_Hash(x) * 0.5f - 0.75f; }
 
 // Kajiya-Kay: lighting of a thin cylinder with tangent t
 float Strand_Diffuse(float3 t, float3 l) { float tl = dot(t, l); return sqrt(saturate(1.0f - tl * tl)); }
@@ -57,7 +67,7 @@ float4 main(NvHair_PixelShaderInput input) : SV_Target
     }
     base *= g_params.y;
     // per-strand variation (strand definition): the fur's diffuseNoiseScale + the rig's variation, by hair id
-    float hv = Strand_Hash(a.hairID * 1.731f + 0.37f) - 0.5f;
+    float hv = Strand_Var(a.hairID * 1.731f + 0.37f);
     base *= max(1.0f + hv * 2.0f * (g_extra.y + 0.5f * g_extra.x), 0.0f);
 
     float3 T = normalize(a.T);
@@ -131,11 +141,22 @@ float4 main(NvHair_PixelShaderInput input) : SV_Target
     } else {
         skyT = lerp(1.0f, lerp(0.45f, 1.0f, occ) * lerp(0.6f, 1.0f, s), g_params.w).xxx;
     }
-    float3 amb = Studio_SH(Nh) * skyT * (0.5f + g_mat.x);
+    // fibre detail in shade: the smooth sky term alone renders shaded hair (moustache under the nose) as flat felt.
+    // Neighbour fibres hide the sky towards each root, and every strand sees a slightly different sky.
+    float hs = Strand_Var(a.hairID * 0.613f + 0.71f);
+    float fib = lerp(1.0f - g_hair3.y, 1.0f, sqrt(saturate(s))) * max(1.0f + hs * 2.0f * g_hair3.z, 0.0f);
+    // strand direction: a fibre seen across reflects / scatters more sky towards the eye than one seen end-on, so
+    // overlapping strands in shade separate (g_hair3.w = strength)
+    float tv = dot(T, V);
+    fib *= lerp(1.0f, 0.45f + 0.75f * sqrt(saturate(1.0f - tv * tv)), g_hair3.w);
+    // only where the sun does not reach (sunlit hair keeps its calibrated look: the sun term already shows the fibres)
+    float lit = saturate(dot(sunT, float3(0.2126f, 0.7152f, 0.0722f)) * saturate(NdotL + 0.3f) * 2.5f);
+    fib = lerp(fib, 1.0f, lit);
+    float3 amb = Studio_SH(Nh) * skyT * (0.5f + g_mat.x) * fib;
 
     // specular, as the SDK's reference model (Kajiya-Kay on T.H): primary lobe shifted per strand by the breakup noise,
     // secondary lobe shifted by specularSecondaryOffset and tinted by the hair colour
-    float n = Strand_Hash(a.hairID);
+    float n = Strand_Var(a.hairID) + 0.5f;
     float3 H = normalize(V + L);
     float TdotH = clamp(dot(T, H), -1.0f, 1.0f);
     float t1 = clamp(TdotH + m.specularPrimaryBreakup * (n - 0.5f), -1.0f, 1.0f);

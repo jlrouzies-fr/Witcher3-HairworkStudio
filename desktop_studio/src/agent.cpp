@@ -110,8 +110,8 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
             auto ix = stp.contains("where") ? selectGuides(stp["where"]) : selList();
             opCurl(ix);
             r["guides"] = ix.size();
-            r["cvs_per_turn"] = curlCvsPerTurn(pack.K, curl);
-            if (curlCvsPerTurn(pack.K, curl) < 6) r["warning"] = "curl under-sampled (< 6 CVs per turn)";
+            r["cvs_per_turn"] = curlCvsPerTurn(groom.K, curl);
+            if (curlCvsPerTurn(groom.K, curl) < 6) r["warning"] = "curl under-sampled (< 6 CVs per turn)";
         } else if (d == "delete" || d == "shorten" || d == "duplicate") {
             auto ix = stp.contains("where") ? selectGuides(stp["where"]) : selList();
             sel = std::set<int>(ix.begin(), ix.end());
@@ -175,6 +175,7 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
             rig.skinSss = stp.value("skin_sss", rig.skinSss); rig.skinSpec = stp.value("skin_spec", rig.skinSpec);
             rig.skinGain = stp.value("skin_gain", rig.skinGain); rig.cavity = stp.value("cavity", rig.cavity);
             rig.aoStrength = stp.value("ao", rig.aoStrength); rig.quality = stp.value("quality", rig.quality); rig.toneMode = stp.value("tone", rig.toneMode); rig.hairEncoding = stp.value("hair_encoding", rig.hairEncoding);
+            rig.ambRoot = stp.value("amb_root", rig.ambRoot); rig.ambVar = stp.value("amb_var", rig.ambVar); rig.ambTv = stp.value("amb_tv", rig.ambTv);
             rig.sunSize = stp.value("sun_size", rig.sunSize); rig.shadowSoft = stp.value("shadow_soft", rig.shadowSoft);
             auto col3 = [&](const char* k, float* c) {
                 if (stp.contains(k) && stp[k].is_array() && stp[k].size() == 3) for (int q = 0; q < 3; q++) c[q] = stp[k][q].get<float>();
@@ -404,7 +405,7 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
                         V3 bp{};
                         float ax = 0, ay = 0, bx = 0, by = 0;
                         bool have = scr(posedPoint(int(g), 0), ax, ay);
-                        for (int kk = 1; kk < pack.K; kk++) {
+                        for (int kk = 1; kk < groom.K; kk++) {
                             bool h2 = scr(posedPoint(int(g), kk), bx, by);
                             if (have && h2) {
                                 float vx = bx - ax, vy = by - ay, L2 = vx * vx + vy * vy;
@@ -510,18 +511,33 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
         } else if (d == "dump_geo") {
             // {"do": "dump_geo", "path": "x.json"}: the groom as it is now (alive guides in order, faces by alive index, per-corner uv)
             std::vector<int> ix(groom.P.size(), -1);
-            json G = json::array(), Fa = json::array();
+            // "index" (2026-10-14): each dumped guide's Studio index (groom slot, what every other command takes); dump
+            // order = alive guides only, so it drifts from the Studio index after any delete
+            json G = json::array(), Fa = json::array(), Ix = json::array();
             for (size_t i = 0; i < groom.P.size(); i++) {
                 if (!groom.alive[i]) continue;
                 ix[i] = (int)G.size();
+                Ix.push_back((int)i);
                 json pts = json::array();
                 for (auto& q : groom.P[i]) pts.push_back({r4(q.x), r4(q.y), r4(q.z)});
                 G.push_back(pts);
             }
             for (auto& f : groom.faces) Fa.push_back({{"g", {ix[f.g[0]], ix[f.g[1]], ix[f.g[2]]}}, {"uv", {f.uv[0], f.uv[1], f.uv[2], f.uv[3], f.uv[4], f.uv[5]}}});
-            std::ofstream(stp.value("path", out + "\geo.json")) << json{{"K", groom.K}, {"guides", G}, {"faces", Fa}}.dump();
+            std::ofstream(stp.value("path", out + "\\geo.json")) << json{{"K", groom.K}, {"guides", G}, {"index", Ix}, {"faces", Fa}}.dump();
             r["guides"] = G.size();
             r["faces"] = Fa.size();
+        } else if (d == "fur") {
+            // {"do": "fur", "fur": "beard" | "hair"}: Beard mode switch (builds with a beard fur): the beard fur becomes the
+            // live groom (every step / command acts on it), the hair the preview; "hair" switches back
+            std::string f = stp.value("fur", std::string("hair"));
+            if (f != "hair" && f != "beard") { r["error"] = "fur must be hair or beard"; rc = 7; }
+            else if (!setFur(f == "beard" ? 1 : 0)) r["error"] = beardOn ? "cannot switch while the wind check runs" : "this build has no beard fur";
+            r["fur"] = fur ? "beard" : "hair";
+            r["has_beard"] = beardOn;
+            r["comp"] = pack.comp;
+            r["guides"] = groom.numAlive();
+            r["faces"] = groom.faces.size();
+            r["ops"] = groom.ops.size();
         } else if (d == "report") {
             // nothing: the budget is added to every report below
         } else {
@@ -537,7 +553,7 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
 
 int App::finishAgent(json& report, const std::string& out, int rc) {
     st = hw.stats();
-    report["final"] = {{"config", configName}, {"guides", groom.numAlive()}, {"faces", groom.faces.size()}, {"ops", groom.ops.size()},
+    report["final"] = {{"config", configName}, {"fur", fur ? "beard" : "hair"}, {"guides", groom.numAlive()}, {"faces", groom.faces.size()}, {"ops", groom.ops.size()},
                        {"unmatched", groom.unmatched}, {"hairs_live", st.hairs},
                        {"budget", {{"hairs", bud.hairs}, {"hairs_close", bud.hairsClose}, {"ref", bud.refName}, {"ref_hairs", bud.refHairs},
                                    {"ref_hairs_close", bud.refHairsClose}, {"ratio", bud.ratio}, {"limit", look.limit}, {"over_limit", bud.overLimit},

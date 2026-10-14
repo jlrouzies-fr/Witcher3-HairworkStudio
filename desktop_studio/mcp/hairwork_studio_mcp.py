@@ -84,7 +84,8 @@ class Studio:
                 raise RuntimeError("Studio timed out")
 
     READ_ONLY = {"status", "shots_list", "render", "guides", "guide", "faces", "pick", "pick_region", "scalp_coverage",
-                 "look_get", "materials_list", "save_edits", "save_project", "export", "dump_params", "bench", "select"}
+                 "look_get", "materials_list", "save_edits", "save_project", "export", "dump_params", "bench", "select", "dump_geo",
+                 "wind_check"}
 
     def _send(self, cmd, timeout):
         self.p.stdin.write((json.dumps(cmd) + "\n").encode())
@@ -260,7 +261,18 @@ def t_status(a):
     return S.call({"do": "status"})
 
 
-@tool("studio_shots", "Cameras of the open build (HairLab shots with eye / target / fovy and the vanilla in-game still).",
+@tool("studio_fur", "Beard mode (builds with a beard fur, e.g. Zoltan / Lambert beard configs: status has_beard). "
+      "fur: 'beard' makes the beard fur the edited groom: every tool, look / material, physics, check, render overlay "
+      "and the budget then act on the beard, and the hair is a preview; 'hair' switches back. Each fur keeps its own "
+      "edits and undo; studio_save writes both into the project and the export.",
+      obj({"fur": {"type": "string", "enum": ["hair", "beard"]}}, ["fur"]))
+def t_fur(a):
+    r = S.call({"do": "fur", "fur": a["fur"]})
+    CALLS.clear()   # undo-by-call markers count the other fur's ops
+    return r
+
+
+@tool("studio_shots","Cameras of the open build (HairLab shots with eye / target / fovy and the vanilla in-game still).",
       obj({}))
 def t_shots(a):
     return S.call({"do": "shots_list"})
@@ -272,11 +284,36 @@ def t_shots(a):
       "baseline: true renders the build as opened (no edits) for before / after.",
       obj({**CAM, **IMG, "overlay": {"type": "string", "enum": ["none", "scalp", "mask", "guides"]},
            "baseline": {"type": "boolean"}, "hair": {"type": "boolean", "description": "false = hide the hair (see the scalp mask / skin)"},
-           "vanilla": {"type": "boolean", "description": "render the game's own hair cards instead of the groom"}}))
+           "vanilla": {"type": "boolean", "description": "render the game's own hair cards instead of the groom"},
+           "guides_front": {"type": "boolean", "description": "with overlay 'guides': only the front-layer guides (default: studio_guide_view)"},
+           "guides_body": {"type": "boolean", "description": "with overlay 'guides': hide guide parts behind the body (default: studio_guide_view)"}}))
 def t_render(a):
-    png, r = render(a, "render", {"baseline": a.get("baseline", False), "hair": a.get("hair", True),
-                                  "vanilla": a.get("vanilla", False)})
+    extra = {"baseline": a.get("baseline", False), "hair": a.get("hair", True), "vanilla": a.get("vanilla", False)}
+    for k in ("guides_front", "guides_body"):
+        if k in a:
+            extra[k] = a[k]
+    png, r = render(a, "render", extra)
     return [r, image_content(png, a.get("crop"), a.get("max_px", 1000))]
+
+
+@tool("studio_guide_view", "Guide visibility views (the Studio's View > 'Guides: front layer only' / 'Guides: hide behind "
+      "the body'). front: only guides that are the outermost hair from the camera (front_pct % of their points within "
+      "tol_mm of the front-most hair / body depth); body: guide parts hidden by the head / body / outfit are not drawn. "
+      "The modes stay set for the session (renders with overlay 'guides', the UI). With camera keys: counts the guides "
+      "shown from that camera (rect [x,y,w,h] 0..1 = only those with a drawn point inside); select: true selects them "
+      "(as the UI's box select with 'Select visible only'); limit n lists their indices.",
+      obj({**CAM, "front": {"type": "boolean"}, "body": {"type": "boolean"},
+           "front_pct": {"type": "number", "description": "front layer: share of points that must be front-most (50)"},
+           "tol_mm": {"type": "number", "description": "front layer: depth tolerance behind the outermost hair (12 mm)"},
+           "select_visible": {"type": "boolean", "description": "UI picking takes only shown guides (default true)"},
+           "rect": {"type": "array", "items": {"type": "number"}}, "select": {"type": "boolean"},
+           "limit": {"type": "integer"}, "size": IMG["size"]}))
+def t_guide_view(a):
+    cmd = {"do": "guide_view", **cam_args(a)}
+    for k in ("front", "body", "front_pct", "tol_mm", "select_visible", "rect", "select", "limit", "size"):
+        if k in a:
+            cmd[k] = a[k]
+    return S.call(cmd)
 
 
 CLOSEUP_AREAS = {   # (azimuth deg: 0 front, + character's left; elevation deg above the head centre)
@@ -616,7 +653,9 @@ def t_flow(a):
       "e.g. on the forehead): points under the skin are pushed out to standoff_mm (3) above it. list_only to count. "
       "fill_scalp / plant_parting reject templates that would pass through the head. delete: true removes the "
       "guides instead (recommended for planted copies: pushed out they often hang as stray hair; refill with "
-      "studio_fill_scalp). Only points clearly inside (> depth_mm 8 under the skull surface) count.",
+      "studio_fill_scalp). Only points clearly inside (> depth_mm 8 under the skull surface) count. Also reports "
+      "spans_under_skin / span_guides: guides whose straight span BETWEEN two CVs dips > 1 mm under the skin (long root "
+      "segments across the forehead; drawn as broken specks). Those are not pushed: delete them (where indices).",
       obj({"where": WHERE, "standoff_mm": {"type": "number"}, "depth_mm": {"type": "number"}, "delete": {"type": "boolean"},
            "list_only": {"type": "boolean"}, **SHOW}))
 def t_push(a):
@@ -624,13 +663,23 @@ def t_push(a):
                     **{k: a[k] for k in ("standoff_mm", "depth_mm", "delete", "list_only") if k in a}})
 
 
-@tool("studio_lengthen", "Make guides longer (factor > 1, e.g. 1.3) or shorter (< 1) keeping their shape: resampled along "
-      "the strand; past the old tip it continues along the last direction, bending down with droop (0.5). Fixes a "
+@tool("studio_lengthen", "Make guides longer (factor > 1, e.g. 1.3) or shorter (< 1) keeping their shape: CVs re-placed along "
+      "the smooth curve of the strand (resample to 16+ CVs first, studio_resample); past the old tip it continues along the last direction, bending down with droop (0.5). Fixes a "
       "too-short cut / bob vs vanilla (Margarita). Guides stay outside the head. Check the budget (longer = more hair "
       "volume) and studio_compare.",
       obj({"where": WHERE, "factor": {"type": "number"}, "droop": {"type": "number"}, **SHOW}, ["where"]))
 def t_lengthen(a):
     return edit(a, {"do": "lengthen", **{k: a[k] for k in ("where", "factor", "droop") if k in a}})
+
+
+@tool("studio_resample", "Give EVERY guide n control points (3..32; 16-24 for waves / curls / long hair): CVs re-placed evenly "
+      "along the smooth (centripetal Catmull-Rom) curve through the current CVs, root and tip exact, so the shape does not "
+      "change (reports max_dev_mm / mean_dev_mm). One CV count for all guides (no where). Do it BEFORE studio_curl (6+ CVs per "
+      "turn) and studio_lengthen. Studio-only op (exports write the guides shown, any CV count; the game has run 25-CV "
+      "guides). Render cost grows with the CVs: (n-1) x splineMultiplier + 1 vertices per hair.",
+      obj({"n": {"type": "integer"}, **SHOW}, ["n"]))
+def t_resample(a):
+    return edit(a, {"do": "resample", "n": a["n"]})
 
 
 @tool("studio_clear_ear", "Tuck hair behind the ears (vanilla shows the ear, e.g. Eredin / Crach): finds the ears on the "
@@ -849,6 +898,75 @@ def t_trim(a):
     return edit(a, {"do": "trim_growth", **{k: a[k] for k in ("where", "divergent", "div_deg", "tip_spread", "off_scalp",
                                                             "stretched", "tol_mm", "max_edge_mm",
                                                             "edge_factor", "list_only") if k in a}})
+
+
+@tool("studio_check_loops", "Read-only: list guides that form an unwanted loop - the strand comes back to within return_mm (15) of "
+      "a point it passed (or its own root) after more than min_arc_mm (60) of hair, e.g. over the top and back, or back "
+      "to the crown; or the strand circles >= circling_deg (270) in total. Tight repeated turns (curls: loops up to curl_radius_mm 45) are not flagged. Returns "
+      "[{guide, reason}]. Fix with studio_delete or the Check > Unwanted loops panel.",
+      obj({"min_arc_mm": {"type": "number"}, "return_mm": {"type": "number"}, "curl_radius_mm": {"type": "number"}, "circling_deg": {"type": "number"}}))
+def t_check_loops(a):
+    return S.call({"do": "check_loops", **{k: a[k] for k in ("min_arc_mm", "return_mm", "curl_radius_mm", "circling_deg") if k in a}})
+
+
+@tool("studio_wind_check", "Read-only, measured MAX-WIND stray check (numbers, not screenshots; ~100 s with defaults). Rest = exact hair-only "
+      "mask with the simulation off, per camera; then fresh simulations at wind `amount` (5 = toolbar maximum) for `seconds` (6), "
+      "fixed 1/60 s steps, `frames` (30) mask renders, and every step the SIMULATED guide CVs read back from the GPU. The SDK wind is "
+      "NOT deterministic (two identical runs differ by up to ~250 mm per CV from step 2), so the baseline is the envelope (per-pixel / "
+      "per-guide max) of `repeats` (6) runs, split in two half-envelopes whose difference is the noise floor; `repeatability` reports "
+      "the run1/run2 CV differences and mask IoUs. Per camera / pixel: farthest distance (px) hair gets from the rest silhouette, "
+      "> threshold_px (12 at size 600) is out of place. Candidates = guides / growth faces whose own simulated hair strays more than "
+      "stray_px (24) beyond the median of their 16 nearest-root neighbours (max_candidates 120). Each is CONFIRMED by elimination: "
+      "hide it (independent batches, then overlapping groups halved by azimuth) and re-run the same wind (an envelope of repeats/2 "
+      "runs); its footprint must empty beyond the noise. Verdicts: clears (>= 50 %), reduces, clump (only goes away with its group), "
+      "replaced (hiding it lets neighbours fly farther: hair interaction couples guides), not cleared, untested. Returns cameras "
+      "(flagged_px, max_px, mm_per_px_at_head, calm / half-envelope px), strays, flyers, culprits [{kind guide|face, id, guides, "
+      "stray_px, max_px, max_mm, cameras, footprint, root, length_mm, cause: loop / over-long / divergent face fan / soft stiffness / "
+      "other, verdict, confirmed, removal, removal_needed, others_fly_farther, group}], groups, tests log, debug PNGs per camera. "
+      "cameras: 6 (default: top, front_top, back, left, right, front), a count, names, or [{eye, target, fovy, name}]. confirm (true), "
+      "max_runs (64) elimination tests, min_removal (0.15), batch_spacing_mm (40), wind_noise (override; default keeps the fur's), "
+      "calm (true), inspect [guide ids] for per-guide detail. Restores the state, adds no ops.",
+      obj({"seconds": {"type": "number"}, "frames": {"type": "integer"}, "cameras": {}, "threshold_px": {"type": "number"},
+           "size": {"type": "integer"}, "amount": {"type": "number"}, "confirm": {"type": "boolean"}, "max_runs": {"type": "integer"},
+           "min_removal": {"type": "number"}, "min_cluster_px": {"type": "number"}, "repeat": {"type": "boolean"}, "calm": {"type": "boolean"},
+           "repeats": {"type": "integer"}, "wind_noise": {"type": "number"}, "ramp_s": {"type": "number"}, "inspect": {"type": "array", "items": {"type": "integer"}},
+           "png": {"type": "boolean"}, "batch_spacing_mm": {"type": "number"}, "stray_px": {"type": "number"}, "max_candidates": {"type": "integer"}}))
+def t_wind_check(a):
+    keys = ("seconds", "frames", "cameras", "threshold_px", "size", "amount", "confirm", "max_runs", "min_removal", "min_cluster_px", "repeat",
+            "calm", "repeats", "wind_noise", "ramp_s", "inspect", "png", "batch_spacing_mm", "stray_px", "max_candidates")
+    return S.call({"do": "wind_check", **{k: a[k] for k in keys if k in a}}, timeout=14400)
+
+
+@tool("studio_band_sim", "Read-only, measured: do SIMULATED strands stay under a HEADBAND? Detects the band like studio_headband (mesh, "
+      "z_range, max_height_mm, min_coverage) and, per wind amount in `amounts` ([0, 1.5, 5]; 5 = toolbar max), runs fresh simulations "
+      "(`seconds` 6 at 1/60 s, `repeats` 2: the SDK wind is random) reading back the simulated guide CVs every step; a guide is OUTSIDE "
+      "when a point of its simulated strand in the band's height range lies beyond the band's inner surface minus margin_mm (0.75). "
+      "Returns rest_crossing / rest_over_outer (sim off), and per amount max_crossing (max over steps), mean_crossing, guides_ever_outside, "
+      "the same for over_outer (beyond the band's OUTER radius: visibly on top of it), worst [{guide, steps_outside, steps_over_outer, "
+      "max_excess_mm (beyond the inner surface), root}] (worst 15), and the sway envelope of the hair below sway_below_z (head centre - 0.2 m): per guide "
+      "max displacement from rest, p50 / p90 / max mm over those guides. wind_noise overrides the fur's. Restores the state, adds no ops.",
+      obj({"amounts": {"type": "array", "items": {"type": "number"}}, "seconds": {"type": "number"}, "repeats": {"type": "integer"},
+           "wind_noise": {"type": "number"}, "margin_mm": {"type": "number"}, "worst": {"type": "integer"}, "sway_below_z": {"type": "number"},
+           "mesh": {"type": "string"}, "z_range": {"type": "array", "items": {"type": "number"}}, "max_height_mm": {"type": "number"},
+           "min_coverage": {"type": "number"}}))
+def t_band_sim(a):
+    keys = ("amounts", "seconds", "repeats", "wind_noise", "margin_mm", "worst", "sway_below_z", "mesh", "z_range", "max_height_mm", "min_coverage")
+    return S.call({"do": "band_sim", **{k: a[k] for k in keys if k in a}}, timeout=7200)
+
+
+@tool("studio_collision_band", "Opt-in fix for hair pushed OVER a headband by the collision bodies (measure first with studio_band_sim: "
+      "compare useCollision 0 / 1). Detects the band like studio_headband and shrinks every collision sphere whose surface, inside the "
+      "band's height range, comes closer than clearance_mm (2) to the band's inner surface (binary search on the radius); capsules "
+      "(sphere pairs) are sampled between their ends and both ends shrink until they fit; a sphere left under min_r_mm (3) is turned "
+      "off (0.1 mm). Radii are project state (saved as collision_r, exported in the geo json and written into the fur by the Studio "
+      "export / studio_geo build). list_only: report only. set {sphere index (string): radius m, or -1 = the pack's}. reset: "
+      "clear all overrides. Returns changed [{sphere, bone, c, r_old_mm, r_new_mm, excess_mm, off}], capsules_shrunk, collision_r.",
+      obj({"clearance_mm": {"type": "number"}, "min_r_mm": {"type": "number"}, "list_only": {"type": "boolean"}, "set": {"type": "object"},
+           "reset": {"type": "boolean"}, "mesh": {"type": "string"}, "z_range": {"type": "array", "items": {"type": "number"}},
+           "max_height_mm": {"type": "number"}, "min_coverage": {"type": "number"}}))
+def t_collision_band(a):
+    keys = ("clearance_mm", "min_r_mm", "list_only", "set", "reset", "mesh", "z_range", "max_height_mm", "min_coverage")
+    return S.call({"do": "collision_band", **{k: a[k] for k in keys if k in a}})
 
 
 @tool("studio_dedupe", "Remove duplicate guides (root within tol_mm 0.6 and tip within 4x that of another guide): "
@@ -1192,6 +1310,19 @@ def t_hairnet(a):
     return edit(a, {"do": "hairnet", **{k: a[k] for k in keys if k in a}})
 
 
+@tool("studio_headband", "Generic: detect a HEADBAND / circlet / ribbon (a thin closed ring around the head in an outfit or card mesh: small height, "
+      "wide azimuth coverage, close to the skull) and push the strand points that pass OVER it to sit just UNDER its inner surface "
+      "(clearance_mm 1.5, standoff_mm 1.0 above the skin, passes 4), faded in / out above and below (blend_mm, auto) so strands stay continuous; lengths kept, roots unchanged. "
+      "Reports the detected band, candidates, and strands crossing before / after (list_only: detect + count only). "
+      "mesh = name / path substring to force a part, z_range [lo,hi] absolute height window, max_height_mm 60, min_coverage 0.6.",
+      obj({"where": WHERE, "mesh": {"type": "string"}, "z_range": {"type": "array", "items": {"type": "number"}},
+           "max_height_mm": {"type": "number"}, "min_coverage": {"type": "number"}, "clearance_mm": {"type": "number"}, "standoff_mm": {"type": "number"}, "passes": {"type": "integer"},
+           "blend_mm": {"type": "number"}, "list_only": {"type": "boolean"}, **SHOW}))
+def t_headband(a):
+    keys = ("where", "mesh", "z_range", "max_height_mm", "min_coverage", "clearance_mm", "standoff_mm", "passes", "blend_mm", "list_only")
+    return edit(a, {"do": "headband", **{k: a[k] for k in keys if k in a}})
+
+
 @tool("studio_layer_lift", "Opt-in CLAY-SHELL breaker: every selected guide gets its own lift off the skin (lift_min_mm 0 .. "
       "lift_max_mm 8, skewed low by gamma 1.5) and a slow sideways sway (sway_mm 3, waves 1 along the strand), both ramping "
       "in from the root over ramp (0.35 of the length) and fading out from fade_from (1 = never) over fade_len (0.2), so buns / tied ends stay; lengths kept, seed varies the pattern. Guides at different heights "
@@ -1369,14 +1500,24 @@ def t_rig(a):
 
 @tool("studio_simulate", "Run physics: preset idle / walk / run / turn / nod / spin / wind / rest for seconds "
       "(settle = rest pose). on=false keeps hair on the rest shape.",
-      obj({"preset": {"type": "string"}, "seconds": {"type": "number"}, "on": {"type": "boolean"}, "reset": {"type": "boolean"}}))
+      obj({"preset": {"type": "string"}, "seconds": {"type": "number"}, "on": {"type": "boolean"}, "reset": {"type": "boolean"},
+           "amount": {"type": "number", "description": "motion / wind strength multiplier (1)"}, "speed": {"type": "number"}}))
 def t_sim(a):
     if "on" in a:
         return S.call({"do": "simulate", "on": a["on"]})
     p = a.get("preset", "rest")
     if p == "rest":
         return S.call({"do": "settle", "seconds": a.get("seconds", 2)})
-    return S.call({"do": "motion", "preset": p, "seconds": a.get("seconds", 2), "reset": a.get("reset", False)})
+    return S.call({"do": "motion", "preset": p, "seconds": a.get("seconds", 2), "reset": a.get("reset", False),
+                   "amount": a.get("amount", 1.0), "speed": a.get("speed", 1.0)})
+
+
+@tool("studio_dump_geo", "Read-only: write the groom as it is now (alive guides in order with all control points, edit frame, "
+      "faces by alive index with per-corner uv, K) to a JSON file (path; default <out>/geo.json). For offline checks / diffs. "
+      "guides[n] is NOT Studio guide n: use index[n] (its Studio index) before passing it to any other tool.",
+      obj({"path": {"type": "string"}}))
+def t_dump_geo(a):
+    return S.call({"do": "dump_geo", "path": a.get("path") or os.path.join(S.out, "geo.json")})
 
 
 # --- saving

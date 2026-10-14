@@ -100,6 +100,7 @@ bool HairRuntime::loadPixelShader(const std::vector<char>& cso) {
 }
 
 void HairRuntime::freeInstance() {
+    if (readStage) { readStage->Release(); readStage = nullptr; readStageBytes = 0; }
     if (!sdk) return;
     if (instId != NvHair::INSTANCE_ID_NULL) sdk->freeInstance(NvHair::InstanceId(instId));
     if (assetId != NvHair::ASSET_ID_NULL) sdk->freeAsset(NvHair::AssetId(assetId));
@@ -128,16 +129,19 @@ static gfsdk_float4x4 toF44(const float* m) {
     return r;
 }
 
-bool HairRuntime::build(const DeskPack& pk, const Groom& gr, std::vector<int>& guideOfAsset, const std::vector<std::array<float, 6>>* uvs) {
+bool HairRuntime::build(const DeskPack& pk, const Groom& gr, std::vector<int>& guideOfAsset, const std::vector<std::array<float, 6>>* uvs,
+                        const std::vector<char>* hideGuide, const std::vector<char>* hideFace) {
     if (!sdk) return false;
     freeInstance();
-    const int K = pk.K;
+    const int K = gr.K;
     std::vector<int> assetOf(gr.P.size(), -1);
     guideOfAsset.clear();
     for (size_t i = 0; i < gr.P.size(); i++)
-        if (gr.alive[i]) { assetOf[i] = (int)guideOfAsset.size(); guideOfAsset.push_back((int)i); }
+        if (gr.alive[i] && !(hideGuide && i < hideGuide->size() && (*hideGuide)[i])) { assetOf[i] = (int)guideOfAsset.size(); guideOfAsset.push_back((int)i); }
     const int N = (int)guideOfAsset.size();
     if (N < 3) { lastError = "fewer than 3 guides"; return false; }
+    numAssetGuides = N;
+    assetCvs = K;
     std::vector<gfsdk_float3> verts(size_t(N) * K);
     std::vector<nvidia::UInt32> ends(N);
     std::vector<gfsdk_float4> bi(N), bw(N);
@@ -158,11 +162,30 @@ bool HairRuntime::build(const DeskPack& pk, const Groom& gr, std::vector<int>& g
     std::vector<gfsdk_float2> fuv;
     for (size_t fx = 0; fx < gr.faces.size(); fx++) {
         const Face& f = gr.faces[fx];
+        if (hideFace && fx < hideFace->size() && (*hideFace)[fx]) continue;
         const auto& fu = (uvs && fx < uvs->size()) ? (*uvs)[fx] : f.uv;
         int a0 = assetOf[f.g[0]], a1 = assetOf[f.g[1]], a2 = assetOf[f.g[2]];
         if (a0 < 0 || a1 < 0 || a2 < 0) continue;
         fi.push_back(a0); fi.push_back(a1); fi.push_back(a2);
         for (int c = 0; c < 3; c++) fuv.push_back({fu[2 * c], fu[2 * c + 1]});
+    }
+    if (hideGuide || hideFace) {
+        // elimination builds only (wind check): a kept guide whose faces were all left out would have no root UV, so the
+        // runtime would sample its stiffness / root-stiffness texture at a wrong place (measured 2026-10-14: such guides
+        // flew 3x farther than in the full build). Give it a zero-area face (its own corner UV, no hair) instead.
+        std::vector<char> has(size_t(N), 0);
+        for (auto v : fi) has[v] = 1;
+        for (size_t fx = 0; fx < gr.faces.size(); fx++) {
+            const Face& f = gr.faces[fx];
+            const auto& fu = (uvs && fx < uvs->size()) ? (*uvs)[fx] : f.uv;
+            for (int c = 0; c < 3; c++) {
+                int a = f.g[c] >= 0 && f.g[c] < (int)assetOf.size() ? assetOf[f.g[c]] : -1;
+                if (a < 0 || has[a]) continue;
+                has[a] = 1;
+                fi.push_back(a); fi.push_back(a); fi.push_back(a);
+                for (int q = 0; q < 3; q++) fuv.push_back({fu[2 * c], fu[2 * c + 1]});
+            }
+        }
     }
     if (fi.empty()) { lastError = "no growth faces"; return false; }
     numBones = (int)pk.bones.size();
@@ -177,7 +200,7 @@ bool HairRuntime::build(const DeskPack& pk, const Groom& gr, std::vector<int>& g
     std::vector<NvHair::BoneSphere> spheres(pk.spheres.size());
     for (size_t s = 0; s < pk.spheres.size(); s++) {
         spheres[s].m_boneSphereIndex = pk.spheres[s].bone;
-        spheres[s].m_boneSphereRadius = pk.spheres[s].r;
+        spheres[s].m_boneSphereRadius = s < sphereR.size() && sphereR[s] >= 0 ? sphereR[s] : pk.spheres[s].r;
         spheres[s].m_boneSphereLocalPos = {pk.spheres[s].local.x, pk.spheres[s].local.y, pk.spheres[s].local.z};
     }
     std::vector<nvidia::UInt32> caps;
@@ -402,6 +425,7 @@ void HairRuntime::updateDescriptor(const Look& L, const XMFLOAT3& wind, bool sim
     d.m_useViewfrustrumCulling = true;
     d.m_useBackfaceCulling = false;
     d.m_splineMultiplier = std::max(1, L.pack->splineMultiplier);
+    splineMul = d.m_splineMultiplier;
     d.m_textureChannels[NvHair::TextureType::DENSITY] = channel(L.get("physicalMaterials.volume.densityTexChannel"));
     if (!densitySrv) d.m_usePixelDensity = false;
     // painted stiffness map: the redfur fields stiffnessTex / rootStiffnessTex (+ ...TexChannel) map 1:1 to these
@@ -520,4 +544,77 @@ HairStats HairRuntime::stats() {
         s.camDist = st.m_camDistance;
     }
     return s;
+}
+
+// ------------------------------------------------------------------------------------------------ guide readback
+bool HairRuntime::readGuides(std::vector<float>& xyz, int& perGuide, std::string* info) {
+    auto fail = [&](const std::string& why) { if (info) *info = why; return false; };
+    if (!sdk || instId == NvHair::INSTANCE_ID_NULL || numAssetGuides <= 0) return fail("no instance");
+    sdk->setCurrentContext(NvCo::Dx11Type::wrap(ctx));
+    NvHair::EShaderResourceType t = NvHair::ShaderResourceType::MASTER_POSITIONS;
+    ID3D11ShaderResourceView* srv = nullptr;
+    if (NV_FAILED(sdk->getShaderResources(NvHair::InstanceId(instId), &t, 1, NvCo::Dx11Type::wrapPtr(&srv))) || !srv) return fail("no position resource");
+    D3D11_SHADER_RESOURCE_VIEW_DESC vd;
+    srv->GetDesc(&vd);
+    ID3D11Resource* res = nullptr;
+    srv->GetResource(&res);
+    ID3D11Buffer* buf = nullptr;
+    if (res) res->QueryInterface(__uuidof(ID3D11Buffer), (void**)&buf);
+    if (res) res->Release();
+    if (!buf) return fail("position resource is not a buffer");
+    D3D11_BUFFER_DESC bd;
+    buf->GetDesc(&bd);
+    UINT first = 0, num = 0, elem = 0;
+    if (vd.ViewDimension == D3D11_SRV_DIMENSION_BUFFER) { first = vd.Buffer.FirstElement; num = vd.Buffer.NumElements; }
+    else if (vd.ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX) { first = vd.BufferEx.FirstElement; num = vd.BufferEx.NumElements; }
+    bool half = false;
+    if (bd.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) elem = bd.StructureByteStride;
+    else if (vd.Format == DXGI_FORMAT_R32G32B32A32_FLOAT) elem = 16;
+    else if (vd.Format == DXGI_FORMAT_R32G32B32_FLOAT) elem = 12;
+    else if (vd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) { elem = 8; half = true; }
+    char b[256];
+    snprintf(b, sizeof b, "view dim %d format %d first %u num %u, buffer %u bytes misc %u stride %u, %d guides", int(vd.ViewDimension), int(vd.Format),
+             first, num, bd.ByteWidth, bd.MiscFlags, bd.StructureByteStride, numAssetGuides);
+    if (info) *info = b;
+    if (elem != 12 && elem != 16 && elem != 8) { buf->Release(); return fail(std::string(b) + ": unknown element type"); }
+    if (num == 0) num = bd.ByteWidth / elem - first;
+    perGuide = (assetCvs - 1) * std::max(1, splineMul) + 1;
+    if (assetCvs < 2 || num < UINT(perGuide) * UINT(numAssetGuides)) { buf->Release(); return fail(std::string(b) + ": smaller than guides x refined CVs"); }
+    num = UINT(perGuide) * UINT(numAssetGuides);
+    if (!readStage || readStageBytes != bd.ByteWidth) {
+        if (readStage) readStage->Release();
+        readStage = nullptr;
+        D3D11_BUFFER_DESC sd = {};
+        sd.ByteWidth = bd.ByteWidth;
+        sd.Usage = D3D11_USAGE_STAGING;
+        sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(dev->CreateBuffer(&sd, nullptr, &readStage))) { buf->Release(); return fail("staging buffer failed"); }
+        readStageBytes = bd.ByteWidth;
+    }
+    D3D11_BOX box = {0, 0, 0, bd.ByteWidth, 1, 1};
+    ctx->CopySubresourceRegion(readStage, 0, 0, 0, 0, buf, 0, &box);
+    buf->Release();
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ctx->Map(readStage, 0, D3D11_MAP_READ, 0, &m))) return fail("map failed");
+    xyz.resize(size_t(num) * 3);
+    const unsigned char* p = (const unsigned char*)m.pData + size_t(first) * elem;
+    auto h2f = [](uint16_t h) {
+        uint32_t s = (h & 0x8000u) << 16, e = (h >> 10) & 0x1f, f = h & 0x3ff, o;
+        if (e == 0) { float v = std::ldexp(float(f), -24); return s ? -v : v; }
+        if (e == 31) o = s | 0x7f800000u | (f << 13);
+        else o = s | ((e + 112) << 23) | (f << 13);
+        float r;
+        memcpy(&r, &o, 4);
+        return r;
+    };
+    for (UINT i = 0; i < num; i++) {
+        const unsigned char* q = p + size_t(i) * elem;
+        if (half) {
+            uint16_t hv[3];
+            memcpy(hv, q, 6);
+            for (int c = 0; c < 3; c++) xyz[size_t(i) * 3 + c] = h2f(hv[c]);
+        } else memcpy(&xyz[size_t(i) * 3], q, 12);
+    }
+    ctx->Unmap(readStage, 0);
+    return true;
 }

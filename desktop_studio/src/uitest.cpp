@@ -75,6 +75,7 @@ static ImGuiKey keyOf(const std::string& k) {
     return ImGuiKey_None;
 }
 
+static int s_aliveBase = 0;
 void UiTest::record(const json& step, bool ok, const std::string& note) {
     json r = step;
     r["ok"] = ok;
@@ -147,7 +148,16 @@ bool UiTest::tick(App& app, HWND hwnd) {
     }
     if (d == "drag") {   // {"xy":[x0,y0], "to":[x1,y1], "button":1}
         int btn = s.value("button", 0);
-        ImVec2 a(s["xy"][0], s["xy"][1]), b(s["to"][0], s["to"][1]);
+        ImVec2 a, b;
+        if (s.value("from_root", false)) {   // start on the root of the guide nearest the camera (a point of the head the camera sees), move by (dx, dy)
+            DirectX::XMMATRIX iv = DirectX::XMMatrixInverse(nullptr, DirectX::XMLoadFloat4x4(&app.viewM));
+            V3 eye{DirectX::XMVectorGetX(iv.r[3]), DirectX::XMVectorGetY(iv.r[3]), DirectX::XMVectorGetZ(iv.r[3])};
+            int bi = -1; float bd = 1e30f;
+            for (size_t i = 0; i < app.groom.P.size(); i++) if (app.groom.alive[i]) { float dd = len(app.posedPoint((int)i, 0) - eye); if (dd < bd) { bd = dd; bi = (int)i; } }
+            DirectX::XMFLOAT2 pr = bi >= 0 ? app.project(app.posedPoint(bi, 0)) : DirectX::XMFLOAT2(0, 0);
+            a = ImVec2(pr.x, pr.y);
+            b = ImVec2(a.x + s.value("dx", 0.0f), a.y + s.value("dy", 0.0f));
+        } else { a = ImVec2(s["xy"][0], s["xy"][1]); b = ImVec2(s["to"][0], s["to"][1]); }
         int steps_ = 20;
         if (phase <= 1) { io.AddMousePosEvent(a.x, a.y); phase = 2; return true; }
         if (phase == 2) { io.AddMouseButtonEvent(btn, true); phase = 3; return true; }
@@ -213,8 +223,29 @@ bool UiTest::tick(App& app, HWND hwnd) {
         if (s.contains("hairdebug")) { ok &= app.hairDebug == s["hairdebug"].get<int>(); note += " hairdebug=" + std::to_string(app.hairDebug); }
         if (s.contains("light")) { ok &= app.lightOpen == s["light"].get<bool>(); note += " light=" + std::to_string(app.lightOpen); }
         if (s.contains("camshot")) { ok &= app.camShot == s["camshot"].get<int>(); note += " camshot=" + std::to_string(app.camShot); }
+        if (s.contains("alive_base")) { s_aliveBase = app.groom.numAlive(); note += " alive=" + std::to_string(s_aliveBase); }
+        if (s.contains("alive_delta")) { ok &= app.groom.numAlive() == s_aliveBase + s["alive_delta"].get<int>(); note += " alive=" + std::to_string(app.groom.numAlive()) + " base=" + std::to_string(s_aliveBase); }
+        if (s.contains("endings_min")) { app.checkEndings(); ok &= (int)app.endFaces.size() >= s["endings_min"].get<int>(); note += " endings=" + std::to_string(app.endFaces.size()); }
+        if (s.contains("select_all")) { app.sel.clear(); for (size_t g = 0; g < app.groom.P.size(); g++) if (app.groom.alive[g]) app.sel.insert((int)g); note += " sel=" + std::to_string(app.sel.size()); }
+        if (s.contains("loops_min")) { app.checkLoops(); ok &= (int)app.loopList.size() >= s["loops_min"].get<int>(); note += " loops=" + std::to_string(app.loopList.size()); }
+        if (s.contains("loops_max")) { app.checkLoops(); ok &= (int)app.loopList.size() <= s["loops_max"].get<int>(); note += " loops=" + std::to_string(app.loopList.size()); }
+        if (s.contains("loops_has")) { app.checkLoops(); for (auto& g : s["loops_has"]) { bool h = app.loopGuides.count(g.get<int>()) > 0; ok &= h; note += " guide" + std::to_string(g.get<int>()) + (h ? "=flagged" : "=NOT flagged"); } }
+        if (s.contains("guide_colour")) { ok &= app.guideCustom == s["guide_colour"].get<bool>(); note += " guideCustom=" + std::to_string(app.guideCustom) + " rgb=" + std::to_string(app.guideRgb[0]) + "," + std::to_string(app.guideRgb[1]) + "," + std::to_string(app.guideRgb[2]); }
         if (s.contains("symmetry")) { ok &= app.symmetry == s["symmetry"].get<bool>(); note += " symmetry=" + std::to_string(app.symmetry); }
         if (s.contains("guides")) { ok &= app.showGuideOverlay == s["guides"].get<bool>(); note += " guides=" + std::to_string(app.showGuideOverlay); }
+        // guide visibility views: modes, the guides they show, the selection size (selection respects the view)
+        if (s.contains("guides_front")) { ok &= app.guideFront == s["guides_front"].get<bool>(); note += " guides_front=" + std::to_string(app.guideFront); }
+        if (s.contains("guides_body")) { ok &= app.guideBody == s["guides_body"].get<bool>(); note += " guides_body=" + std::to_string(app.guideBody); }
+        if (s.contains("selected_max")) { ok &= (int)app.sel.size() <= s["selected_max"].get<int>(); }
+        if (s.contains("selected_min")) { ok &= (int)app.sel.size() >= s["selected_min"].get<int>(); }
+        if (s.contains("selected_shown")) {   // every selected guide is one the view shows
+            bool all = true;
+            for (int g : app.sel) all &= app.guideShown(g);
+            ok &= all == s["selected_shown"].get<bool>();
+            note += " selected_shown=" + std::to_string(all);
+        }
+        if (s.contains("selected_min") || s.contains("selected_max") || s.contains("selected_shown"))
+            note += " selected=" + std::to_string(app.sel.size()) + " shown=" + std::to_string(app.gvis.valid ? app.gvis.nShown : -1);
         if (s.contains("exported")) { ok &= !app.lastExport.empty() == s["exported"].get<bool>(); note += " lastExport=" + app.lastExport; }
         if (s.contains("collapsed")) { ok &= app.tbCollapsed == s["collapsed"].get<bool>(); }
         if (s.contains("style")) { std::string sid = app.pickStyleId(); ok &= sid == s["style"].get<std::string>(); note += " style=" + sid; }   // picker: selected card's hairstyle, else the loaded config's

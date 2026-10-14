@@ -25,7 +25,7 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/gen/gw_logo.rc" "201 RCDATA \"${GW_LOGO_
 
 set(IMGUI third_party/imgui)
 add_executable(HairworkStudio WIN32
-  src/main.cpp src/app.cpp src/ui.cpp src/agent.cpp src/serve.cpp src/curls.cpp src/gfx.cpp src/hairsdk.cpp src/deskpack.cpp src/groom.cpp src/params.cpp src/motion.cpp src/materials.cpp src/picker.cpp src/stylesw.cpp src/uitest.cpp src/lighting.cpp src/toolbar.cpp src/ui_widgets.cpp src/community.cpp src/community_gh.cpp src/pt_estimate.cpp src/app.rc
+  src/main.cpp src/app.cpp src/ui.cpp src/agent.cpp src/serve.cpp src/curls.cpp src/gfx.cpp src/hairsdk.cpp src/deskpack.cpp src/groom.cpp src/params.cpp src/motion.cpp src/materials.cpp src/picker.cpp src/stylesw.cpp src/uitest.cpp src/lighting.cpp src/toolbar.cpp src/ui_widgets.cpp src/community.cpp src/community_gh.cpp src/pt_estimate.cpp src/windcheck.cpp src/guidevis.cpp src/app.rc
   "${CMAKE_CURRENT_BINARY_DIR}/gen/gw_logo.rc"
   ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp
   ${IMGUI}/imgui_impl_dx11.cpp ${IMGUI}/imgui_impl_win32.cpp)

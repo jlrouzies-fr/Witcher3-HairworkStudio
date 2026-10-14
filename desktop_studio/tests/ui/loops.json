@@ -1,0 +1,14 @@
+{"splash": false, "steps": [
+ {"do": "wait", "frames": 30},
+ {"do": "wait_job"}, {"do": "wait", "frames": 60},
+ {"do": "expect", "loaded": true, "picker": false},
+ {"do": "click", "label": "Check"}, {"do": "wait", "frames": 3},
+ {"do": "click", "label": "Unwanted loops..."}, {"do": "wait", "frames": 5},
+ {"do": "expect", "widget": "Delete flagged guides##looprm", "loops_has": [677, 666, 347]},
+ {"do": "click", "label": "Select flagged guides##loopsel"}, {"do": "wait", "frames": 3},
+ {"do": "expect", "alive_base": true},
+ {"do": "click", "label": "Delete flagged guides##looprm"}, {"do": "wait", "frames": 10},
+ {"do": "expect", "loops_max": 0},
+ {"do": "key", "key": "Z", "ctrl": true}, {"do": "wait", "frames": 10},
+ {"do": "expect", "loops_min": 3}
+]}

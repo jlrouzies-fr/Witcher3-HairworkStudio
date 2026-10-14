@@ -37,6 +37,12 @@ What it does (nothing is installed; output = build\desktop_studio\<cfg>\export\)
      Second requirement (2026-10-11): Graphics Control (Nexus) with PT hair > 'Hair root transparency mode' = 0
      (hwcore.gc_requirement_line; path-traced hair shows see-through gaps in mode 1), in all three files.
      Without --release the export is unchanged (dev export).
+  8. Beard fur (2026-10-14, Studio Beard mode): a config with a second, beard fur (desk.json "beard_fur",
+     tools/hairworks/beard.py) ships that fur too, from the config's current build (build\desktop_studio\furs\
+     <cfg>__hb_*.redfur), at the release mod's in-game path of the same component. --beard-edits / --beard-look /
+     --beard-geo (the Studio's <char>_<tag>_beard_*.json) rewrite its geometry (only when there are ops) and look values
+     exactly as 2. / 3. do for the hair fur; perf guard vs the beard as built (short stubble guides only warn); no stiffness map. Each fur goes to the
+     redfur entry of its own component (an entry named <comp>.redfur, else the first entry as before).
 """
 import argparse
 import copy
@@ -147,6 +153,29 @@ def set_geometry(doc, ch, geo):
     mn, mx = pts.min(0) - 0.02, pts.max(0) + 0.02
     bb = lambda v, nm: struct.pack('<HHI', doc.name(nm), doc.name('Vector'), 4 + 51) + ev(doc, list(v) + [1.0])
     ch.set('boundingBox', 'Box', b'\0' + bb(mn, 'Min') + bb(mx, 'Max') + b'\0\0')
+    set_collision_r(ch, geo.get('collision_r'))
+
+
+def set_collision_r(ch, cr):
+    """2026-10-14 opt-in: the Studio project's collision sphere radius overrides (studio_collision_band), geo
+    "collision_r" [{i, bone, r_old, r}]. Each sphere must still be the one the Studio saw (same bone, radius within
+    0.5 mm), else the build stops. No key = the fur's collision is untouched."""
+    if not cr:
+        return
+    pr, pi = ch.get('boneSphereRadiusArray'), ch.get('boneSphereIndexArray')
+    if pr is None or pi is None:
+        raise SystemExit('collision_r: the fur has no collision spheres')
+    n, = struct.unpack_from('<I', pr.value, 0)
+    rad = list(struct.unpack_from('<%df' % n, pr.value, 4))
+    m, = struct.unpack_from('<I', pi.value, 0)
+    idx = list(struct.unpack_from('<%dI' % m, pi.value, 4))
+    for e in cr:
+        i = int(e['i'])
+        if i >= n or i >= m or idx[i] != int(e['bone']) or abs(rad[i] - float(e['r_old'])) > 5e-4:
+            raise SystemExit('collision_r: sphere %d is not the one the Studio project was made on (bone / radius differ): '
+                             'base the build on the config the project was opened on' % i)
+        rad[i] = float(e['r'])
+    ch.set('boneSphereRadiusArray', 'array:2,0,Float', RF.arr([struct.pack('<f', r) for r in rad]))
 
 
 def stiffness_xbm(png, path, n=512):
@@ -156,6 +185,59 @@ def stiffness_xbm(png, path, n=512):
     im = im.resize((n, n), Image.LANCZOS)
     rgb = np.asarray(im, np.float64)
     return headtex.make_xbm(headtex.DXT1_PROXY, n, n, headtex.encode_dxt1(rgb), path, n // 4 * 8)
+
+
+def pick_redfur(names, comp):
+    """in-game redfur path of a fur component (entry <...>\\<comp>.redfur), else None"""
+    for n in names:
+        if comp and os.path.basename(n.replace('\\', '/')).lower() == (comp + '.redfur').lower():
+            return n
+    return None
+
+
+def edit_fur(fur_path, edits, look, geo, release, allow_perf, density, log, base_geo=None):
+    """the beard fur (Studio Beard mode): geometry (when there are ops) + look values, as main() does for the hair fur
+    -> (bytes, changed)"""
+    src_bytes = open(fur_path, 'rb').read()
+    doc = CR2WDoc.parse(src_bytes)
+    ch = Chunk(doc, 0)
+    if release:
+        for k in ('importFile', 'importFileTimeStamp', 'importUnitsScale'):
+            ch.remove(k)
+    changed = []
+    if edits.get('ops'):
+        dens = (look.get('set', {}).get('physicalMaterials.volume.density') or [None, None])[1] or density
+        pr = perf_budget.check(geo, density=dens)
+        log('beard perf budget: %s%s' % (json.dumps(pr['metrics']), ''.join('\n  warning: ' + w for w in pr['warnings'])))
+        # beard.py builds stubble with guides under 5 mm (Zoltan as built: 220 of 1429) and those beards run in game:
+        # short guides are a warning here; the other errors block only when the edit makes them worse than the build
+        m = pr['metrics']
+        b0 = perf_budget.check(base_geo, density=density)['metrics'] if base_geo else {}
+        worse = [k for k in ('guides_zero_segments', 'dup_roots', 'tiny_faces') if m[k] > b0.get(k, 0)]
+        if m['hair_m_close'] > perf_budget.HAIR_M_MAX and m['hair_m_close'] > b0.get('hair_m_close', 0):
+            worse.append('hair_m_close')
+        if m['guides_short'] > b0.get('guides_short', 0):
+            log('  warning: %d beard guides under %.0f mm (%d as built)' % (m['guides_short'], perf_budget.MIN_GUIDE_MM, b0.get('guides_short', 0)))
+        if worse:
+            msg = 'PERF BLOCKED (beard): worse than the build: ' + ', '.join('%s %s (built %s)' % (k, m[k], b0.get(k, 0)) for k in worse)
+            if not allow_perf or release:
+                raise SystemExit(msg)
+            log('allowed (--allow-perf): ' + msg)
+        set_geometry(doc, ch, geo)
+        changed.append('geometry (%d guides, %d faces)' % (len(geo['guides']), len(geo['F'])))
+    for path, (hint, value) in look.get('set', {}).items():
+        pth = path.split('.')
+        typ = resolve_type(doc, ch, pth, hint, value, log)
+        if typ is None:
+            continue
+        apply_value(doc, ch, pth, typ, encode(doc, typ, value))
+        changed.append(path)
+    ch.commit()
+    if release and core_unretarget(doc):
+        changed.append('release: legacy Core v1 texture imports -> game textures')
+    out = doc.to_bytes() if changed else src_bytes
+    RF.verify(out)
+    return out, changed
 
 
 def hwcore():
@@ -192,6 +274,9 @@ def main():
     ap.add_argument('--colour-png', dest='colour_png')
     ap.add_argument('--release', action='store_true', help='release export: requires the Hairwork for All Core')
     ap.add_argument('--allow-perf', action='store_true', help='export despite performance-budget errors (dev only)')
+    ap.add_argument('--beard-edits', dest='beard_edits', help='Studio Beard mode: edits of the beard fur')
+    ap.add_argument('--beard-look', dest='beard_look')
+    ap.add_argument('--beard-geo', dest='beard_geo')
     a = ap.parse_args()
     log = print
     if not a.mod.startswith('mod') or not a.mod.replace('_', '').isalnum():
@@ -236,8 +321,31 @@ def main():
             continue
         apply_value(doc, ch, p, typ, encode(doc, typ, value))
         changed.append(path)
-    redfur_rel = mod['redfur'][0]
+    redfur_rel = pick_redfur(mod['redfur'], D.get('comp')) or mod['redfur'][0]
     extra_files = []
+    # the beard fur of a beard config (current build), edited in the Studio's Beard mode or as built
+    bf = D.get('beard_fur') or {}
+    bf_path = os.path.join(ROOT, bf['fur_path']) if bf.get('fur_path') else None
+    if bf_path and os.path.normcase(os.path.abspath(bf_path)) == os.path.normcase(os.path.abspath(fur)):
+        bf_path = None                       # a beard-only build: the beard is the fur above
+    b_edits = json.load(open(a.beard_edits)) if a.beard_edits else {}
+    b_look = json.load(open(a.beard_look)) if a.beard_look else {}
+    if (b_edits.get('ops') or b_look.get('set')) and not bf_path:
+        raise SystemExit('beard edits given, but %s has no beard fur build' % a.cfg)
+    if bf_path:
+        b_comp = os.path.basename(bf_path)[:-len('.redfur')].split('__', 1)[-1]
+        b_rel = pick_redfur(mod['redfur'], b_comp)
+        if not b_rel and (b_edits.get('ops') or b_look.get('set')):
+            raise SystemExit('the release mod %s has no %s.redfur entry: build the beard config once with the pipeline '
+                             '(hairpipe build) so its in-game path is known' % (mod.get('mod'), b_comp))
+        if b_rel and b_rel != redfur_rel:
+            b_geo = json.load(open(a.beard_geo)) if a.beard_geo else {}
+            b_dens = float((((bf.get('physical') or {}).get('volume') or {}).get('density')) or 1.0)
+            b_bytes, b_changed = edit_fur(bf_path, b_edits, b_look, b_geo, a.release, a.allow_perf, b_dens, log,
+                                          base_geo=dict(guides=bf.get('guides') or [], F=bf.get('F') or []))
+            extra_files.append((b_rel, b_bytes))
+            log('beard redfur: %s -> %s, %d bytes; changed: %s' % (os.path.relpath(bf_path, ROOT), b_rel, len(b_bytes),
+                                                                   ', '.join(b_changed) or 'nothing'))
     if a.stiffness:
         xbm_rel = redfur_rel[:-len('.redfur')] + '_stiffness.xbm'
         extra_files.append((xbm_rel, stiffness_xbm(a.stiffness, xbm_rel)))
@@ -336,6 +444,9 @@ def main():
         C['core'] = True        # pipeline release mode (hairpipe build --release): writes the Core requirement script too
     if a.stiffness:
         C['note_stiffness_map'] = 'painted stiffness map: not a pipeline key yet; the mod above carries it'
+    if b_edits.get('ops') or b_look.get('set'):
+        C['note_beard'] = ('beard fur edits (Studio Beard mode, %s): not pipeline keys yet (beard.py builds the beard from '
+                           'its "beard" config keys); the mod above carries them' % os.path.basename(a.beard_edits))
     C['note'] = 'Desktop Groom Studio export of %s (tag %s). Rename to a NEW variant name %s_l<round>_<tag>; copy %s to tools\\hairworks\\edits\\%s.' % (
         a.cfg, a.tag, char, os.path.basename(a.edits), edits_name)
     if look.get('material_config_keys'):

@@ -125,6 +125,8 @@ void Settings::load() {
             commRepo = kCommunityRepo; /* hardcoded: the official community repo only */ commChannel = j.value("community_channel", "main"); commLocal = j.value("community_local", ""); commSource = j.value("community_source", 1);
             commAuthor = j.value("community_author", "");
             if (j.contains("community_pinned") && j["community_pinned"].is_array()) for (auto& r : j["community_pinned"]) if (r.is_string()) commPinned.insert(r.get<std::string>());
+            if (j.contains("guide_colours") && j["guide_colours"].is_object())
+                for (auto& [k, v] : j["guide_colours"].items()) if (v.is_array() && v.size() == 3) guideCol[k] = {v[0].get<float>(), v[1].get<float>(), v[2].get<float>()};
             if (j.contains("recent") && j["recent"].is_array()) for (auto& r : j["recent"]) recent.push_back(r);
         } catch (...) {}
     }
@@ -179,7 +181,7 @@ void Settings::addRecent(const std::string& r) {
 
 void Settings::save() const {
     fs::create_directories(fs::path(file).parent_path());
-    json j = {{"sdk_dir", sdkDir}, {"dll", dll}, {"python", python == "\"" + exeDir() + "\\python\\python.exe\"" ? std::string() : python}, {"repo", bundled ? std::string() : repo}, {"game_dir", gameDir}, {"community_repo", commRepo}, {"community_channel", commChannel}, {"community_local", commLocal}, {"community_source", commSource}, {"community_author", commAuthor}, {"community_pinned", commPinned}, {"recent", recent}};
+    json j = {{"sdk_dir", sdkDir}, {"dll", dll}, {"python", python == "\"" + exeDir() + "\\python\\python.exe\"" ? std::string() : python}, {"repo", bundled ? std::string() : repo}, {"game_dir", gameDir}, {"community_repo", commRepo}, {"community_channel", commChannel}, {"community_local", commLocal}, {"community_source", commSource}, {"community_author", commAuthor}, {"community_pinned", commPinned}, {"guide_colours", guideCol}, {"recent", recent}};
     std::ofstream(file) << j.dump(2);
 }
 
@@ -271,14 +273,19 @@ bool App::openConfig(const std::string& cfg, bool rebuildPrep) {
     DeskPack p;
     std::string err;
     if (!p.load(dir, err)) { status = err; logf("%s", err.c_str()); return false; }
+    if (fur == 1) swapFur();   // Beard mode: put the hair back in the live slot before the new build replaces both
+    colR.clear();
     json raw;
     try { std::ifstream f(dir + "\\desk.json"); raw = json::parse(f); } catch (...) {}
     pack = std::move(p);
     pack.shots = raw.value("shots", json::object());
+    skel = DeskPack();
+    skel.bones = pack.bones;
     groom.init(&pack);
     look.init(&pack);
     look.enforceCaps();
-    presets = loadPresets(pack, set.repo + "\\desktop_studio\\presets", raw.value("materials", json::object()));
+    packMaterials = raw.value("materials", json::object());
+    presets = loadPresets(pack, set.repo + "\\desktop_studio\\presets", packMaterials);
     presetSel = 0;
     smap.reset(pack.guides.size());
     stiffDirty = true;
@@ -321,6 +328,7 @@ bool App::openConfig(const std::string& cfg, bool rebuildPrep) {
     setView(args.view);
     camShot = -1;
     loaded = true;
+    applyGuideColour();
     savedEdits = 0;
     rebuildHair();
     buildBeard();
@@ -387,7 +395,9 @@ void App::rebuildHair() {
     if (atlasOn) bakeAtlas();
     hw.setDensityTexture(atlasOn && bakedDensitySrv ? bakedDensitySrv : densitySrv);
     hw.setColorTexture(atlasOn && bakedColorSrv ? bakedColorSrv : colorSrv);
-    if (!hw.build(pack, groom, guideOfAsset, atlasOn ? &atlas.uv : nullptr)) { status = "HairWorks: " + hw.lastError; logf("%s", status.c_str()); }
+    hw.sphereR.assign(colR.empty() ? 0 : pack.spheres.size(), -1.0f);
+    for (auto& [i, r] : colR) if (i >= 0 && i < (int)hw.sphereR.size()) hw.sphereR[i] = r;
+    if (!hw.build(pack, groom, guideOfAsset, atlasOn ? &atlas.uv : nullptr, hideGuide.empty() ? nullptr : &hideGuide, hideFace.empty() ? nullptr : &hideFace)) { status = "HairWorks: " + hw.lastError; logf("%s", status.c_str()); }
     stiffDirty = true;
     teleport = true;
     assetDirty = false;
@@ -396,14 +406,78 @@ void App::rebuildHair() {
 
 void App::buildBeard() {
     beardOn = false;
+    FurSlot& o = beardSlot;
+    for (auto* t : {&o.stiffSrv, &o.densitySrv, &o.colorSrv, &o.bakedDensitySrv, &o.bakedColorSrv}) safeRelease(*t);
+    safeRelease(o.stiffTex);
+    o = FurSlot();
     if (!beardSdkOk || !pack.beardPack(beardPk)) return;
     beardGroom.init(&beardPk);
     beardLook.init(&beardPk);
+    // budget reference of the beard = the beard as built (Beard mode budget card / export limit), same formula as
+    // desk_prep.budget_of (the Studio's beard preview has no density map: one per face)
+    {
+        beardPk.budgetRef = json::object();
+        Budget b = beardLook.budget((int)beardPk.F.size(), (double)beardPk.F.size(), beardPk.K);
+        beardPk.budgetRef = {{"config", configName + " beard (as built)"}, {"hairs", b.hairs}, {"hairs_close", b.hairsClose}, {"cost", b.cost},
+                             {"density", beardLook.f("physicalMaterials.volume.density", 1.0f)},
+                             {"width", beardLook.f("physicalMaterials.strandWidth.width", 1.0f)}, {"detailLODDensity", 1.0}};
+        beardPk.budgetSelf = beardPk.budgetRef;
+    }
+    o.smap.reset(beardPk.guides.size());
+    o.presets = loadPresets(beardPk, set.repo + "\\desktop_studio\\presets", packMaterials);
     hwBeard.setDensityTexture(nullptr);
     hwBeard.setColorTexture(nullptr);
+    hwBeard.setStiffnessTexture(nullptr);
+    hwBeard.sphereR.clear();
     if (!hwBeard.build(beardPk, beardGroom, beardGuideOfAsset)) { logf("beard fur: %s", hwBeard.lastError.c_str()); return; }
     beardOn = true;
     logf("beard fur: %d guides, %d faces (second HairWorks instance)", (int)beardPk.guides.size(), (int)beardPk.F.size());
+}
+
+void App::swapFur() {
+    using std::swap;
+    ::swapFur(pack, beardPk);
+    swap(groom, beardGroom);
+    swap(look, beardLook);
+    swap(hw, hwBeard);
+    swap(guideOfAsset, beardGuideOfAsset);
+    groom.pack = look.pack = &pack;
+    beardGroom.pack = beardLook.pack = &beardPk;
+    FurSlot& o = beardSlot;
+    swap(smap, o.smap); swap(atlas, o.atlas); swap(atlasOn, o.atlasOn); swap(keepColours, o.keepColours);
+    swap(stiffTex, o.stiffTex); swap(stiffSrv, o.stiffSrv); swap(densitySrv, o.densitySrv); swap(colorSrv, o.colorSrv);
+    swap(bakedDensitySrv, o.bakedDensitySrv); swap(bakedColorSrv, o.bakedColorSrv);
+    swap(srcDensity, o.srcDensity); swap(srcColor, o.srcColor); swap(bakedDensity, o.bakedDensity); swap(bakedColor, o.bakedColor);
+    swap(srcDW, o.srcDW); swap(srcDH, o.srcDH); swap(srcCW, o.srcCW); swap(srcCH, o.srcCH);
+    swap(colR, o.colR); swap(presets, o.presets); swap(presetSel, o.presetSel);
+    fur = 1 - fur;
+}
+
+bool App::setFur(int f) {
+    if (f == fur) return true;
+    if (!loaded || !beardOn || windBusy) return false;
+    // pending rebuilds belong to the outgoing fur: do them before it is parked
+    if (assetDirty && sdkOk) rebuildHair();
+    if (stiffDirty && sdkOk) updateStiffnessTexture();
+    swapFur();
+    // selection and check results are guide / face indices of the other fur
+    sel.clear(); combOff.clear(); strokeSet.clear(); hideGuide.clear(); hideFace.clear();
+    endFaces.clear(); endGuides.clear(); loopList.clear(); loopWhy.clear(); loopGuides.clear();
+    windRows.clear(); windGuides.clear(); windFaces.clear();
+    dragging = boxSel = drawing = false;
+    smap.ensure(groom.P.size());
+    assetDirty = stiffDirty = aoRefreshAll = true;
+    computeBudget();
+    status = fur ? "Beard mode: editing the beard (" + std::to_string(groom.numAlive()) + " guides); the hair is the preview"
+                 : "Hair mode: editing the hair (" + std::to_string(groom.numAlive()) + " guides); the beard is the preview";
+    logf("%s", status.c_str());
+    return true;
+}
+
+int App::editCount() const {
+    size_t n = groom.ops.size() + look.over.size();
+    if (beardOn) n += beardGroom.ops.size() + beardLook.over.size();
+    return int(n);
 }
 
 void App::updateStiffnessTexture() {
@@ -444,7 +518,7 @@ void App::computeBudget() {
         auto it = orig.find(f.g);
         sumFaceDensity += (it != orig.end() && !pack.densityFace.empty()) ? pack.densityFace[it->second] : mean;
     }
-    bud = look.budget((int)groom.faces.size(), sumFaceDensity, pack.K);
+    bud = look.budget((int)groom.faces.size(), sumFaceDensity, groom.K);
     double tsum = 0, psum = 0;
     int tn = 0;
     for (size_t i = 0; i < groom.P.size(); i++) {
@@ -485,6 +559,7 @@ void App::editsChanged() {
 void App::step(double dt) {
     fps = fps * 0.95f + 0.05f * float(1.0 / std::max(dt, 1e-4));
     if (!loaded) return;
+    if (windBusy && !windInside) { windResume(); return; }   // Check > Max-wind strays owns the simulation while it runs
     if (assetDirty && (!dragging || headless || ImGui::GetTime() - lastBuild > 0.12)) rebuildHair();
     if (stiffDirty && sdkOk) updateStiffnessTexture();
     if (turntable && !camOverride) cam.yaw += float(dt) * 0.45f;
@@ -492,24 +567,30 @@ void App::step(double dt) {
     else if (stepOnce) motion.t += 1.0 / 60.0;
     motion.windOn = windOn;
     hw.visBones = showBones;
+    // skinning matrices of one fur: hair bones (Motion::boneMatrices) or beard bones, which follow the head (face
+    // bones), the neck or the body; pivots from the hair pack's skeleton in both modes
+    auto furMatrices = [&](const DeskPack& fp, bool beard, std::vector<XMFLOAT4X4>& out) {
+        if (!beard) { motion.boneMatrices(fp, out, &skel); return; }
+        XMMATRIX H = motion.headM(skel), Nk = motion.neckM(skel), Rt = motion.rootM(skel);
+        out.resize(fp.bones.size());
+        for (size_t i = 0; i < fp.bones.size(); i++) {
+            const std::string& n = fp.bones[i].name;
+            XMMATRIX B = H;
+            if (n.rfind("torso", 0) == 0 || n.find("shoulder") != std::string::npos || n == "pelvis") B = Rt;
+            else if (n == "neck" || n == "neck2" || n == "thyroid") B = Nk;
+            XMStoreFloat4x4(&out[i], B);
+        }
+    };
     std::vector<XMFLOAT4X4>& M = boneM;
-    motion.boneMatrices(pack, M);
+    furMatrices(pack, fur == 1, M);
     V3 w = motion.wind();
     hw.updateDescriptor(look, {w.x, w.y, w.z}, simulate, sdkGuides, showCollision, showGrowth, forceCloseLod, colorize,
                         smap.painted);
     hw.skin(M, teleport);
-    if (beardOn) {
-        // beard bones follow the head (face bones), the neck or the body, from the hair pack's motion
-        XMMATRIX H = motion.headM(pack), Nk = motion.neckM(pack), Rt = motion.rootM(pack);
-        std::vector<XMFLOAT4X4> Mb(beardPk.bones.size());
-        for (size_t i = 0; i < beardPk.bones.size(); i++) {
-            const std::string& n = beardPk.bones[i].name;
-            XMMATRIX B = H;
-            if (n.rfind("torso", 0) == 0 || n.find("shoulder") != std::string::npos || n == "pelvis") B = Rt;
-            else if (n == "neck" || n == "neck2" || n == "thyroid") B = Nk;
-            XMStoreFloat4x4(&Mb[i], B);
-        }
-        hwBeard.updateDescriptor(beardLook, {w.x, w.y, w.z}, simulate, false, false, false, forceCloseLod, colorize, false);
+    if (beardOn) {   // the parked fur (preview)
+        std::vector<XMFLOAT4X4> Mb;
+        furMatrices(beardPk, fur == 0, Mb);
+        hwBeard.updateDescriptor(beardLook, {w.x, w.y, w.z}, simulate, false, false, false, forceCloseLod, colorize, beardSlot.smap.painted);
         hwBeard.skin(Mb, teleport);
     }
     teleport = false;
@@ -541,10 +622,11 @@ static bool isSkinMesh(const Mesh& m) {
 static void meshVerts(const App& a, std::vector<GVertex>& out, bool textured, int only = -1) {
     out.clear();
     const DeskPack& pk = a.pack;
-    XMMATRIX H = a.motion.headM(pk), Nk = a.motion.neckM(pk), R = a.motion.rootM(pk);
+    const DeskPack& sk = a.skel;   // the hair pack's bones (in Beard mode pk.bones are the beard fur's)
+    XMMATRIX H = a.motion.headM(sk), Nk = a.motion.neckM(sk), R = a.motion.rootM(sk);
     float neckZ = 1.62f;
-    int nb = pk.boneIndex("neck");
-    if (nb >= 0) neckZ = pk.bones[nb].bind[14];
+    int nb = sk.boneIndex("neck");
+    if (nb >= 0) neckZ = sk.bones[nb].bind[14];
     for (size_t mi = 0; mi < pk.meshes.size(); mi++) {
         const Mesh& m = pk.meshes[mi];
         if (only >= 0 && int(mi) != only) continue;
@@ -781,7 +863,7 @@ void App::drawScene() {
     L.skin = {rig.skinSss, rig.skinSpec, rig.skinGain, rig.cavity};
     L.ao = {float(nAo), rig.aoStrength, aoFar - aoNear, 1.0f / gfx.aoSize};
     L.hair2 = {rig.sigmaScale, rig.msSpread, rig.ttGain, rig.envSpec};
-    L.hair3 = {rig.hairEncoding, 0, 0, 0};
+    L.hair3 = {rig.hairEncoding, rig.ambRoot, rig.ambVar, rig.ambTv};
     for (int k = 0; k < kMaxAoDirs; k++) L.aoVP[k] = k < nAo ? aoVP[k] : lightVP;
     D3D11_MAPPED_SUBRESOURCE m;
     if (SUCCEEDED(gfx.ctx->Map(gfx.lightCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { memcpy(m.pData, &L, sizeof L); gfx.ctx->Unmap(gfx.lightCb, 0); }
@@ -838,9 +920,12 @@ void App::drawScene() {
             for (int i = 0; i < extra; i++) hw.render(viewM, projM, fov, float(gfx.w), float(gfx.h), gfx.lightCb);
         }
         if (beardOn && showBeard && !maskPass) {
-            // the beard fur's own material values in the shared light constants (constant colours, no card texture)
+            // the parked fur's own material values in the shared light constants (the beard: constant colours, no card
+            // texture; the hair in Beard mode: its colour texture when it has one)
             LightCB Lb = L;
-            Lb.material = {beardLook.f("graphicalMaterials.color.ambientEnvScale", 0.35f), rig.floor, 1.0f, 0.0f};
+            Lb.material = {beardLook.f("graphicalMaterials.color.ambientEnvScale", 0.35f), rig.floor,
+                           beardSlot.colorSrv ? beardLook.f("graphicalMaterials.color.textureBrightness", 1.0f) * rig.texGain : 1.0f,
+                           beardSlot.colorSrv ? 1.0f : 0.0f};
             Lb.extra.x = beardLook.f("graphicalMaterials.diffuse.diffuseNoiseScale", 0.0f);
             D3D11_MAPPED_SUBRESOURCE mb;
             if (SUCCEEDED(gfx.ctx->Map(gfx.lightCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mb))) { memcpy(mb.pData, &Lb, sizeof Lb); gfx.ctx->Unmap(gfx.lightCb, 0); }
@@ -852,20 +937,38 @@ void App::drawScene() {
     // guide overlay (rest pose = what you edit), stiffness paint shows the painted value per guide root
     lines.clear();
     bool overlay = showGuideOverlay || (tool != Tool::Select && tool != Tool::Paint);
+    // guide visibility views (guidevis.cpp): this frame's camera, the meshes as drawn (posed) occlude
+    bool visPass = guideVisOn() && loaded && !maskPass && (!camOverride || showGuideOverlay);
+    if (visPass)
+        computeGuideVis(viewM, projM, gfx.w, gfx.h, showMeshes ? &depthTris[0] : nullptr, showMeshes ? &depthTris[1] : nullptr,
+                        !camOverride && !headless);   // viewport: background worker (no frame waits on it)
+    else if (!guideVisOn()) gvis.valid = false;
+    bool visPts = visPass && gvis.ptsK == groom.K && gvis.pts.size() == groom.P.size() * size_t(groom.K);
     for (size_t i = 0; i < groom.P.size() && (!camOverride || showGuideOverlay); i++) {   // off-screen renders: only on request (overlay "guides")
         if (!groom.alive[i]) continue;
         bool s = sel.count((int)i) > 0, ed = groom.edited.count((int)i) > 0;
-        if (!overlay && !s && tool != Tool::Paint) continue;
-        XMFLOAT4 c = s ? XMFLOAT4(0.15f, 0.55f, 1.0f, 1) : ed ? XMFLOAT4(0.95f, 0.85f, 0.7f, 0.7f) : XMFLOAT4(0.6f, 0.65f, 0.7f, 0.35f);
-        int kmax = pack.K;
+        bool fan = endingsOpen && endGuides.count((int)i) > 0;
+        bool lp = loopsOpen && loopGuides.count((int)i) > 0;
+        bool wd = windOpen && windGuides.count((int)i) > 0;
+        if (!overlay && !s && !fan && !lp && !wd && tool != Tool::Paint) continue;
+        if (!s && !guideShown((int)i)) continue;   // selected guides always stay drawn
+        XMFLOAT4 c = s ? XMFLOAT4(0.15f, 0.55f, 1.0f, 1)
+                   : wd ? XMFLOAT4(1.0f, 0.12f, 0.08f, 1)
+                   : lp ? XMFLOAT4(0.65f, 0.25f, 1.0f, 1)
+                   : fan ? XMFLOAT4(1.0f, 0.5f, 0.05f, 1)
+                   : guideCustom ? XMFLOAT4(guideRgb[0], guideRgb[1], guideRgb[2], ed ? 0.95f : 0.8f)
+                   : ed ? XMFLOAT4(0.95f, 0.85f, 0.7f, 0.7f) : XMFLOAT4(0.6f, 0.65f, 0.7f, 0.35f);
+        int kmax = groom.K;
         if (tool == Tool::Paint) {
             float v = i < smap.guideS.size() ? (paintTarget == 2 ? smap.guideR[i] : smap.guideS[i]) : 1.0f;
             c = XMFLOAT4(0.2f + 0.8f * (1 - v), 0.35f + 0.5f * v, 0.9f * v, 0.9f);   // soft = warm, stiff = cool
-            kmax = std::min(pack.K, 6);
+            kmax = std::min(groom.K, 6);
         }
-        Guide g(pack.K);
-        for (int k = 0; k < pack.K; k++) g[k] = posedPoint((int)i, k);    // the overlay sits on the hair you see
+        Guide g(groom.K);
+        for (int k = 0; k < groom.K; k++) g[k] = visPts ? gvis.pts[i * groom.K + k] : posedPoint((int)i, k);    // the overlay sits on the hair you see
+        bool clip = !s && guideBody && visPts;   // "Hide behind the body": only the segments in front of the meshes
         for (int k = 0; k + 1 < kmax; k++) {
+            if (clip && !(guidePointShown((int)i, k) && guidePointShown((int)i, k + 1))) continue;
             lines.push_back({{g[k].x, g[k].y, g[k].z}, {0, 0, 1}, c});
             lines.push_back({{g[k + 1].x, g[k + 1].y, g[k + 1].z}, {0, 0, 1}, c});
         }
@@ -889,6 +992,13 @@ void App::drawScene() {
                     }
         }
     }
+    // Draw tool: live preview of the stroke
+    if (drawing && tool == Tool::Draw && !camOverride && drawWorld.size() > 1)
+        for (size_t k = 0; k + 1 < drawWorld.size(); k++) {
+            XMFLOAT4 c(1.0f, 0.8f, 0.2f, 1);
+            lines.push_back({{drawWorld[k].x, drawWorld[k].y, drawWorld[k].z}, {0, 0, 1}, c});
+            lines.push_back({{drawWorld[k + 1].x, drawWorld[k + 1].y, drawWorld[k + 1].z}, {0, 0, 1}, c});
+        }
     // symmetry plane (mid-sagittal plane of the head)
     if (showSymPlane && !camOverride) {
         std::vector<GVertex> pl;
@@ -907,6 +1017,87 @@ void App::drawScene() {
 }
 
 // ================================================================================================ editing helpers
+void App::checkEndings() {
+    endFaces.clear();
+    endGuides.clear();
+    for (size_t f = 0; f < groom.faces.size(); f++) {
+        auto& F = groom.faces[f];
+        float rootSp = std::max({len(groom.P[F.g[0]][0] - groom.P[F.g[1]][0]), len(groom.P[F.g[1]][0] - groom.P[F.g[2]][0]), len(groom.P[F.g[2]][0] - groom.P[F.g[0]][0])});
+        if (!faceDivergent(groom, F, rootSp, endDiv, endSpread)) continue;
+        endFaces.push_back((int)f);
+        for (int q = 0; q < 3; q++) endGuides.insert(F.g[q]);
+    }
+}
+
+void App::checkLoops() {
+    loopList.clear();
+    loopWhy.clear();
+    loopGuides.clear();
+    for (size_t g = 0; g < groom.P.size(); g++) {
+        if (!groom.alive[g]) continue;
+        LoopInfo li = guideLoop(groom.P[g], loopArc / 1000, loopClose / 1000, loopCurlR / 1000, loopTurn);
+        if (!li.flag) continue;
+        loopList.push_back((int)g);
+        loopGuides.insert((int)g);
+        char b[96];
+        if (li.radius > 0) snprintf(b, sizeof b, "returns to within %.0f mm after %.0f mm of hair (loop radius %.0f mm)", li.dist * 1000, li.arc * 1000, li.radius * 1000);
+        else snprintf(b, sizeof b, "circles %.0f deg without curling", li.turn);
+        loopWhy.push_back(b);
+    }
+}
+
+// one undo group of normal delete ops (opDelete, without the mirrored twins)
+void App::removeLoops() {
+    checkLoops();
+    if (loopList.empty()) return;
+    bool symOld = symmetry;
+    symmetry = false;
+    sel = loopGuides;
+    opDelete();
+    symmetry = symOld;
+    checkLoops();
+}
+
+std::string App::charKey() const {
+    const json* ce = loaded ? catalogEntry(configName) : nullptr;
+    if (ce) { std::string c = ce->value("char", ""); if (!c.empty()) return c; }
+    return configName.substr(0, configName.find('_'));
+}
+
+void App::rememberGuideColour() {
+    std::string k = charKey();
+    if (k.empty()) return;
+    if (guideCustom) set.guideCol[k] = {guideRgb[0], guideRgb[1], guideRgb[2]};
+    else set.guideCol.erase(k);
+    set.save();
+}
+
+void App::applyGuideColour() {
+    auto it = set.guideCol.find(charKey());
+    guideCustom = it != set.guideCol.end();
+    if (guideCustom) for (int i = 0; i < 3; i++) guideRgb[i] = it->second[i];
+    else { guideRgb[0] = 0.6f; guideRgb[1] = 0.65f; guideRgb[2] = 0.7f; }
+}
+
+// one undo group of delete_face ops (same ops as the MCP trim_growth)
+void App::removeFanned() {
+    checkEndings();
+    if (endFaces.empty()) return;
+    int id = 0, grp = 1000 + (++grpId);
+    for (auto& o : groom.ops) if (o.contains("id")) id = std::max(id, o["id"].get<int>());
+    std::vector<json> ops;
+    for (int f : endFaces) {
+        json rr = json::array();
+        for (int q = 0; q < 3; q++) { V3 p = groom.P[groom.faces[f].g[q]][0]; rr.push_back({r4(p.x), r4(p.y), r4(p.z)}); }
+        ops.push_back({{"op", "delete_face"}, {"roots", rr}, {"id", ++id}, {"grp", grp}});
+    }
+    for (auto& o : ops) groom.ops.push_back(o);
+    groom.redo.clear();
+    groom.replay();
+    editsChanged();
+    checkEndings();
+}
+
 XMFLOAT2 App::project(V3 p) const {
     XMMATRIX vp = XMLoadFloat4x4(&viewM) * XMLoadFloat4x4(&projM);
     XMVECTOR c = XMVector4Transform(XMVectorSet(p.x, p.y, p.z, 1), vp);
@@ -919,11 +1110,12 @@ int App::pickGuide(float mx, float my) const {
     int best = -1;
     float bd = 12.0f * 12.0f;
     for (size_t i = 0; i < groom.P.size(); i++) {
-        if (!groom.alive[i]) continue;
+        if (!groom.alive[i] || !pickVisible((int)i)) continue;   // guide views + "Select visible only": shown guides only
         // distance to the projected segments (clicking between two points selects too)
         XMFLOAT2 a = project(posedPoint((int)i, 0));
-        for (int k = 1; k < pack.K; k++) {
+        for (int k = 1; k < groom.K; k++) {
             XMFLOAT2 b = project(posedPoint((int)i, k));
+            if (!pickPointVisible((int)i, k - 1) || !pickPointVisible((int)i, k)) { a = b; continue; }   // segment behind the body
             float ex = b.x - a.x, ey = b.y - a.y, l2 = ex * ex + ey * ey;
             float t = l2 > 1e-6f ? std::clamp(((mx - a.x) * ex + (my - a.y) * ey) / l2, 0.0f, 1.0f) : 0.0f;
             float px = a.x + ex * t - mx, py = a.y + ey * t - my, d = px * px + py * py;
@@ -934,13 +1126,186 @@ int App::pickGuide(float mx, float my) const {
     return best;
 }
 
+// ---- Draw tool (2026-10-14): draw a new guide by hand
+static bool screenRay(const App& a, float mx, float my, V3& o, V3& d) {
+    XMMATRIX IVP = XMMatrixInverse(nullptr, XMLoadFloat4x4(&a.viewM) * XMLoadFloat4x4(&a.projM));
+    float nx = mx / a.gfx.w * 2 - 1, ny = 1 - my / a.gfx.h * 2;
+    XMVECTOR ra = XMVector3TransformCoord(XMVectorSet(nx, ny, 0, 1), IVP), rb = XMVector3TransformCoord(XMVectorSet(nx, ny, 1, 1), IVP);
+    XMFLOAT3 p, q;
+    XMStoreFloat3(&p, ra);
+    XMStoreFloat3(&q, rb);
+    o = {p.x, p.y, p.z};
+    d = V3{q.x - p.x, q.y - p.y, q.z - p.z};
+    float l = len(d);
+    if (l < 1e-9f) return false;
+    d = d * (1.0f / l);
+    return true;
+}
+
+bool App::headRay(float mx, float my, V3& hit) const {
+    V3 o, d;
+    if (!screenRay(*this, mx, my, o, d)) return false;
+    std::vector<V3> pos;
+    std::vector<float> fl;
+    std::vector<std::array<int, 3>> tr;
+    if (!scalpMesh(pos, fl, tr)) return false;
+    float best = 1e30f;
+    for (auto& t : tr) {
+        V3 a = pos[t[0]], e1 = pos[t[1]] - a, e2 = pos[t[2]] - a;
+        V3 pv = cross(d, e2);
+        float det = dot(e1, pv);
+        if (std::fabs(det) < 1e-12f) continue;
+        float inv = 1.0f / det;
+        V3 tv = o - a;
+        float u = dot(tv, pv) * inv;
+        if (u < 0 || u > 1) continue;
+        V3 qv = cross(tv, e1);
+        float v = dot(d, qv) * inv;
+        if (v < 0 || u + v > 1) continue;
+        float s = dot(e2, qv) * inv;
+        if (s > 0 && s < best) best = s;
+    }
+    if (best > 1e29f) return false;
+    hit = o + d * best;
+    return true;
+}
+
+// stroke points: the view plane through the root, then out of the head (>= 4 mm above the skin, same rule as the serve push_out)
+static void drawPushOut(const App& a, std::vector<V3>& pts) {
+    std::vector<V3> pos;
+    std::vector<float> fl;
+    std::vector<std::array<int, 3>> tr;
+    if (!a.scalpMesh(pos, fl, tr)) return;
+    const V3 c = a.pack.headC;
+    std::vector<V3> dir;
+    std::vector<float> rad;
+    for (auto& p : pos) { V3 d = p - c; float r = len(d); if (r > 1e-4f) { dir.push_back(d * (1.0f / r)); rad.push_back(r); } }
+    if (dir.empty()) return;
+    for (size_t k = 1; k < pts.size(); k++) {
+        V3 d = pts[k] - c;
+        float r = len(d);
+        if (r < 1e-5f || pts[k].z < c.z - 0.01f) continue;
+        V3 u = d * (1.0f / r);
+        std::vector<float> v;
+        for (size_t i = 0; i < dir.size(); i++) if (dot(dir[i], u) > 0.996f) v.push_back(rad[i]);
+        if (v.empty()) continue;
+        std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+        float s = v[v.size() / 2];
+        if (r < s + 0.004f) pts[k] = c + u * (s + 0.004f);
+    }
+}
+
+void App::drawUpdate(float mx, float my) {
+    if (!drawing) return;
+    if (!drawPx.empty() && std::fabs(drawPx.back().first - mx) + std::fabs(drawPx.back().second - my) < 2.0f) return;
+    drawPx.push_back({mx, my});
+    V3 o, d;
+    drawWorld.assign(1, drawRoot);
+    XMMATRIX inv = XMMatrixInverse(nullptr, XMLoadFloat4x4(&viewM));
+    V3 fw = V3{-XMVectorGetX(inv.r[2]), -XMVectorGetY(inv.r[2]), -XMVectorGetZ(inv.r[2])};
+    fw = fw * (1.0f / std::max(len(fw), 1e-9f));
+    for (auto& p : drawPx) {
+        if (!screenRay(*this, p.first, p.second, o, d)) continue;
+        float den = dot(d, fw);
+        if (std::fabs(den) < 1e-6f) continue;
+        float t = dot(drawRoot - o, fw) / den;
+        if (t <= 0) continue;
+        drawWorld.push_back(o + d * t);
+    }
+    drawPushOut(*this, drawWorld);
+}
+
+void App::opDrawGuide() {
+    drawing = false;
+    std::vector<V3> st = drawWorld;
+    drawWorld.clear();
+    drawPx.clear();
+    if (st.empty() || groom.P.empty()) return;
+    const int K = groom.K;
+    // nearest live guide to the root: the template (growth face, length)
+    auto nearest = [&](V3 r) {
+        int b = -1;
+        float bd = 1e30f;
+        for (size_t i = 0; i < groom.P.size(); i++) {
+            if (!groom.alive[i]) continue;
+            float dd = len(groom.P[i][0] - r);
+            if (dd < bd) { bd = dd; b = (int)i; }
+        }
+        return b;
+    };
+    int tpl = nearest(st[0]);
+    if (tpl < 0) return;
+    auto glen = [&](const Guide& G) { float l = 0; for (size_t k = 1; k < G.size(); k++) l += len(G[k] - G[k - 1]); return l; };
+    // stroke -> K points evenly by arc length (a stroke under 1 cm takes the template's length and continues along the stroke)
+    std::vector<float> sl(st.size(), 0.0f);
+    for (size_t k = 1; k < st.size(); k++) sl[k] = sl[k - 1] + len(st[k] - st[k - 1]);
+    float L = sl.back();
+    if (L < 0.01f) {
+        const Guide& T = groom.P[tpl];
+        float tl = std::max(glen(T), 0.02f);
+        V3 dir = T[K - 1] - T[0];
+        if (st.size() >= 2 && L > 1e-4f) dir = st.back() - st[0];
+        float dl = len(dir);
+        dir = dl > 1e-6f ? dir * (1.0f / dl) : V3{0, 0, -1};
+        st = {st[0], st[0] + dir * tl};
+        sl = {0, tl};
+        L = tl;
+    }
+    Guide G(K);
+    size_t seg = 1;
+    for (int k = 0; k < K; k++) {
+        float target = L * k / std::max(K - 1, 1);
+        while (seg + 1 < st.size() && sl[seg] < target) seg++;
+        float s0 = sl[seg - 1], s1 = sl[seg];
+        float f = s1 > s0 ? std::clamp((target - s0) / (s1 - s0), 0.0f, 1.0f) : 0.0f;
+        G[k] = st[seg - 1] + (st[seg] - st[seg - 1]) * f;
+    }
+    int id = 0;
+    for (auto& o : groom.ops) if (o.contains("id")) id = std::max(id, o["id"].get<int>());
+    int grp = 1000 + (++grpId);
+    int n0 = (int)groom.P.size();
+    auto plant = [&](const Guide& Q, int t) {
+        V3 rs = groom.P[t][0];
+        V3 u = Q[0] - pack.headC;
+        float ul = len(u);
+        V3 root = pack.headC + u * (ul > 1e-6f ? len(rs - pack.headC) / ul : 1.0f);   // on the scalp at the template's root radius
+        Guide R = Q;
+        V3 sh = root - Q[0];
+        for (auto& p : R) p = p + sh;
+        V3 dd = root - rs;
+        groom.ops.push_back({{"op", "duplicate"}, {"root", {r4(rs.x), r4(rs.y), r4(rs.z)}}, {"d", {r4(dd.x), r4(dd.y), r4(dd.z)}}, {"edge_face", true}, {"id", ++id}, {"grp", grp}});
+        json pts = json::array();
+        for (auto& p : R) pts.push_back({r4(p.x), r4(p.y), r4(p.z)});
+        groom.ops.push_back({{"op", "reshape"}, {"root", {r4(R[0].x), r4(R[0].y), r4(R[0].z)}}, {"points", pts}, {"id", ++id}, {"grp", grp}});
+    };
+    plant(G, tpl);
+    if (symmetry) {
+        float px = groom.mirrorPlane();
+        if (std::fabs(G[0].x - px) >= 0.004f) {
+            Guide M = G;
+            for (auto& p : M) p.x = 2 * px - p.x;
+            int t2 = nearest(M[0]);
+            if (t2 >= 0) plant(M, t2);
+        }
+    }
+    groom.redo.clear();
+    groom.replay();
+    sel.clear();
+    for (int k = n0; k < (int)groom.P.size(); k++) sel.insert(k);
+    smap.ensure(groom.P.size());
+    assetDirty = true;
+    editsChanged();
+    status = "Drew " + std::to_string((int)groom.P.size() - n0) + " new guide(s), length " + std::to_string((int)(L * 1000)) + " mm";
+}
+
 std::vector<int> App::guidesUnderBrush(float mx, float my, float r) const {
     std::vector<int> out;
     for (size_t i = 0; i < groom.P.size(); i++) {
-        if (!groom.alive[i]) continue;
-        int k0 = tool == Tool::Paint ? 0 : pack.K / 3;
-        int k1 = tool == Tool::Paint ? std::min(pack.K, 4) : pack.K;
+        if (!groom.alive[i] || !pickVisible((int)i)) continue;
+        int k0 = tool == Tool::Paint ? 0 : groom.K / 3;
+        int k1 = tool == Tool::Paint ? std::min(groom.K, 4) : groom.K;
         for (int k = k0; k < k1; k++) {
+            if (!pickPointVisible((int)i, k)) continue;
             XMFLOAT2 s = project(posedPoint((int)i, k));
             if ((s.x - mx) * (s.x - mx) + (s.y - my) * (s.y - my) <= r * r) { out.push_back((int)i); break; }
         }
@@ -1116,9 +1481,9 @@ void App::opCurl(const std::vector<int>& ix) {
     groom.redo.clear();
     groom.replay();
     editsChanged();
-    float cpt = curlCvsPerTurn(pack.K, curl);
+    float cpt = curlCvsPerTurn(groom.K, curl);
     status = std::to_string(ix.size()) + " guide(s) " + curl.mode + (cpt < 6 ? "  -  WARNING: only " + std::to_string(int(cpt)) +
-             " CVs per turn (guides have " + std::to_string(pack.K) + " CVs): lower the turns or start earlier" : "");
+             " CVs per turn (guides have " + std::to_string(groom.K) + " CVs): lower the turns or start earlier" : "");
 }
 
 void App::paintAt(float mx, float my) {
@@ -1265,24 +1630,21 @@ void App::checkCore(bool force) {
     }
 }
 
-bool App::exportAll(std::string& outDir, bool release) {
-    computeBudget();
-    if (bud.overLimit) {
-        status = bud.msg;
-        logf("EXPORT BLOCKED: %s", bud.msg.c_str());
-        return false;
-    }
-    outDir = set.repo + "\\build\\desktop_studio\\" + configName + "\\export";
-    fs::create_directories(outDir);
-    std::string base = outDir + "\\" + pack.character + (styleId != "default" ? "_" + styleId : std::string()) + "_" + tag;   // <char>[_<style>]_<tag>
+// the live fur's export files: <base>_edits.json, _look.json, _geo.json (+ the painted stiffness map and the atlas
+// re-bakes when allowPaint) -> the extra desk_export arguments of the stiffness map
+static std::string writeFurFiles(App& a, const std::string& base, bool allowPaint) {
+    Groom& groom = a.groom;
+    DeskPack& pack = a.pack;
+    StiffnessMap& smap = a.smap;
+    bool painted = smap.painted && allowPaint;
     std::ofstream(base + "_edits.json") << groom.editsText(true);
-    json lookJ = look.exportLook();
-    lookJ["material_preset"] = presetSel < (int)presets.size() ? presets[presetSel].name : "";
-    lookJ["material_config_keys"] = presetSel > 0 && presetSel < (int)presets.size() ? presets[presetSel].configKeys : json::object();
+    json lookJ = a.look.exportLook();
+    lookJ["material_preset"] = a.presetSel < (int)a.presets.size() ? a.presets[a.presetSel].name : "";
+    lookJ["material_config_keys"] = a.presetSel > 0 && a.presetSel < (int)a.presets.size() ? a.presets[a.presetSel].configKeys : json::object();
     std::ofstream(base + "_look.json") << lookJ.dump(1);
     // geometry exactly as shown (fur frame) + the painted stiffness map
     json geo;
-    geo["K"] = pack.K;
+    geo["K"] = groom.K;
     json G = json::array(), BI = json::array(), BW = json::array(), F = json::array(), U = json::array();
     std::vector<int> map(groom.P.size(), -1);
     int n = 0;
@@ -1297,26 +1659,66 @@ bool App::exportAll(std::string& outDir, bool release) {
         BI.push_back(pack.boneIdx[b]);
         BW.push_back(pack.boneW[b]);
     }
-    if (smap.painted) bakeAtlas();
+    if (painted) a.bakeAtlas();
     for (size_t fi = 0; fi < groom.faces.size(); fi++) {
         auto& f = groom.faces[fi];
         if (map[f.g[0]] < 0 || map[f.g[1]] < 0 || map[f.g[2]] < 0) continue;
         F.push_back({map[f.g[0]], map[f.g[1]], map[f.g[2]]});
-        U.push_back(smap.painted ? atlas.uv[fi] : f.uv);
+        U.push_back(painted ? a.atlas.uv[fi] : f.uv);
     }
-    geo["unique_uv"] = smap.painted;
+    geo["unique_uv"] = painted;
     geo["guides"] = G; geo["bone_idx"] = BI; geo["bone_w"] = BW; geo["F"] = F; geo["uv"] = U;
-    geo["budget"] = {{"hairs", bud.hairs}, {"hairs_close", bud.hairsClose}, {"ratio", bud.ratio}, {"ref", bud.refName}};
+    if (!a.colR.empty()) {   // collision sphere radius overrides: desk_export.set_geometry checks bone / old radius, then writes them
+        json cr = json::array();
+        for (auto& [i, r] : a.colR) if (i >= 0 && i < (int)pack.spheres.size()) cr.push_back({{"i", i}, {"bone", pack.spheres[i].bone}, {"r_old", pack.spheres[i].r}, {"r", r}});
+        geo["collision_r"] = cr;
+    }
+    geo["budget"] = {{"hairs", a.bud.hairs}, {"hairs_close", a.bud.hairsClose}, {"ratio", a.bud.ratio}, {"ref", a.bud.refName}};
     std::ofstream(base + "_geo.json") << geo.dump();
     std::string stiffArg;
-    if (smap.painted) {
-        smap.rasterise(groom, &atlas.uv);
-        if (!bakedDensity.empty()) { writePng(base + "_density_atlas.png", atlas.size, atlas.size, bakedDensity.data()); stiffArg += " --density-png \"" + base + "_density_atlas.png\""; }
-        if (!bakedColor.empty()) { writePng(base + "_colour_atlas.png", atlas.size, atlas.size, bakedColor.data()); stiffArg += " --colour-png \"" + base + "_colour_atlas.png\""; }
+    if (painted) {
+        smap.rasterise(groom, &a.atlas.uv);
+        if (!a.bakedDensity.empty()) { writePng(base + "_density_atlas.png", a.atlas.size, a.atlas.size, a.bakedDensity.data()); stiffArg += " --density-png \"" + base + "_density_atlas.png\""; }
+        if (!a.bakedColor.empty()) { writePng(base + "_colour_atlas.png", a.atlas.size, a.atlas.size, a.bakedColor.data()); stiffArg += " --colour-png \"" + base + "_colour_atlas.png\""; }
         std::string png = base + "_stiffness.png";
         writePng(png, smap.size, smap.size, smap.rgba.data());
         stiffArg += " --stiffness \"" + png + "\"";
         if (smap.overlapTexels > 0) logf("stiffness map: %d texels shared by faces with different values (card-atlas UVs overlap)", smap.overlapTexels);
+    }
+    return stiffArg;
+}
+
+bool App::exportAll(std::string& outDir, bool release) {
+    // the hair fur's files first, then the beard fur's (Beard mode: swapped back for the export, restored after)
+    struct Restore { App& a; int f; ~Restore() { if (a.fur != f) a.swapFur(); a.computeBudget(); } } restore{*this, fur};
+    if (fur == 1) swapFur();
+    computeBudget();
+    if (bud.overLimit) {
+        status = bud.msg;
+        logf("EXPORT BLOCKED: %s", bud.msg.c_str());
+        return false;
+    }
+    outDir = set.repo + "\\build\\desktop_studio\\" + configName + "\\export";
+    fs::create_directories(outDir);
+    std::string base = outDir + "\\" + pack.character + (styleId != "default" ? "_" + styleId : std::string()) + "_" + tag;   // <char>[_<style>]_<tag>
+    std::string stiffArg = writeFurFiles(*this, base, true);
+    // beard fur edits (Beard mode): <base>_beard_edits / _look / _geo.json, written into the build's beard redfur
+    if (beardOn && beardGroom.ops.size() + beardLook.over.size() > 0) {
+        swapFur();
+        computeBudget();
+        bool over = bud.overLimit;
+        std::string msg = bud.msg;
+        if (!over) {
+            if (smap.painted) logf("beard stiffness map: not exported (the beard fur keeps its own UVs and density map)");
+            writeFurFiles(*this, base + "_beard", false);
+        }
+        swapFur();
+        if (over) {
+            status = "Beard: " + msg;
+            logf("EXPORT BLOCKED (beard): %s", msg.c_str());
+            return false;
+        }
+        stiffArg += " --beard-edits \"" + base + "_beard_edits.json\" --beard-look \"" + base + "_beard_look.json\" --beard-geo \"" + base + "_beard_geo.json\"";
     }
     std::string cmd = set.python + " \"" + set.repo + "\\desktop_studio\\tools\\desk_export.py\" --cfg " + configName +
                       " --edits \"" + base + "_edits.json\" --look \"" + base + "_look.json\" --geo \"" + base + "_geo.json\" --mod " +
@@ -1445,17 +1847,52 @@ void App::openAsync(const std::string& cfg, bool build) {
     });
 }
 
-bool App::saveProject(const std::string& path) {
-    if (!loaded) return false;
+json App::furState() const {
     json j;
-    j["format"] = "groomstudio-project";
-    j["version"] = 1;
-    j["config"] = configName;
     j["ops"] = groom.ops;
     j["look"] = look.over;
     j["material"] = presetSel < (int)presets.size() ? presets[presetSel].name : "";
     j["keep_colours"] = keepColours;
     j["stiffness"] = {{"s", smap.guideS}, {"r", smap.guideR}};
+    if (!colR.empty()) { json cr = json::object(); for (auto& [i, r] : colR) cr[std::to_string(i)] = r; j["collision_r"] = cr; }
+    return j;
+}
+
+void App::applyFurState(const json& j) {
+    groom.ops.clear();
+    groom.redo.clear();
+    for (auto& o : j.value("ops", json::array())) groom.ops.push_back(o);
+    groom.replay();
+    std::string mat = j.value("material", "");
+    for (int i = 0; i < (int)presets.size(); i++) if (presets[i].name == mat) presetSel = i;
+    keepColours = j.value("keep_colours", true);
+    look.over.clear();
+    json lk = j.value("look", json::object());
+    for (auto& [k, v] : lk.items()) look.over[k] = v;
+    colR.clear();
+    if (j.contains("collision_r")) for (auto& [k, v] : j["collision_r"].items()) colR[std::stoi(k)] = v.get<float>();
+    look.enforceCaps();
+    smap.reset(groom.P.size());
+    if (j.contains("stiffness")) {
+        auto s = j["stiffness"].value("s", json::array()), r = j["stiffness"].value("r", json::array());
+        for (size_t i = 0; i < s.size() && i < smap.guideS.size(); i++) smap.guideS[i] = s[i];
+        for (size_t i = 0; i < r.size() && i < smap.guideR.size(); i++) smap.guideR[i] = r[i];
+    }
+}
+
+bool App::saveProject(const std::string& path) {
+    if (!loaded) return false;
+    // top-level fur keys = the hair fur (the format older projects have); "beard" = the beard fur's own keys (Beard mode,
+    // 2026-10-14; absent for builds without a beard fur), "fur": "beard" = the project was saved in Beard mode
+    int f0 = fur;
+    if (fur == 1) swapFur();
+    json j = furState();
+    if (beardOn) { swapFur(); j["beard"] = furState(); swapFur(); }
+    if (f0 == 1) { swapFur(); j["fur"] = "beard"; }
+    j["format"] = "groomstudio-project";
+    j["version"] = 1;
+    j["config"] = configName;
+    if (guideCustom) j["guide_colour"] = {guideRgb[0], guideRgb[1], guideRgb[2]};
     j["motion"] = {{"preset", (int)motion.preset}, {"speed", motion.speed}, {"amount", motion.amount}};
     j["camera"] = {{"yaw", cam.yaw}, {"pitch", cam.pitch}, {"dist", cam.dist}, {"target", {cam.target.x, cam.target.y, cam.target.z}}};
     j["mod"] = modName;
@@ -1464,7 +1901,7 @@ bool App::saveProject(const std::string& path) {
     std::ofstream(path) << j.dump(1);
     projectPath = path;
     set.addRecent(path);
-    savedEdits = int(groom.ops.size() + look.over.size());
+    savedEdits = editCount();
     status = "Project saved: " + path;
     return true;
 }
@@ -1473,20 +1910,19 @@ bool App::loadProject(const std::string& path) {
     json j;
     try { std::ifstream f(path); j = json::parse(f); } catch (std::exception& e) { status = std::string("Project: ") + e.what(); return false; }
     if (!openConfig(j.value("config", ""), false)) return false;
-    groom.ops.clear();
-    for (auto& o : j["ops"]) groom.ops.push_back(o);
-    groom.replay();
-    std::string mat = j.value("material", "");
-    for (int i = 0; i < (int)presets.size(); i++) if (presets[i].name == mat) presetSel = i;
-    keepColours = j.value("keep_colours", true);
-    look.over.clear();
-    for (auto& [k, v] : j["look"].items()) look.over[k] = v;
-    look.enforceCaps();
-    smap.reset(groom.P.size());
-    if (j.contains("stiffness")) {
-        auto s = j["stiffness"]["s"], r = j["stiffness"]["r"];
-        for (size_t i = 0; i < s.size() && i < smap.guideS.size(); i++) smap.guideS[i] = s[i];
-        for (size_t i = 0; i < r.size() && i < smap.guideR.size(); i++) smap.guideR[i] = r[i];
+    applyFurState(j);
+    if (beardOn && j.contains("beard") && j["beard"].is_object()) {
+        // the beard fur's edits: applied while it is live, its asset rebuilt now (it is parked again afterwards)
+        swapFur();
+        applyFurState(j["beard"]);
+        computeBudget();
+        rebuildHair();
+        swapFur();
+    }
+    // the project's colour wins; without one openConfig already restored the character's remembered colour
+    if (j.contains("guide_colour") && j["guide_colour"].is_array() && j["guide_colour"].size() == 3) {
+        guideCustom = true;
+        for (int i = 0; i < 3; i++) guideRgb[i] = j["guide_colour"][i].get<float>();
     }
     if (j.contains("motion")) { motion.preset = MotionPreset(j["motion"].value("preset", 1)); motion.speed = j["motion"].value("speed", 1.0f); motion.amount = j["motion"].value("amount", 1.0f); }
     if (j.contains("camera")) { auto& c = j["camera"]; cam.yaw = c.value("yaw", cam.yaw); cam.pitch = c.value("pitch", cam.pitch); cam.dist = c.value("dist", cam.dist); }
@@ -1494,15 +1930,22 @@ bool App::loadProject(const std::string& path) {
     snprintf(tag, sizeof tag, "%s", j.value("tag", std::string(tag)).c_str());
     stiffDirty = true;
     editsChanged();
+    if (j.value("fur", std::string()) == "beard") setFur(1);
     projectPath = path;
     set.addRecent(path);
-    savedEdits = int(groom.ops.size() + look.over.size());
-    status = "Project loaded: " + path;
+    savedEdits = editCount();
+    status = "Project loaded: " + path + (fur == 1 ? " (Beard mode)" : "");
     return true;
 }
 
 
 // ray (world) against the posed skin meshes (same pose / vertex blend as the render); nearest hit
+void App::posedMeshTris(std::vector<GVertex>& out) const {
+    out.clear();
+    std::vector<GVertex> t;
+    for (int pass = 0; pass < 2; pass++) { meshVerts(*this, t, pass == 1); out.insert(out.end(), t.begin(), t.end()); }
+}
+
 bool App::skinRay(const XMFLOAT3& o, const XMFLOAT3& d, XMFLOAT3& hit, int& mesh) const {
     float best = 1e30f;
     mesh = -1;

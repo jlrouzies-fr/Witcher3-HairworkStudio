@@ -35,7 +35,7 @@ std::string App::edStyleId() const {
     return styleId;
 }
 
-bool App::dirtyEdits() const { return loaded && int(groom.ops.size() + look.over.size()) != savedEdits; }
+bool App::dirtyEdits() const { return loaded && editCount() != savedEdits; }
 
 void App::requestOpen(const std::string& cfg, bool build) {
     if (cfg.empty() || job.running) return;

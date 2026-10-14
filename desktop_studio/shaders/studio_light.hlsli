@@ -26,7 +26,9 @@ cbuffer StudioLight : register(b1)
     float4 g_hair2;       // x deep-shadow sigma scale, y multiple-scattering spread, z back light (TT) gain, w hair env spec
     float4 g_aoDir[16];   // xyz direction towards the sky, w weight
     row_major float4x4 g_aoVP[16];
-    float4 g_hair3;       // x hair colour encoding (1 = redfur values as stored, like the game; 0 = sRGB-decoded)
+    float4 g_hair3;       // x hair colour encoding (1 = redfur values as stored, like the game; 0 = sRGB-decoded),
+                          // y sky occlusion at the strand root (fibre detail in shade), z per-strand sky variation,
+                          // w strand-direction term (fibre seen across vs end-on)
 };
 
 Texture2D g_shadowMap : register(t8);   // R32 depth (float4-typed so the SDK shadow helpers take it)

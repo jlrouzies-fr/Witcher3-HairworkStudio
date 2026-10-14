@@ -18,7 +18,9 @@ struct Motion {
     double t = 0;
 
     // per-bone world-space transforms (row-vector, world_now = world_bind * M); = HairWorks skinning matrices
-    void boneMatrices(const DeskPack& pk, std::vector<DirectX::XMFLOAT4X4>& out) const;
+    // body (optional): the pack whose neck / torso bones give the pivots (Beard mode: the hair pack's skeleton, the fur
+    // bones are the live fur's)
+    void boneMatrices(const DeskPack& pk, std::vector<DirectX::XMFLOAT4X4>& out, const DeskPack* body = nullptr) const;
     // transform of a mesh point given a "head weight" (0 = body, 1 = head)
     DirectX::XMMATRIX headM(const DeskPack& pk) const;
     DirectX::XMMATRIX neckM(const DeskPack& pk) const;

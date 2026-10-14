@@ -54,6 +54,8 @@ static void parseArgs(Args& a, int argc, wchar_t** argv) {
         else if (s == "--view") a.view = next();
         else if (s == "--motion") a.motion = next();
         else if (s == "--guides") a.guides = true;
+        else if (s == "--guides-front") { a.guides = true; a.guidesFront = true; }
+        else if (s == "--guides-body") { a.guides = true; a.guidesBody = true; }
         else if (s == "--close-lod") a.closeLod = true;
         else if (s == "--exit") a.exitAfter = true;
     }
@@ -102,6 +104,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 static void shutdownAll(HWND hwnd) {
     if (g_app.job.th.joinable()) g_app.job.th.join();
+    if (g_app.fur == 1) g_app.swapFur();   // Beard mode: the runtimes are swapped; give hwBeard its own SDK object back
     g_app.hwBeard.shutdown(false);   // second SDK object: releasing two SDK objects of this 2016 DLL crashes at exit; process exit frees it
     g_app.hw.shutdown();
     ImGui_ImplDX11_Shutdown();
@@ -184,6 +187,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
             if (n.find(g_app.args.motion) == 0) g_app.motion.preset = MotionPreset(i);
         }
     g_app.showGuideOverlay = g_app.args.guides;
+    g_app.guideFront = g_app.args.guidesFront;
+    g_app.guideBody = g_app.args.guidesBody;
     g_app.forceCloseLod = g_app.args.closeLod;
     auto t0 = std::chrono::high_resolution_clock::now();
     int frameNo = 0;

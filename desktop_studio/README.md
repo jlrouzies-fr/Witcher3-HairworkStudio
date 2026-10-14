@@ -132,7 +132,7 @@ slider rows with a build-value tick: double-click / Ctrl+click the value to type
 the four stiffness curves), status bar cells (Log opens a bottom drawer). Light moved to a floating "Light" window (time
 of day popup > Advanced..., or View > Light settings), Settings to a modal (gear at the bottom of the rail).
 
-Left rail: Select (Q), Move (W), Comb (E), Curl brush (T), Paint stiffness (P), Symmetry (X), Undo / Redo, Duplicate,
+Left rail: Select (Q), Move (W), Comb (E), Curl brush (T), Paint stiffness (P), Draw (A, draw a new guide by hand), Symmetry (X), Undo / Redo, Duplicate,
 Shorten, Delete; Shortcuts (F1) and Settings at the bottom. Right inspector: character card, Budget, Material, Look,
 Physics and motion (incl. the stiffness / bend / strength / damping curve editor), Stiffness map, Curl tools, Symmetry,
 Edit settings, Export. Status bar: status, close-up hair count + budget meter, sim state + motion, edits, fps, Log, credit. Every control has a tooltip; F1 lists the shortcuts. Projects
@@ -174,6 +174,35 @@ Edit settings, Export. Status bar: status, close-up hair count + budget meter, s
   untouched. The live toggle mirrors every edit / comb / curl / paint stroke onto the partner guides (nearest mirrored
   root within 15 mm; ringlets flip handedness).
 
+### Beard mode (2026-10-14)
+
+Builds with a beard fur (Zoltan `zoltan_l292_b`, Lambert beard configs) show **EDITING  Hair | Beard** in the inspector,
+right under the character card (also Edit > "Edit the beard fur"). In Beard mode the beard is the edited groom: every
+tool, material / look / physics value, stiffness paint, check and the budget card act on it, and the hair is the preview
+(the other way round in Hair mode). Each fur has its own ops, undo history and look. Implementation: `App::swapFur`
+exchanges the live fur (`pack` fur fields, `groom`, `look`, `hw`, per-fur textures in `FurSlot`) with the parked one, so
+the tools need no change; the head / body meshes, cameras and motion pivots (`skel`) stay the hair pack's. Projects store
+the beard under `beard` (old projects load unchanged) and `"fur": "beard"` when saved in Beard mode. Export writes the
+beard edits into the build's beard redfur (`desk_export.py --beard-edits/--beard-look/--beard-geo`, see
+`docs/AGENT_GUIDE.md` Export). Not exported: the beard stiffness map. MCP / agent: `studio_fur` / step `fur`.
+
+### Guide views (2026-10-14)
+
+Two filters for the guide overlay, next to the guides button in the top bar (layers icon, person icon) and in View:
+**Guides: front layer only** (Shift+G) shows only guides that are not hidden behind other hair from the current camera
+(the outer layer), **Guides: hide behind the body** (Ctrl+G) leaves out the guide parts behind the head, body and
+clothes. They combine, follow the camera live, and work in Hair and Beard mode. View > Guide view options: **Select
+visible only** (on by default: brush, box and click select only shown guides and points), **front points %** (default 50:
+share of a guide's body-visible points that must be in the front layer) and **depth tolerance mm** (default 12), plus
+the count of shown guides and the cost. Selected guides are always drawn.
+
+Internals (`src/guidevis.cpp`): two CPU depth buffers (longest side 384 px), one from the posed opaque meshes, one from
+the guide segments splatted as small cones (2.5 mm); a point is body-visible when it is not behind the mesh depth (+4 mm),
+front when it is within the tolerance of the nearest hair / body depth. Rasterisation is split over up to 8 threads; in the
+viewport it runs on a background worker (results lag 1-2 frames) and is skipped when camera, pose and guides are
+unchanged. Yennefer (2182 guides, 40k body triangles): about 4 ms on the worker, 0.6 ms on the main thread, 60 fps kept.
+MCP / serve: `studio_guide_view` / `guide_view`, render keys `guides_front` / `guides_body` (see `docs/AGENT_GUIDE.md`).
+
 ## Viewport toolbar and lighting
 
 Two floating bars in the viewport. Top (drag it by the grip dots, double-click the grip to put it back, the chevron at the
@@ -182,7 +211,7 @@ tooltip with its shortcut; F1 lists them all.
 
 | Group | Buttons (shortcut) |
 |---|---|
-| View (top) | guides (G), rendered hair (H), colliders (N), bones (B), wireframe (Z), symmetry plane (V); head / body mesh (M) and turntable (O) are in the View menu |
+| View (top) | guides (G), front layer only (Shift+G), hide guides behind the body (Ctrl+G), rendered hair (H), colliders (N), bones (B), wireframe (Z), symmetry plane (V); head / body mesh (M) and turntable (O) are in the View menu |
 | Camera (top) | Front (1), 3/4 (2), Side (3), Back (4) = the directions of HairLab shots 4, 3, 2, 0, centred on the head; frame head (F) |
 | Lighting (top) | time of day dropdown (L cycles; the popup also has Sky backdrop and Advanced... = the Light window), shadows (K) |
 | Playback (bottom) | play / pause (Space), stop and reset to rest (Esc, after clearing a selection), step one frame (.), motion preset (idle, walk, run, spin, wind, turn head, nod, rest), speed, amount, wind on any motion (J) + wind strength; a progress line along the bottom edge |

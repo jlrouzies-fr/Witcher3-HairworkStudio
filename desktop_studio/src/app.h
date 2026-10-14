@@ -35,6 +35,7 @@ struct Settings {
     std::set<std::string> commPinned;  // installed packs (author__name) pinned to their version: no update prompts
     std::string file;   // %LOCALAPPDATA%\HairworkForAll\desktop_studio.json
     std::vector<std::string> recent;   // recently opened builds ("cfg") and projects (".groomproj.json" paths)
+    std::map<std::string, std::array<float, 3>> guideCol;   // View > Guide colour remembered per character
     void addRecent(const std::string& r);
     void load();
     void save() const;
@@ -46,7 +47,7 @@ struct Args {
     bool serve = false;
     std::string ptEstimate, ptOpts;   // --pt-estimate <hwpack.json> [--pt-opts k=v,..]: print the path tracing cost metric and exit
     int frames = 240;
-    bool exitAfter = false, guides = false, closeLod = false, noSplash = false;
+    bool exitAfter = false, guides = false, closeLod = false, noSplash = false, guidesFront = false, guidesBody = false;
 };
 
 struct Camera {
@@ -78,11 +79,14 @@ struct Rig {
     float shadowSoft = 1.0f, shadowStrength = 1.0f, sunSize = 0.6f;
     // lighting quality: 0 fast (sun shadow only, no sky occlusion), 1 balanced (8 sky-occlusion maps), 2 high (16)
     int quality = 2;
+    // shaded-hair fibre detail (2026-10-14, Zoltan moustache read as flat felt in shade): sky light occluded towards the
+    // root of each strand (neighbour fibres) + per-strand sky variation; 0 / 0 = the old smooth sky term
+    float ambRoot = 0.2f, ambVar = 0.4f, ambTv = 0.6f;     // 0.2 / 0.4: Vesemir r31a stays at its calibrated look (shot 3)
     float hairEncoding = 0.7f;   // colour decode: 0 = sRGB-decoded, 1 = stored values; 0.7 fits L244 / L232 / L246beard
     int toneMode = 0;   // 0 ACES fitted (RRT + ODT), 1 the same curve on luminance (hue preserving)
 };
 
-enum class Tool { Select, Move, Comb, Curl, Paint, Count };
+enum class Tool { Select, Move, Comb, Curl, Paint, Draw, Count };
 
 // one pipeline job at a time (desk_prep / hairpipe build / catalog), run on a thread so the UI stays responsive
 struct Job {
@@ -99,8 +103,11 @@ struct App {
     Args args;
     Gfx gfx;
     HairRuntime hw;
-    // beard fur of a beard config (desk.json "beard_fur"): a second HairWorks instance, preview only (not editable,
-    // not in the budget). When it is present the vanilla beard cards are hidden, as in game.
+    // second fur of a beard config (desk.json "beard_fur"): a second HairWorks instance. When it is present the
+    // vanilla beard cards are hidden, as in game. Beard mode (fur = 1, inspector "Editing  Hair | Beard"): swapFur()
+    // exchanges the two furs, so the beard is the live, editable groom (pack / groom / look / hw / smap ... below:
+    // every tool, check, budget and MCP command acts on it) and these "beard*" members hold the PARKED fur, shown as
+    // a preview: the beard in Hair mode, the hair in Beard mode. Both edit sets go into the project and the export.
     HairRuntime hwBeard;
     DeskPack beardPk;
     Groom beardGroom;
@@ -108,6 +115,27 @@ struct App {
     std::vector<int> beardGuideOfAsset;
     bool beardSdkOk = false, beardOn = false, showBeard = true;
     void buildBeard();
+    // the rest of the parked fur's own state (swapFur exchanges it with the live members of the same name)
+    struct FurSlot {
+        StiffnessMap smap;
+        UVAtlas atlas;
+        bool atlasOn = false, keepColours = true;
+        ID3D11Texture2D* stiffTex = nullptr;
+        ID3D11ShaderResourceView* stiffSrv = nullptr, * densitySrv = nullptr, * colorSrv = nullptr, * bakedDensitySrv = nullptr, * bakedColorSrv = nullptr;
+        std::vector<unsigned char> srcDensity, srcColor, bakedDensity, bakedColor;
+        int srcDW = 0, srcDH = 0, srcCW = 0, srcCH = 0;
+        std::map<int, float> colR;
+        std::vector<MaterialPreset> presets;
+        int presetSel = 0;
+    } beardSlot;
+    DeskPack skel;          // the hair pack's bones: motion pivots (neck, torso3) whichever fur is live
+    json packMaterials;     // desk.json "materials" (material presets of either fur)
+    int fur = 0;            // 0 = Hair mode, 1 = Beard mode (the beard fur is the live groom)
+    void swapFur();         // exchange live and parked fur (no rebuild: each runtime keeps its own asset)
+    bool setFur(int f);     // the mode switch: swapFur + clears selection / check results; false without a beard fur
+    int editCount() const;  // ops + look changes of both furs ("N edits unsaved")
+    json furState() const;              // the live fur's edits as project keys (ops, look, material, stiffness, ...)
+    void applyFurState(const json& j);  // ... and back (project load)
     DeskPack pack;
     Groom groom;
     Look look;
@@ -129,8 +157,33 @@ struct App {
     double lastBuild = 0, simAcc = 0;
     // view toggles
     bool simulate = true, paused = false, showHair = true, showGuideOverlay = false, showMeshes = true;
+    bool guideCustom = false;                      // View > Guide colour: own colour for the overlay (white hair hides the default grey)
+    float guideRgb[3] = {0.6f, 0.65f, 0.7f};
     bool showCollision = false, showGrowth = false, sdkGuides = false, forceCloseLod = false;
     int colorize = 0;
+    // guide visibility views (guidevis.cpp, View menu / toolbar): "Front layer only" (Shift+G) keeps the guides that are
+    // the outermost hair seen from the camera, "Hide behind the body" (Ctrl+G) clips guide parts hidden by the meshes.
+    // Live with the camera / pose (CPU depth buffers on a background worker in the viewport, inline for off-screen
+    // renders); "Select visible only" makes click / box / brushes ignore the guides the view hides.
+    bool guideFront = false, guideBody = false, selectVisibleOnly = true;
+    float guideFrontPct = 50, guideTolMm = 12;
+    struct GuideVis {
+        bool valid = false, cached = false;   // cached: inputs unchanged, the last result kept
+        uint64_t key = 0;                     // hash of the inputs of the result
+        int N = 0, K = 0, nShown = 0, nTri = 0, res = 0, ptsK = 0;
+        float ms = 0, msBody = 0, msHair = 0, msMain = 0;   // pass / body raster / hair splats (per thread) / main-thread share
+        std::vector<uint8_t> pt, shown;   // per point (drawn after the body clip) / per guide
+        std::vector<V3> pts;              // posed points of the current frame (the overlay draws them)
+    } gvis;
+    bool guideVisOn() const { return guideFront || guideBody; }
+    bool visFilter() const { return guideVisOn() && selectVisibleOnly && gvis.valid; }
+    // bodyA / bodyB: the frame's posed mesh triangles (async: moved into the job), both null = posedMeshTris
+    void computeGuideVis(const DirectX::XMFLOAT4X4& V, const DirectX::XMFLOAT4X4& P, int w, int h,
+                         std::vector<GVertex>* bodyA, std::vector<GVertex>* bodyB, bool async);
+    bool guideShown(int i) const;               // drawn by the current guide view
+    bool guidePointShown(int i, int k) const;
+    bool pickVisible(int i) const;              // ... and pickable ("Select visible only")
+    bool pickPointVisible(int i, int k) const;
     // editing
     Tool tool = Tool::Select;
     std::set<int> sel;
@@ -143,6 +196,11 @@ struct App {
     int dragK = -1;   // Move tool: CV dragged alone (-1 = whole guide)
     std::map<int, V3> combOff;
     std::set<int> strokeSet;
+    // Draw tool: the stroke (screen px), its root on the head and the live 3D preview
+    std::vector<std::pair<float, float>> drawPx;
+    V3 drawRoot{};
+    bool drawing = false;
+    std::vector<V3> drawWorld;
     int grpId = 0;
     CurlParams curl;
     // symmetry
@@ -209,6 +267,48 @@ struct App {
     bool scalpMesh(std::vector<V3>& pos, std::vector<float>& flag, std::vector<std::array<int, 3>>& tris) const;   // posed head mesh + scalp flags (hairline tools)
     bool skinRay(const DirectX::XMFLOAT3& o, const DirectX::XMFLOAT3& d, DirectX::XMFLOAT3& hit, int& mesh) const;   // nearest posed skin triangle hit
     // viewport toolbar (toolbar.cpp)
+    // Check > Unnatural endings: faces whose guides fan apart (hair between them ends in a hard line), shown orange
+    bool endingsOpen = false;
+    float endDiv = 50, endSpread = 4;
+    std::vector<int> endFaces;
+    std::set<int> endGuides;
+    void checkEndings();
+    void removeFanned();
+    // Check > Unwanted loops: guides that come back to themselves (not curls), shown purple
+    bool loopsOpen = false;
+    float loopArc = 60, loopClose = 15, loopCurlR = 45, loopTurn = 270;   // mm, mm, mm, deg
+    std::vector<int> loopList;
+    std::vector<std::string> loopWhy;
+    std::set<int> loopGuides;
+    void checkLoops();
+    void removeLoops();
+    // Check > Max-wind strays (windcheck.cpp): measured run of the SDK simulation at maximum wind. Rest hair mask vs
+    // wind frames per camera (distance from the rest silhouette), simulated guide CVs read back from the GPU, culprits
+    // confirmed by hiding candidates and re-running the same wind. Culprit guides are red in the viewport.
+    bool windOpen = false, windBusy = false, windInside = false, windCancel = false;
+    float windThr = 12;                 // px at 600 px
+    float windProgress = 0;
+    std::string windPhase;
+    struct WindRow { std::string kind; int id = -1; std::vector<int> guides; std::string text; bool confirmed = false; };
+    std::vector<WindRow> windRows;
+    std::set<int> windGuides;           // culprit guides (overlay red, Select / Delete)
+    std::set<int> windFaces;            // culprit faces
+    json windResult, windParams;
+    std::string windOut;
+    void* windFiber = nullptr, * mainFiber = nullptr;
+    std::vector<char> hideGuide, hideFace;   // left out of the HairWorks asset (elimination runs), empty = none
+    // collision sphere radius overrides (sphere index -> radius, m), saved in the project ("collision_r"), exported in
+    // the geo json (desk_export.set_geometry writes them into the fur): studio_collision_band
+    std::map<int, float> colR;
+    json windCheck(const json& params, const std::string& out);   // the whole check (serve: blocking; UI: inside windFiber)
+    void windStart(const json& params);  // UI: start the check on a fiber, resumed a slice per frame from step()
+    void windResume();
+    void windYield(float progress, const char* phase);
+    void windDeleteCulprits();           // one undo group: delete_face ops for face culprits + delete of the guide culprits
+    void posedMeshTris(std::vector<GVertex>& out) const;   // posed non-alpha meshes as drawn (occlusion for the wind check)
+    std::string charKey() const;          // character the open build belongs to (guide colour memory)
+    void rememberGuideColour();           // store the current guide colour for that character
+    void applyGuideColour();              // restore the remembered one (or the default)
     bool lightOpen = false;   // Light section open: the viewport shows the light-direction gizmo
     // sky-occlusion maps: refreshed round-robin (kAoPerFrame a frame) in the viewport, all at once for shots / changes
     int aoCount = 0, aoNext = 0;
@@ -313,6 +413,9 @@ struct App {
     std::vector<int> guidesUnderBrush(float mx, float my, float r) const;
     void opDelete();
     void opDuplicate();
+    bool headRay(float mx, float my, V3& hit) const;   // screen pixel -> first hit on the head mesh
+    void drawUpdate(float mx, float my);               // Draw tool: add a stroke point + refresh the preview
+    void opDrawGuide();                                // Draw tool: add the stroke as a new guide (duplicate + reshape ops)
     void opShorten();
     void opCurl(const std::vector<int>& ix);
     void paintAt(float mx, float my);
