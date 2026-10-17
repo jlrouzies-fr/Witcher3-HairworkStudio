@@ -61,6 +61,9 @@ bool DeskPack::load(const std::string& d, std::string& err) {
         if (s.contains("c")) { spheres.back().c = v3(s["c"]); spheres.back().hasC = true; }
     }
     for (auto& c : j["capsules"]) capsules.push_back({c[0], c[1]});
+    spheres0 = spheres;
+    capsules0 = capsules;
+    colModified = false;
     physical = j["physical"];
     graphical = j["graphical"];
     lod = j["lod"].is_null() ? json::object() : j["lod"];
@@ -125,6 +128,25 @@ bool DeskPack::load(const std::string& d, std::string& err) {
                          return m.kind == "outfit" && m.texFile.empty() && std::find(done.begin(), done.end(), m.path) != done.end();
                      }), meshes.end());
     }
+    // helmet / hat / hood of every appearance (desk_prep headgear_parts, 2026-10-16): drawn by View > Show headgear
+    headgear = json();
+    if (j.contains("headgear") && j["headgear"].is_object()) {
+        headgear = j["headgear"];
+        for (auto& o : headgear.value("parts", json::array())) {
+            Mesh M;
+            M.name = o.value("name", "");
+            M.path = o.value("path", "");
+            M.kind = "headgear";
+            M.texFile = o.value("file", "");
+            if (o.contains("normal") && o["normal"].is_string()) M.nrmFile = o["normal"].get<std::string>();
+            for (auto& a : o.value("apps", json::array())) M.apps.push_back(a.get<std::string>());
+            for (auto& p : o["v"]) M.v.push_back(v3(p));
+            for (auto& u : o["uv"]) M.uv.push_back({u[0].get<float>(), u[1].get<float>()});
+            for (auto& t : o["t"]) M.t.push_back({t[0], t[1], t[2]});
+            if (!M.v.empty()) meshes.push_back(std::move(M));
+        }
+        headgear.erase("parts");
+    }
     // vanilla beard / moustache cards (desk_prep beard_cards, 2026-10-11): alpha-tested textured parts
     for (const char* key : {"beard_cards", "hair_cards"}) {
         if (!j.contains(key) || !j[key].is_array()) continue;
@@ -185,7 +207,15 @@ bool DeskPack::beardPack(DeskPack& o) const {
     }
     o.physical = b.value("physical", json::object());
     o.graphical = b.value("graphical", json::object());
-    o.lod = json::object();
+    o.lod = json::object();                      // the default (raster) preview keeps the close-up LOD defaults it always had
+    o.lodBeard = b.value("lod", json::object());   // 2026-10-16: the beard fur's own LOD block, game-accurate preview only
+    if (b.contains("density") && b["density"].is_object()) {   // 2026-10-16: the beard's density texture (desk_prep beard_fur.density)
+        auto& dd = b["density"];
+        o.densityFile = dd.value("file", "");
+        o.densityChannel = dd.value("channel", "RED");
+        o.densityPixel = dd.value("pixel", false);
+        for (auto& v : dd["face"]) o.densityFace.push_back(v);
+    }
     o.textures = textures;
     o.headC = headC;
     o.headTop = headTop;
@@ -203,7 +233,8 @@ void swapFur(DeskPack& a, DeskPack& b) {
     swap(a.guides, b.guides); swap(a.guidesEdit, b.guidesEdit); swap(a.F, b.F); swap(a.uv, b.uv);
     swap(a.boneIdx, b.boneIdx); swap(a.boneW, b.boneW); swap(a.bones, b.bones);
     swap(a.spheres, b.spheres); swap(a.capsules, b.capsules);
-    swap(a.physical, b.physical); swap(a.graphical, b.graphical); swap(a.lod, b.lod);
+    swap(a.spheres0, b.spheres0); swap(a.capsules0, b.capsules0); swap(a.colModified, b.colModified);
+    swap(a.physical, b.physical); swap(a.graphical, b.graphical); swap(a.lod, b.lod); swap(a.lodBeard, b.lodBeard);
     swap(a.budgetRef, b.budgetRef); swap(a.budgetSelf, b.budgetSelf); swap(a.lookCfg, b.lookCfg);
     swap(a.densityFile, b.densityFile); swap(a.densityChannel, b.densityChannel); swap(a.colorFile, b.colorFile);
     swap(a.densityPixel, b.densityPixel); swap(a.densityFace, b.densityFace);

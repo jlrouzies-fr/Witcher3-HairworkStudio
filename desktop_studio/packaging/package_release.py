@@ -50,12 +50,15 @@ ALLOWED_NVIDIA = {'NvHairWorksDx11.win64.dll'}
 TOOLS_MODULES = ['w3lib.py', 'cr2w_reader.py', 'cr2w_writer.py', 'texcache.py']
 HW_MODULES = ['approved.py', 'atlas.py', 'beard.py', 'collision.py', 'cr2w_edit.py', 'discover.py', 'flare.py', 'gamefiles.py',
               'gapfill.py', 'growth.py', 'hairpipe.py', 'headtex.py', 'hwpreview_pack.py', 'redfur.py', 'rig.py', 'scalp_tex.py',
-              'silhouette.py', 'strand_edits.py', 'template.py', 'texread.py', 'validate_ent.py']
+              'silhouette.py', 'strand_edits.py', 'template.py', 'texread.py', 'validate_ent.py',
+              # 2026-10-17 (0.4.0): imported by desk_export (perf_budget, top level: Export failed without it in 0.3.0),
+              # desk_prep / hairpipe / beard / desk_colfit (studio_geo, backitems, roster, scalp_recolour, ribbon_under), MCP export_audit
+              'perf_budget.py', 'studio_geo.py', 'backitems.py', 'roster.py', 'scalp_recolour.py', 'ribbon_under.py', 'export_audit.py']
 # tpl/fur02.redfur (the Yennefer mod's fur, legacy skeleton of the private dev repo) is NOT shipped: release builds take their
 # skeleton at run time from the user's own game (redfur.py, mode 'game'). sdk_guard --tree also blocks it by name and SHA-1.
 HW_DATA = ['APPROVED.json', 'roster.json',
            os.path.join('lab', 'plans', 'yen_material.json'), os.path.join('lab', 'plans', 'yen_strands_only.json')]
-STUDIO_TOOLS = ['desk_prep.py', 'desk_export.py', 'calib.py']
+STUDIO_TOOLS = ['desk_prep.py', 'desk_export.py', 'calib.py', 'desk_colfit.py']   # desk_colfit: Colliders > Fit (colliders.cpp)
 # MCP server for coding agents (desktop_studio\mcp, same relative path as in the repo). autotune_* are internal: never shipped.
 MCP_FILES = ['hairwork_studio_mcp.py', 'hws.py']
 DOCS_IGNORE = shutil.ignore_patterns('__pycache__', 'feedback')   # feedback/ = private user reviews

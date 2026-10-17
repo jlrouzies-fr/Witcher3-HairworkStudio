@@ -5,8 +5,9 @@
 inline constexpr const char* kCommunityRepo = "jlrouzies-fr/Witcher3-HairworkCommunity";
 #include <windows.h>
 
-#define GSD_VERSION "0.2.1"
+#define GSD_VERSION "0.4.0"
 
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <map>
@@ -184,6 +185,17 @@ struct App {
     bool guidePointShown(int i, int k) const;
     bool pickVisible(int i) const;              // ... and pickable ("Select visible only")
     bool pickPointVisible(int i, int k) const;
+    // Move-tool focus circle (2026-10-15): double-click the head = only the camera-facing guides whose root projects
+    // inside focusPx of that point are shown, picked and moved; double-click empty space / Esc = all guides again
+    bool focusOn = false;
+    DirectX::XMFLOAT3 focusW{0, 0, 0};
+    float focusPx = 90;
+    std::vector<uint8_t> focusIn;
+    std::vector<V3> focusN;      // rest-space scalp normal per guide root (cache)
+    size_t focusNKey = 0;
+    bool focusActive() const { return focusOn && tool == Tool::Move; }
+    bool focusShown(int i) const { return !focusActive() || (i >= 0 && i < (int)focusIn.size() && focusIn[i]); }
+    void focusUpdate();          // per frame while active (frozen during a drag)
     // editing
     Tool tool = Tool::Select;
     std::set<int> sel;
@@ -220,6 +232,7 @@ struct App {
     std::vector<unsigned char> srcDensity, srcColor, bakedDensity, bakedColor;
     int srcDW = 0, srcDH = 0, srcCW = 0, srcCH = 0;
     ID3D11ShaderResourceView* bakedDensitySrv = nullptr, * bakedColorSrv = nullptr;
+    ID3D11ShaderResourceView* gammaDensitySrv = nullptr;   // agent calibration "density_gamma"
     void bakeAtlas();
     float paintS = 0.6f, paintR = 1.0f;
     int paintTarget = 0;   // 0 both, 1 stiffness, 2 root stiffness
@@ -251,10 +264,34 @@ struct App {
     // View > Vanilla reference: the in-game vanilla stills of the pack's HairLab shots (pack.shots[k]["ref"])
     bool vanillaOpen = false;
     bool communityOpen = false;   // View > Community
+    // View > Show headgear / outfit items (2026-10-16): the helmet / hat / hood meshes of appearance headgearApp
+    // (pack.headgear). Default on only when every appearance of the character wears headgear.
+    bool showHeadgear = false;
+    std::string headgearApp;
+    bool headgearVisible(const Mesh& m) const {
+        return showHeadgear && std::find(m.apps.begin(), m.apps.end(), headgearApp) != m.apps.end();
+    }
     bool vanillaHair = false;   // View > Vanilla hair (cards): the game's hair cards instead of the HairWorks groom
     // 2026-10-12 opt-in (serve "keep_cards"): hair-card mesh index -> per-triangle 1 = this vanilla card stays drawn WITH
     // the groom (preview of the pipeline's split_cards: cards for one element, strands for the rest). Empty = off.
     std::map<int, std::vector<uint8_t>> keepCards;
+    // 2026-10-17 opt-in (serve "card_offset", saved in the project as "card_offsets"): moves of kept vanilla card pieces
+    // (Junior's tie ring). Each entry: uv_min/uv_max and/or near + radius_mm, offset [m], rotate_deg [x,y,z] about the
+    // piece's centroid. cardShift = per hair-card mesh, per vertex displacement (rebuilt by applyCardOffsets).
+    json cardOffsets = json::array();
+    std::map<int, std::vector<V3>> cardShift;
+    json applyCardOffsets();
+    // 2026-10-17 UI ("Card pieces" panel): the moves live as snapshot ops {"type": "card_offsets", "entries": [...]} in the
+    // hair fur's op list (no roots: the groom and the pipeline skip them), so Ctrl+Z / redo work; cardOffsetsBase = the
+    // project's saved card_offsets for projects without a snapshot op (junior_mcp_31). syncCardOffsets runs on every edit.
+    json cardOffsetsBase = json::array();
+    int cardSel = -1;
+    bool cardPick = false, cardDirty = false, cardFollow = false;
+    float cardFollowMm = 14.0f, cardFollowLen = 0.10f;
+    json cardPrev;   // entries before the current drag (guides follow: old piece centre)
+    void syncCardOffsets();
+    bool pickCardPiece(float mx, float my);
+    json commitCardOffsets(const json& prevEntries, bool follow);
     std::string vanillaShot;
     struct RefTex { ID3D11ShaderResourceView* srv = nullptr; int w = 0, h = 0; };
     std::map<std::string, RefTex> vanillaTex;   // shot id -> still, loaded on first view, freed when another build opens
@@ -268,6 +305,13 @@ struct App {
     bool skinRay(const DirectX::XMFLOAT3& o, const DirectX::XMFLOAT3& d, DirectX::XMFLOAT3& hit, int& mesh) const;   // nearest posed skin triangle hit
     // viewport toolbar (toolbar.cpp)
     // Check > Unnatural endings: faces whose guides fan apart (hair between them ends in a hard line), shown orange
+    // Edit > Conform to shell (serve_shell.inc): even concentric layers on a smooth outer surface (2026-10-16)
+    bool shellOpen = false;
+    int shellRegion = 0, shellSurface = 0, shellLayers = 4, shellAssign = 0, shellFlowSrc = 0, shellSmooth = 8;
+    float shellStrength = 1.0f, shellFlow = 0.8f, shellLump = 3.0f, shellThick = 14.0f, shellRoot = 10.0f, shellOffset = 0.0f;
+    bool shellFringe = true;
+    std::string shellReport;
+    float crownRadius = 50, crownSpiral = 20, crownBack = 30;   // Edit > Conform to shell: crown swirl
     bool endingsOpen = false;
     float endDiv = 50, endSpread = 4;
     std::vector<int> endFaces;
@@ -300,7 +344,65 @@ struct App {
     // collision sphere radius overrides (sphere index -> radius, m), saved in the project ("collision_r"), exported in
     // the geo json (desk_export.set_geometry writes them into the fur): studio_collision_band
     std::map<int, float> colR;
+    // ---- colliders: fit / edit / clearance report (colliders.cpp, desktop_studio/tools/desk_colfit.py)
+    // The fur's spheres + capsules are pack.spheres / pack.capsules. A fit or an edit replaces them for this project
+    // (pack.colModified; project key "colliders"; geo json "colliders" -> desk_export.set_colliders writes them into the fur).
+    bool colEdit = false;                   // Y: pick / drag colliders in the viewport (the character is held in the bind pose)
+    int colSel = -1, colSel2 = -1;          // selected sphere, second sphere (Ctrl+click) for "capsule between"
+    bool colDrag = false, colDragPushed = false;
+    std::vector<json> colUndoSt, colRedoSt; // snapshots of the set (undo / redo of collider changes)
+    size_t colOpsAt = 0;                    // groom.ops.size() at the last collider change (Ctrl+Z undoes the newer of the two)
+    json colTargets;                        // desk_colfit.py list: fit targets of the open config
+    std::map<std::string, bool> colPick;    // target id -> ticked
+    float colPad = 2.0f, colReach = 60.0f;  // fit: pad (mm), reach (mm) from the hair
+    bool colReachCfg = true;                // fit: reach as the config says (outfit_reach / item reach)
+    std::string colMsg;
+    json colReportJ;                        // last fit report / clearance report
+    bool colScan();                         // fills colTargets / colPick (runs desk_colfit.py list; ~5 s)
+    json colToJson() const;                 // {spheres [{bone name, local, r, grp, tag}], capsules, collision_r}
+    bool colFromJson(const json& j, std::string* err = nullptr);
+    void colPushUndo();
+    bool colUndo();
+    bool colRedo();
+    void colSetEdit(bool on);               // Y: collider edit mode (holds the bind pose, shows the SDK capsules)
+    bool colUndoKey(bool redo);             // Ctrl+Z / Ctrl+Y: a collider change newer than the last groom op comes first
+    void colChanged();                      // after a change: modified flag, rebuild, undo order
+    V3 colLocalToWorld(int bone, V3 l) const;
+    V3 colWorldToLocal(int bone, V3 c) const;
+    void colRecompute(int i);
+    int colAddSphere(int bone, V3 world, float r, int grp, const std::string& tag, bool twin);
+    int colBoneFor(V3 world) const;        // the bone a collider at this rest position should follow (head above the neck, neck, else torso3)
+    void colRemove(const std::set<int>& del);
+    void colDeleteSel();
+    int colMirrorSphere(int i, std::string* why = nullptr);
+    json colFit(const json& p);
+    json colList();
+    json colEditOp(const json& c);
+    // ---- flats (colliders.cpp): a panel of N thin parallel capsules (HairWorks has spheres / capsules only); each capsule
+    // is two spheres tagged "flat#k". The flat's parameters live in colFlats (saved with the set: colToJson "flats").
+    struct ColFlat { int bone = 0; V3 c{}; float w = 0.2f, h = 0.15f, t = 0.01f, yaw = 0, pitch = 0, roll = 0; int count = 0; };
+    std::map<int, ColFlat> colFlats;        // flat id -> parameters (world rest pose, m / degrees)
+    int colFlatMax(int count, float w, float t, int except = -1) const;   // count clamped to the free sphere / capsule budget
+    std::string colFlatBuild(int id, const ColFlat& f);   // (re)makes the flat's spheres + capsules; "" or an error
+    int colFlatOf(int sphere) const;        // flat id of a sphere, -1 when it is not part of a flat
+    json colReport(const json& c);
+    json colCommand(const std::string& d, const json& c);
+    json drapeCommand(const std::string& d, const json& c);   // drape.cpp: drape hair over outfit meshes (drape_outfit / drape_report / list_meshes)
+    json drapeList() const;
+    std::map<std::string, bool> drapePick;  // UI: mesh token -> ticked
+    float drapePad = 3.0f, drapeRoot = 20.0f;   // mm
+    std::string drapeMsg;
+    V3 colPosed(int i) const;               // collider centre in the current pose
+    int colPickAt(float mx, float my) const;
+    bool colMouse();                        // viewport mouse in collider edit mode; true = consumed
+    void colOverlay();                      // viewport: circles of the colliders (edit mode), selection
     json windCheck(const json& params, const std::string& out);   // the whole check (serve: blocking; UI: inside windFiber)
+    // direction guard (dircheck.cpp, 2026-10-16): wrong-way strands at rest / under wind; serve runs the guard around
+    // every command that adds ops (dirGuardMode fix | refuse | report | off)
+    json checkDirection(const json& params);
+    std::set<long long> directionGuardPre();
+    json directionGuard(size_t opsBefore, size_t guidesBefore, const std::string& mode, const std::set<long long>& pre);
+    std::string dirGuardMode = "fix";
     void windStart(const json& params);  // UI: start the check on a fiber, resumed a slice per frame from step()
     void windResume();
     void windYield(float progress, const char* phase);
@@ -381,6 +483,11 @@ struct App {
     void drawScene();
     void computeBudget();
     bool exportAll(std::string& outDir, bool release = false);   // release: requires the Hairwork for All Core (core/README.md)
+    bool perfAccepted = false;      // project: the user clicked "Export anyway" (saved as "perf_accepted"; later dev exports pass --allow-perf)
+    bool exportAllowPerf = false;   // one-shot: next (non-release) export passes --allow-perf ("Export anyway" / agent allow_perf)
+    bool perfBlockReq = false;      // open the "Export blocked" modal (ui.cpp)
+    std::string perfBlockMsg;       // the PERF BLOCKED line of the last failed export
+    void drawPerfBlocked();
     // Hairwork for All Core (dependency mod of release exports): installed in <game>\mods? version vs the repo's CORE_VERSION
     struct CoreInfo {
         bool installed = false;
@@ -426,10 +533,17 @@ struct App {
     void ui();
     // headless (agent.cpp)
     int runAgent(const std::string& scriptPath);
+    // game-accurate hair preview (HairRuntime::gameAccurate): applies to the hair and the beard instance
+    void setGameAccurate(const json& c);
+    bool thinHair = false;   // "Thin-hair model" switch (preview only, default off)
+    json gameAccurateJson() const;
     json agentStep(const json& stp, const std::string& out, int& rc);
     int finishAgent(json& report, const std::string& out, int rc);
     int runServe(const std::string& out);   // serve.cpp: live headless session, JSON lines on stdin / stdout (MCP bridge)
     json serveCommand(const json& c, const std::string& out, bool& quit);
+    // 2026-10-15 opt-in braid tool (serve_braid.inc): small HairWorks 3-strand plaits from braid cards / control points
+    json braidTool(const json& c);
+    float braidPeriod = 9.0f, braidWidth = 1.0f, braidTight = 0.8f, braidTassel = 1.0f; int braidPerLobe = 3;
     bool renderShot(const json& shot, const std::string& outPng, int size);
 };
 

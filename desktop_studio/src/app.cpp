@@ -275,10 +275,13 @@ bool App::openConfig(const std::string& cfg, bool rebuildPrep) {
     if (!p.load(dir, err)) { status = err; logf("%s", err.c_str()); return false; }
     if (fur == 1) swapFur();   // Beard mode: put the hair back in the live slot before the new build replaces both
     colR.clear();
+    colUndoSt.clear(); colRedoSt.clear(); colSel = colSel2 = -1; colEdit = colDrag = false; colTargets = json(); colPick.clear(); colReportJ = json(); colMsg.clear();
     json raw;
     try { std::ifstream f(dir + "\\desk.json"); raw = json::parse(f); } catch (...) {}
     pack = std::move(p);
     pack.shots = raw.value("shots", json::object());
+    showHeadgear = pack.headgear.is_object() && pack.headgear.value("all", false);
+    headgearApp = pack.headgear.is_object() ? pack.headgear.value("default_app", std::string()) : std::string();
     skel = DeskPack();
     skel.bones = pack.bones;
     groom.init(&pack);
@@ -307,6 +310,7 @@ bool App::openConfig(const std::string& cfg, bool rebuildPrep) {
     for (auto& kv : vanillaTex) safeRelease(kv.second.srv);
     vanillaTex.clear();
     keepCards.clear();   // per-mesh triangle masks of the previous pack
+    cardOffsetsBase = json::array(); cardOffsets = json::array(); cardShift.clear(); cardSel = -1; cardPick = false;
     for (auto& m : pack.meshes) {
         if (!m.texFile.empty() && !meshTex.count(m.texFile)) meshTex[m.texFile] = gfx.loadTexture(dir + "\\" + m.texFile, true);
         if (!m.nrmFile.empty() && !meshTex.count(m.nrmFile)) meshTex[m.nrmFile] = gfx.loadTexture(dir + "\\" + m.nrmFile, false);
@@ -425,7 +429,12 @@ void App::buildBeard() {
     }
     o.smap.reset(beardPk.guides.size());
     o.presets = loadPresets(beardPk, set.repo + "\\desktop_studio\\presets", packMaterials);
-    hwBeard.setDensityTexture(nullptr);
+    // 2026-10-16: the beard's density texture (the vanilla beard atlas alpha on density_tex builds): the game keeps only the
+    // hairs the map allows (Olgierd L502: mean alpha .12, a sparse stubble); the preview drew every hair (a dense fuzz)
+    if (!beardPk.densityFile.empty()) o.densitySrv = gfx.loadTexture(beardPk.dir + "\\" + beardPk.densityFile, false);
+    hwBeard.densityGameOnly = true;   // bound to the SDK only while the game-accurate toggle is on (hairsdk.cpp): the default preview is unchanged
+    hwBeard.setDensityTexture(o.densitySrv);
+    if (o.densitySrv) logf("beard fur: density texture %s (%s)", beardPk.densityFile.c_str(), beardPk.densityChannel.c_str());
     hwBeard.setColorTexture(nullptr);
     hwBeard.setStiffnessTexture(nullptr);
     hwBeard.sphereR.clear();
@@ -450,6 +459,7 @@ void App::swapFur() {
     swap(srcDensity, o.srcDensity); swap(srcColor, o.srcColor); swap(bakedDensity, o.bakedDensity); swap(bakedColor, o.bakedColor);
     swap(srcDW, o.srcDW); swap(srcDH, o.srcDH); swap(srcCW, o.srcCW); swap(srcCH, o.srcCH);
     swap(colR, o.colR); swap(presets, o.presets); swap(presetSel, o.presetSel);
+    colSel = colSel2 = -1; colEdit = colDrag = false; colUndoSt.clear(); colRedoSt.clear();   // collider edits belong to the hair fur
     fur = 1 - fur;
 }
 
@@ -475,7 +485,7 @@ bool App::setFur(int f) {
 }
 
 int App::editCount() const {
-    size_t n = groom.ops.size() + look.over.size();
+    size_t n = groom.ops.size() + look.over.size() + (pack.colModified ? 1 : 0);
     if (beardOn) n += beardGroom.ops.size() + beardLook.over.size();
     return int(n);
 }
@@ -552,7 +562,103 @@ void App::computeBudget() {
 
 void App::editsChanged() {
     assetDirty = true;
+    syncCardOffsets();
+    // 2026-10-15 crash fix (renderPoint, stage input): an undo / delete / replay can shrink or kill guides while the
+    // selection still holds their indices; the Move tool then read *sel.begin() directly. Drop stale entries here.
+    for (auto it = sel.begin(); it != sel.end();)
+        it = (*it < 0 || *it >= (int)groom.alive.size() || !groom.alive[*it]) ? sel.erase(it) : std::next(it);
     computeBudget();
+}
+
+// ================================================================================================ game-accurate preview
+void App::setGameAccurate(const json& c) {
+    // "Thin-hair model" (opt-in, PT_LOOK_STUDY.md dg3): thin game strands (width = 0.09 x width^0.1), the density map
+    // softened to v^0.27, opacity 1, veil 1.5. Off restores the default preview values.
+    if (c.contains("thin_hair")) {
+        thinHair = c["thin_hair"].get<bool>();
+        // 2026-10-16 v2 (sn1, user: root / tip 1-2 drew "super thick" strands): 64 hairs per face, width 0.075 x width^0.1,
+        // root / tip scales compressed to scale^0.5 (Anna L391/L393 root/tip/width sweep MAE 0.031)
+        json t = thinHair ? json{{"width_const", 0.075f}, {"width_exp", 0.1f}, {"scale_exp", 0.5f}, {"hairs_per_face", 64}, {"opacity", 1.0f}, {"veil", 1.5f}, {"density_gamma", 1.0f}}
+                          : json{{"width_const", 0.24f}, {"width_exp", 0.55f}, {"scale_exp", 0.55f}, {"hairs_per_face", hw.ptHairsPerFaceGame}, {"opacity", 1.0f}, {"veil", 2.5f}, {"density_gamma", 1.0f}};   // L480 defaults
+        setGameAccurate(t);
+    }
+    for (HairRuntime* h : {&hw, &hwBeard}) {
+        if (c.contains("on")) h->gameAccurate = c["on"].get<bool>();
+        if (c.contains("tip_scale")) h->ptTipScale = std::clamp(c["tip_scale"].get<float>(), -1.0f, 10.0f);
+        if (c.contains("width_exp")) h->ptWidthExp = std::clamp(c["width_exp"].get<float>(), 0.0f, 1.0f);
+        if (c.contains("density_mip")) h->ptDensityMip = std::clamp(c["density_mip"].get<int>(), -1, 15);
+        if (c.contains("width_floor")) h->ptWidthFloor = c["width_floor"].get<bool>();
+        if (c.contains("lod_emu")) h->ptLodEmu = c["lod_emu"].get<bool>();
+        if (c.contains("lod_dist_scale")) h->ptLodDistScale = std::clamp(c["lod_dist_scale"].get<float>(), 0.0f, 20.0f);
+        if (c.contains("lod_t")) h->ptLodT = std::clamp(c["lod_t"].get<float>(), -1.0f, 1.0f);
+        if (c.contains("roughness")) h->ptRoughness = std::clamp(c["roughness"].get<float>(), -1.0f, 1.0f);
+        if (c.contains("neutralise")) h->ptNeutralise = c["neutralise"].get<bool>();
+        if (c.contains("stiff_by_fur")) h->ptStiffByFur = c["stiff_by_fur"].get<bool>();
+        if (c.contains("count_exp")) h->ptCountExp = std::clamp(c["count_exp"].get<float>(), 0.0f, 2.0f);
+        if (c.contains("tb_exp")) h->ptTbExp = std::clamp(c["tb_exp"].get<float>(), 0.1f, 4.0f);
+        if (c.contains("width_const")) h->ptWidthConst = std::clamp(c["width_const"].get<float>(), 0.0f, 10.0f);
+        if (c.contains("width_scale")) h->ptWidthScale = std::clamp(c["width_scale"].get<float>(), 0.05f, 10.0f);
+        if (c.contains("hairs_per_face")) h->ptHairsPerFace = std::clamp(c["hairs_per_face"].get<int>(), 1, 64);
+        if (c.contains("root_alpha_mode")) h->ptRootAlphaMode = std::clamp(c["root_alpha_mode"].get<int>(), 0, 2);
+        if (c.contains("root_alpha_falloff")) h->ptRootAlphaFalloff = c["root_alpha_falloff"].get<float>();
+        if (c.contains("spline")) h->ptSpline = std::clamp(c["spline"].get<int>(), 0, 64);
+        if (c.contains("wave_scale")) h->ptWaveScale = std::clamp(c["wave_scale"].get<float>(), 0.0f, 10.0f);
+        if (c.contains("hair_scatter")) h->ptHairScatter = std::clamp(c["hair_scatter"].get<float>(), 0.0f, 1.0f);
+        if (c.contains("pt_look")) h->ptLook = c["pt_look"].get<bool>();
+        if (c.contains("scale_exp")) h->ptScaleExp = std::clamp(c["scale_exp"].get<float>(), 0.0f, 2.0f);
+        if (c.contains("veil_wref")) h->ptVeilWref = std::clamp(c["veil_wref"].get<float>(), 0.0f, 10.0f);
+        if (c.contains("veil")) h->ptVeil = std::clamp(c["veil"].get<float>(), 0.0f, 20.0f);
+        if (c.contains("opacity")) h->ptOpacity = std::clamp(c["opacity"].get<float>(), 0.01f, 10.0f);
+        if (c.contains("transmit")) h->ptTransmit = std::clamp(c["transmit"].get<float>(), 0.0f, 2.0f);
+        if (c.contains("sharp")) h->ptSharp = std::clamp(c["sharp"].get<float>(), 0.0f, 1.0f);
+        if (c.contains("tint")) h->ptTint = std::clamp(c["tint"].get<float>(), 0.0f, 1.0f);
+        if (c.contains("sat_chroma")) h->ptSatChroma = std::clamp(c["sat_chroma"].get<float>(), 0.0f, 1.0f);
+        if (c.contains("layers")) h->ptLayers = std::clamp(c["layers"].get<float>(), 0.0f, 50.0f);
+        if (c.contains("bury")) h->ptBury = std::clamp(c["bury"].get<float>(), 0.0f, 20.0f);
+        if (c.contains("game_light")) h->ptGameLight = c["game_light"].get<bool>();
+        if (c.contains("gate")) h->ptGate = std::clamp(c["gate"].get<float>(), 0.0f, 20.0f);
+        if (c.contains("ms_sat")) h->ptMsSat = std::clamp(c["ms_sat"].get<float>(), 0.0f, 10.0f);
+        if (c.contains("ms_sat_amb")) h->ptMsSatAmb = std::clamp(c["ms_sat_amb"].get<float>(), 0.0f, 10.0f);
+    }
+    // calibration switch (agent only): "density_tex": false unbinds the density texture (every hair of every face kept)
+    if (c.contains("density_tex"))
+        hw.setDensityTexture(c["density_tex"].get<bool>() ? (atlasOn && bakedDensitySrv ? bakedDensitySrv : densitySrv) : nullptr);
+    // calibration (agent only, L394): "density_gamma": g binds the source density map remapped v -> v^g (1 = the map itself)
+    const bool gBaked = atlasOn && bakedDensitySrv && !bakedDensity.empty();
+    const std::vector<unsigned char>& gSrc = gBaked ? bakedDensity : srcDensity;
+    const int gW = gBaked ? atlas.size : srcDW, gH = gBaked ? atlas.size : srcDH;
+    if (c.contains("density_gamma") && !gSrc.empty() && gW > 0 && gH > 0) {
+        float g = std::clamp(c["density_gamma"].get<float>(), 0.01f, 10.0f);
+        safeRelease(gammaDensitySrv);
+        if (std::fabs(g - 1.0f) < 1e-4f) hw.setDensityTexture(gBaked ? bakedDensitySrv : densitySrv);
+        else {
+            std::vector<unsigned char> px(gSrc.size());
+            unsigned char lut[256];
+            for (int i = 0; i < 256; ++i) lut[i] = (unsigned char)std::lround(255.0 * std::pow(i / 255.0, double(g)));
+            for (size_t i = 0; i < px.size(); ++i) px[i] = lut[gSrc[i]];
+            D3D11_TEXTURE2D_DESC td = {};
+            td.Width = UINT(gW); td.Height = UINT(gH); td.MipLevels = 0; td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET; td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+            ID3D11Texture2D* t = nullptr;
+            if (SUCCEEDED(gfx.dev->CreateTexture2D(&td, nullptr, &t))) {
+                gfx.ctx->UpdateSubresource(t, 0, nullptr, px.data(), UINT(gW) * 4, 0);
+                gfx.dev->CreateShaderResourceView(t, nullptr, &gammaDensitySrv);
+                if (gammaDensitySrv) gfx.ctx->GenerateMips(gammaDensitySrv);
+                t->Release();
+            }
+            hw.setDensityTexture(gammaDensitySrv ? gammaDensitySrv : (gBaked ? bakedDensitySrv : densitySrv));
+        }
+    }
+}
+
+json App::gameAccurateJson() const {
+    return {{"on", hw.gameAccurate}, {"width_scale", hw.ptWidthScale}, {"width_const", hw.ptWidthConst}, {"width_floor", hw.ptWidthFloor}, {"density_mip", hw.ptDensityMip},
+            {"lod_emu", hw.ptLodEmu}, {"lod_dist_scale", hw.ptLodDistScale}, {"lod_t", hw.ptLodT}, {"lod_t_used", hw.ptLodTUsed}, {"lod_width_eff", hw.ptLodWidthEff}, {"lod_keep", hw.ptLodKeep}, {"cam_dist_sdk", hw.ptCamDistSdk},
+            {"roughness", hw.ptRoughness}, {"neutralise", hw.ptNeutralise}, {"stiff_by_fur", hw.ptStiffByFur}, {"count_exp", hw.ptCountExp}, {"tb_exp", hw.ptTbExp}, {"thin_hair", thinHair}, {"density_mip_game", hw.ptDensityMipGame}, {"width_exp", hw.ptWidthExp}, {"hairs_per_face", hw.ptHairsPerFace},
+            {"root_alpha_mode", hw.ptRootAlphaMode}, {"root_alpha_falloff", hw.ptRootAlphaFalloff}, {"spline", hw.ptSpline}, {"hair_scatter", hw.ptHairScatter}, {"wave_scale", hw.ptWaveScale},
+            {"pt_look", hw.ptLook}, {"veil", hw.ptVeil}, {"scale_exp", hw.ptScaleExp}, {"veil_wref", hw.ptVeilWref}, {"eff_width", hw.ptEffWidth}, {"opacity", hw.ptOpacity}, {"transmit", hw.ptTransmit}, {"sharp", hw.ptSharp}, {"tint", hw.ptTint}, {"gate", hw.ptGate}, {"game_light", hw.ptGameLight}, {"bury", hw.ptBury}, {"layers", hw.ptLayers}, {"sat_chroma", hw.ptSatChroma}, {"ms_sat", hw.ptMsSat}, {"ms_sat_amb", hw.ptMsSatAmb},
+            {"settings", hw.ptSettingsSource}};
 }
 
 // ================================================================================================ simulation step
@@ -584,6 +690,7 @@ void App::step(double dt) {
     std::vector<XMFLOAT4X4>& M = boneM;
     furMatrices(pack, fur == 1, M);
     V3 w = motion.wind();
+    if (hw.gameAccurate && hw.ptLodEmu && sdkOk) { HairStats cs = hw.stats(); if (cs.camDist > 0.0f) hw.ptCamDistSdk = cs.camDist; hwBeard.ptCamDistSdk = hw.ptCamDistSdk; }
     hw.updateDescriptor(look, {w.x, w.y, w.z}, simulate, sdkGuides, showCollision, showGrowth, forceCloseLod, colorize,
                         smap.painted);
     hw.skin(M, teleport);
@@ -630,6 +737,7 @@ static void meshVerts(const App& a, std::vector<GVertex>& out, bool textured, in
     for (size_t mi = 0; mi < pk.meshes.size(); mi++) {
         const Mesh& m = pk.meshes[mi];
         if (only >= 0 && int(mi) != only) continue;
+        if (m.kind == "headgear" && !a.headgearVisible(m)) continue;
         // alpha-tested beard cards: drawn one by one (own blend / depth shader), never in the merged lists or the mask
         // pass, and hidden when the beard fur replaces them or the beard is switched off
         if (m.alphaTest && (only < 0 || a.maskPass || (m.kind == "hair_cards" ? !a.vanillaHair && !a.keepCards.count(int(mi))
@@ -647,16 +755,23 @@ static void meshVerts(const App& a, std::vector<GVertex>& out, bool textured, in
         if (tex != textured) continue;
         auto itN = m.nrmFile.empty() ? a.meshTex.end() : a.meshTex.find(m.nrmFile);
         float texMode = (itN != a.meshTex.end() && itN->second) ? 3.0f : 2.0f;   // 3 = with normal map
-        bool head = m.kind == "head" || m.kind == "hat";
+        bool head = m.kind == "head" || m.kind == "hat" || m.kind == "headgear";
         // material class for the mesh shader: 0 cloth / leather / metal, 1 skin, 2 eyeball, 3 mouth (teeth / tongue)
         auto has = [&](const char* k) { return m.texFile.find(k) != std::string::npos; };
         float cls = m.alphaTest ? 4.0f : has("teeth") || has("tongue") || has("mouth") ? 3.0f : has("eye") ? 2.0f
                   : (m.kind == "head" || m.name.rfind("g_", 0) == 0 || has("man_average") || has("woman_average")) ? 1.0f : 0.0f;
         // skin / cloth albedo (linear) close to the HairLab captures' average
         XMFLOAT4 col = scalp ? XMFLOAT4(0, 1, 0, 5) : a.maskPass ? XMFLOAT4(0, 0, 0, 1) : m.kind == "head" ? XMFLOAT4(0.20f, 0.11f, 0.08f, 1) : XMFLOAT4(0.035f, 0.034f, 0.033f, 1);
+        const std::vector<V3>* cs = nullptr;
+        if (m.kind == "hair_cards") {
+            auto it = a.cardShift.find(int(mi));
+            if (it != a.cardShift.end() && it->second.size() == m.v.size()) cs = &it->second;
+        }
         std::vector<XMFLOAT3> P(m.v.size());
         for (size_t i = 0; i < m.v.size(); i++) {
-            XMVECTOR p = XMVectorSet(m.v[i].x, m.v[i].y, m.v[i].z, 1);
+            V3 v0 = m.v[i];
+            if (cs) v0 = v0 + (*cs)[i];   // card_offset (moved kept card piece)
+            XMVECTOR p = XMVectorSet(v0.x, v0.y, v0.z, 1);
             float hz = head ? 1.0f : std::clamp((m.v[i].z - (neckZ - 0.03f)) / 0.08f, 0.0f, 1.0f);
             XMVECTOR q = hz >= 1.0f ? XMVector3TransformCoord(p, H)
                                     : XMVectorLerp(XMVector3TransformCoord(p, R), XMVector3TransformCoord(p, Nk), hz);
@@ -745,6 +860,7 @@ void App::drawScene() {
         gfx.drawTrisDepth(depthTris[0]);
         gfx.drawTrisDepth(depthTris[1]);
         drawCardsDepth();
+        gfx.snapshotShadowMeshes();
         if (showHair && sdkOk) hw.renderShadow(lightV, lightP, float(gfx.shadowSize));
         if (showHair && beardOn && showBeard) hwBeard.renderShadow(lightV, lightP, float(gfx.shadowSize));
     }
@@ -783,6 +899,7 @@ void App::drawScene() {
         gfx.drawTrisDepth(depthTris[0]);
         gfx.drawTrisDepth(depthTris[1]);
         drawCardsDepth();
+        gfx.snapshotAoMeshes(k);
         if (showHair && sdkOk) {
             XMFLOAT4X4 kv, kp;
             XMStoreFloat4x4(&kv, KV);
@@ -844,26 +961,54 @@ void App::drawScene() {
     f.camPos = {e.x, e.y, e.z, 1};
     f.color = {1, 1, 1, 1};
     LightCB L;
-    float ca = std::cos(rig.sunEl);
-    L.sunDir = {ca * std::sin(rig.sunAz), ca * std::cos(rig.sunAz), std::sin(rig.sunEl), rig.sun};
-    L.sunCol = {rig.sunCol[0], rig.sunCol[1], rig.sunCol[2], 0};
-    L.skyCol = {rig.skyCol[0], rig.skyCol[1], rig.skyCol[2], rig.sky};
-    L.groundCol = {rig.groundCol[0], rig.groundCol[1], rig.groundCol[2], rig.ground};
+    // "game light" (2026-10-17, FINDINGS 13.6, user go), on while the path-traced look is on: the capture rig with the sun
+    // x 1.5 and the sky at .6 (the rig's own colours). Measured on Ves + Shani against the L620 / L621 game frames (HLS of
+    // the lit half of hair pixels): the game's shaded hair is about half as light and more saturated than the preview's,
+    // the lit hair a little lighter and less saturated. With these (and ptMsSat .5 / ptMsSatAmb 1.5) the shade lands
+    // within .02 L on both grooms (Ves .29 / .29, Shani .14 / .09), the lit side within .12 (Ves .70 / .82, Shani .45 / .47).
+    // The earlier warm noon sun 1 / .8 / .68 + neutral sky .7 / .72 / .8 at 2.6 (L387) kept every shade above L .43 (Ves).
+    // The copy also feeds fillEnvironment (the SH sky light): the sky intensity must drop there too, not only in skyCol.w.
+    // Two lights while the game light is on: gl for the hair pass (above), gm for the meshes. The game's skin measured on the
+    // same frames (face lit / shade, L620 / L621): lit L .29 / .29, shade L .20 / .19; a skin-only sweep of the rig (sun 2.2-3.3,
+    // sky .6-1.9) puts sun 2.2 / sky 1.0 closest (Ves lit .27 shade .20, Shani lit .27 shade .22; the hair light's sky .6 gave
+    // .22-.23 lit and the old sky 1.9 gave .36: too dark / too bright). Same sun direction, colours and exposure on both.
+    Rig gl = rig, gm = rig;
+    const bool gameLight = hw.gameAccurate && hw.ptLook && hw.ptGameLight;
+    if (gameLight) {
+        gl.sun = rig.sun * 1.5f;
+        gl.sky = 0.6f;
+        gl.sunCol[0] = 1.0f; gl.sunCol[1] = 0.96f; gl.sunCol[2] = 0.90f;
+        gl.skyCol[0] = 0.60f; gl.skyCol[1] = 0.72f; gl.skyCol[2] = 0.90f;
+        gm.sunCol[0] = 1.0f; gm.sunCol[1] = 0.96f; gm.sunCol[2] = 0.90f;
+        gm.skyCol[0] = 0.60f; gm.skyCol[1] = 0.72f; gm.skyCol[2] = 0.90f;
+        gm.sky = 1.0f;
+    }
+    const Rig& lr = gm;
+    float ca = std::cos(lr.sunEl);
+    L.sunDir = {ca * std::sin(lr.sunAz), ca * std::cos(lr.sunAz), std::sin(lr.sunEl), lr.sun};
+    L.sunCol = {lr.sunCol[0], lr.sunCol[1], lr.sunCol[2], 0};
+    L.skyCol = {lr.skyCol[0], lr.skyCol[1], lr.skyCol[2], lr.sky};
+    L.groundCol = {lr.groundCol[0], lr.groundCol[1], lr.groundCol[2], lr.ground};
     L.params = {rig.exposure, rig.colourGain, rig.specGain, rig.selfShadow};
     L.head = loaded ? XMFLOAT4(pack.headC.x, pack.headC.y, pack.headC.z, 0.095f) : XMFLOAT4(0, 0, 1.75f, 0.095f);
-    L.material = {loaded ? look.f("graphicalMaterials.color.ambientEnvScale", 0.35f) : 0.35f, rig.floor,
+    const bool neut = hw.gameAccurate && hw.ptNeutralise;   // L480: ambientEnvScale does nothing in game
+    L.material = {loaded ? (neut ? 0.7f : look.f("graphicalMaterials.color.ambientEnvScale", 0.35f)) : 0.35f, rig.floor,
                   (loaded ? look.f("graphicalMaterials.color.textureBrightness", 1.0f) : 1.0f) * rig.texGain, colorSrv ? 1.0f : 0.0f};
-    L.extra = {loaded ? look.f("graphicalMaterials.diffuse.diffuseNoiseScale", 0.0f) : 0.0f, rig.strandVar, rig.msSat, rig.msSatAmb};
+    L.extra = {loaded ? look.f("graphicalMaterials.diffuse.diffuseNoiseScale", 0.0f) : 0.0f, rig.strandVar, hw.gameAccurate && hw.ptLook ? hw.ptMsSat : rig.msSat, hw.gameAccurate && hw.ptLook ? hw.ptMsSatAmb : rig.msSatAmb};
     L.lightVP = lightVP;
     L.shadow = {shadowsOn ? rig.shadowStrength : 0.0f, 0.0004f, 1.0f / gfx.shadowSize, rig.shadowSoft};
     // penumbra: texels per metre of blocker - receiver distance = tan(sun angular radius) / texel size
     L.shadow2 = {lfar - lnear, float(hairDebug), rig.specPower, std::tan(rig.sunSize * 0.0174533f) / (lbox / gfx.shadowSize)};
-    fillEnvironment(rig, L, nAo);
+    fillEnvironment(lr, L, nAo);
     L.skyHor.w = float(rig.toneMode);
     L.skin = {rig.skinSss, rig.skinSpec, rig.skinGain, rig.cavity};
     L.ao = {float(nAo), rig.aoStrength, aoFar - aoNear, 1.0f / gfx.aoSize};
     L.hair2 = {rig.sigmaScale, rig.msSpread, rig.ttGain, rig.envSpec};
     L.hair3 = {rig.hairEncoding, rig.ambRoot, rig.ambVar, rig.ambTv};
+    // g_pt.w: game-accurate colour gain = textureBrightness (the Studio shader only applied it to card textures; in game it scales
+    // the hair colour, L480) x the PTHairRoughness brightness (hairsdk.h); 0 = off
+    auto ptGain = [&](const HairRuntime& h, const Look& lk, bool tex) { return h.gameAccurate ? HairRuntime::roughnessGain(h.ptRoughness) * (tex ? 1.0f : std::pow(std::max(lk.f("graphicalMaterials.color.textureBrightness", 1.0f), 0.0f), h.ptTbExp)) : 0.0f; };
+    L.pt = {hw.gameAccurate ? hw.ptHairScatter : 0.0f, hw.gameAccurate && !maskPass ? float(hw.ptRootAlphaMode) : 0.0f, hw.gameAccurate && hw.ptLook ? hw.ptSatChroma : 0.0f, loaded ? ptGain(hw, look, colorSrv != nullptr) : 0.0f};
     for (int k = 0; k < kMaxAoDirs; k++) L.aoVP[k] = k < nAo ? aoVP[k] : lightVP;
     D3D11_MAPPED_SUBRESOURCE m;
     if (SUCCEEDED(gfx.ctx->Map(gfx.lightCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { memcpy(m.pData, &L, sizeof L); gfx.ctx->Unmap(gfx.lightCb, 0); }
@@ -909,12 +1054,48 @@ void App::drawScene() {
             gfx.drawTris(tris, itD->second, itN == meshTex.end() ? nullptr : itN->second, m.alphaTest);
         }
     }
+    // the hair's own light (gl) while the game light is on: sun x 1.5, sky .6 and its SH environment; the meshes above were
+    // drawn with gm; L is put back after the hair / beard passes (the composite and the overlays use the mesh light)
+    LightCB Lh = L;
+    if (gameLight) {
+        float cah = std::cos(gl.sunEl);
+        Lh.sunDir = {cah * std::sin(gl.sunAz), cah * std::cos(gl.sunAz), std::sin(gl.sunEl), gl.sun};
+        Lh.sunCol = {gl.sunCol[0], gl.sunCol[1], gl.sunCol[2], 0};
+        Lh.skyCol = {gl.skyCol[0], gl.skyCol[1], gl.skyCol[2], gl.sky};
+        Lh.groundCol = {gl.groundCol[0], gl.groundCol[1], gl.groundCol[2], gl.ground};
+        fillEnvironment(gl, Lh, nAo);
+        Lh.skyHor.w = float(rig.toneMode);
+        D3D11_MAPPED_SUBRESOURCE mh;
+        if (SUCCEEDED(gfx.ctx->Map(gfx.lightCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mh))) { memcpy(mh.pData, &Lh, sizeof Lh); gfx.ctx->Unmap(gfx.lightCb, 0); }
+    }
     if (showHair && sdkOk) {
-        gfx.ctx->OMSetRenderTargets(1, &gfx.msaaRtv, gfx.dsv);
-        gfx.ctx->OMSetBlendState(gfx.bsOpaque, nullptr, 0xffffffff);
+        // "Path-traced look": the hair goes alone into a premultiplied target (meshes' depth), then pt_look.hlsl composites it
+        bool ptl = hw.gameAccurate && hw.ptLook && !maskPass && !scalpOverlay && gfx.ptReady() && gfx.ptBegin();
+        if (!ptl) gfx.ctx->OMSetRenderTargets(1, &gfx.msaaRtv, gfx.dsv);
+        gfx.ctx->OMSetBlendState(ptl ? (gfx.bsPt ? gfx.bsPt : gfx.bsAlpha) : gfx.bsOpaque, nullptr, 0xffffffff);
         gfx.ctx->OMSetDepthStencilState(gfx.dsOn, 0);
         gfx.ctx->RSSetState(gfx.rsSolid);
-        hw.render(viewM, projM, fov, float(gfx.w), float(gfx.h), gfx.lightCb);
+        // half-buried tubes: the game path-traces each hair as a tube (radius = width) grown on the scalp, so where a hair
+        // lies on the skin the closest hit is the skin. The hair pass gets its depth pushed back by ptBury mm (projection
+        // z offset, z_ndc ~ 1 - near / d): hair closer to a mesh than that fails the depth test, hanging hair is untouched.
+        XMFLOAT4X4 hairProj = projM;
+        if (ptl && hw.ptBury > 0.0f) {
+            float d = std::max(cam.dist, 0.1f), b = hw.ptBury * 1e-3f * 0.02f / (d * d);
+            for (int r = 0; r < 4; r++) hairProj.m[r][2] += b * hairProj.m[r][3];
+        }
+        if (hw.gameAccurate && hw.ptRootAlphaMode != 0 && !maskPass) {
+            // game-accurate root transparency (PTHairRootAlphaMode): the game keeps only the CLOSEST hair hit of a pixel and
+            // drops it with probability 1 - saturate(t / falloff) (mode 1, stochastic, averaged over frames by the temporal
+            // filter) or when that is under 0.5 (mode 2): a root zone in front shows the skin / scene, not the hair behind
+            // it. Depth prepass of the hair, then one shading pass on the closest hair only, blended by that alpha.
+            hw.render(viewM, hairProj, fov, float(gfx.w), float(gfx.h), gfx.lightCb, true);
+            gfx.ctx->OMSetBlendState(hw.ptRootAlphaMode == 1 ? gfx.bsAlpha : gfx.bsOpaque, nullptr, 0xffffffff);
+            gfx.ctx->OMSetDepthStencilState(gfx.dsTestNoWrite, 0);
+            hw.render(viewM, hairProj, fov, float(gfx.w), float(gfx.h), gfx.lightCb);
+            gfx.ctx->OMSetBlendState(ptl ? (gfx.bsPt ? gfx.bsPt : gfx.bsAlpha) : gfx.bsOpaque, nullptr, 0xffffffff);
+            gfx.ctx->OMSetDepthStencilState(gfx.dsOn, 0);
+        } else
+        hw.render(viewM, hairProj, fov, float(gfx.w), float(gfx.h), gfx.lightCb);
         if (ptLoadSim && ptMs > 0) {   // PT load sim: repeat the hair pass so the GPU load follows the estimate (Vesemir ~ 1 pass per 14 ms)
             int extra = std::min(12, std::max(0, int(std::round(ptMs / ptCalib.vesemir)) - 1));
             for (int i = 0; i < extra; i++) hw.render(viewM, projM, fov, float(gfx.w), float(gfx.h), gfx.lightCb);
@@ -922,8 +1103,9 @@ void App::drawScene() {
         if (beardOn && showBeard && !maskPass) {
             // the parked fur's own material values in the shared light constants (the beard: constant colours, no card
             // texture; the hair in Beard mode: its colour texture when it has one)
-            LightCB Lb = L;
-            Lb.material = {beardLook.f("graphicalMaterials.color.ambientEnvScale", 0.35f), rig.floor,
+            LightCB Lb = Lh;
+            Lb.pt.w = ptGain(hwBeard, beardLook, beardSlot.colorSrv != nullptr);
+            Lb.material = {neut ? 0.7f : beardLook.f("graphicalMaterials.color.ambientEnvScale", 0.35f), rig.floor,
                            beardSlot.colorSrv ? beardLook.f("graphicalMaterials.color.textureBrightness", 1.0f) * rig.texGain : 1.0f,
                            beardSlot.colorSrv ? 1.0f : 0.0f};
             Lb.extra.x = beardLook.f("graphicalMaterials.diffuse.diffuseNoiseScale", 0.0f);
@@ -931,7 +1113,16 @@ void App::drawScene() {
             if (SUCCEEDED(gfx.ctx->Map(gfx.lightCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mb))) { memcpy(mb.pData, &Lb, sizeof Lb); gfx.ctx->Unmap(gfx.lightCb, 0); }
             hwBeard.render(viewM, projM, fov, float(gfx.w), float(gfx.h), gfx.lightCb);
             if (SUCCEEDED(gfx.ctx->Map(gfx.lightCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mb))) { memcpy(mb.pData, &L, sizeof L); gfx.ctx->Unmap(gfx.lightCb, 0); }
+        } else if (gameLight) {
+            D3D11_MAPPED_SUBRESOURCE mh;
+            if (SUCCEEDED(gfx.ctx->Map(gfx.lightCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mh))) { memcpy(mh.pData, &L, sizeof L); gfx.ctx->Unmap(gfx.lightCb, 0); }
         }
+        if (ptl) {
+            const float veilEff = hw.ptVeilWref > 0.0f && hw.ptEffWidth > 0.0f ? hw.ptVeil * std::clamp(hw.ptVeilWref / hw.ptEffWidth, 0.25f, 1.0f) : hw.ptVeil;
+            const float pp[8] = {veilEff, hw.ptOpacity, hw.ptTransmit, hw.ptSharp, hw.ptTint, hw.ptGate, hw.ptLayers, 0};
+            gfx.ptComposite(pp);
+        }
+        gfx.ctx->OMSetBlendState(gfx.bsOpaque, nullptr, 0xffffffff);
         gfx.ctx->OMSetRenderTargets(1, &gfx.msaaRtv, gfx.dsv);
     }
     // guide overlay (rest pose = what you edit), stiffness paint shows the painted value per guide root
@@ -1326,6 +1517,7 @@ V3 App::screenDeltaToWorld(float dx, float dy, V3 at) const {
 
 // guide point in the current pose: rest point x the bone matrices of the guide's skinning (as HairWorks skins it)
 V3 App::posedPoint(int i, int k) const {
+    if (i < 0 || i >= (int)groom.P.size()) return V3{};   // stale index guard (see editsChanged)
     V3 r = groom.renderPoint(i, k);
     if (boneM.empty()) return r;
     int b = groom.baseOf(i);
@@ -1668,6 +1860,15 @@ static std::string writeFurFiles(App& a, const std::string& base, bool allowPain
     }
     geo["unique_uv"] = painted;
     geo["guides"] = G; geo["bone_idx"] = BI; geo["bone_w"] = BW; geo["F"] = F; geo["uv"] = U;
+    if (pack.colModified) {   // the fitted / edited colliders (colliders.cpp): the whole set; desk_export.set_colliders writes it into the fur
+        json sp = json::array(), cp = json::array();
+        for (size_t i = 0; i < pack.spheres.size(); i++) {
+            const Sphere& s = pack.spheres[i];
+            sp.push_back({{"bone", s.bone}, {"bone_name", pack.bones[s.bone].name}, {"local", {s.local.x, s.local.y, s.local.z}}, {"r", s.r}});
+        }
+        for (auto& c : pack.capsules) cp.push_back({c[0], c[1]});
+        geo["colliders"] = {{"spheres", sp}, {"capsules", cp}};
+    }
     if (!a.colR.empty()) {   // collision sphere radius overrides: desk_export.set_geometry checks bone / old radius, then writes them
         json cr = json::array();
         for (auto& [i, r] : a.colR) if (i >= 0 && i < (int)pack.spheres.size()) cr.push_back({{"i", i}, {"bone", pack.spheres[i].bone}, {"r_old", pack.spheres[i].r}, {"r", r}});
@@ -1693,11 +1894,8 @@ bool App::exportAll(std::string& outDir, bool release) {
     struct Restore { App& a; int f; ~Restore() { if (a.fur != f) a.swapFur(); a.computeBudget(); } } restore{*this, fur};
     if (fur == 1) swapFur();
     computeBudget();
-    if (bud.overLimit) {
-        status = bud.msg;
-        logf("EXPORT BLOCKED: %s", bud.msg.c_str());
-        return false;
-    }
+    // budget = information only (user 2026-10-15): never blocks the export; GPU cost is judged from in-game measurements
+    logf("export: budget %s (information only)", bud.msg.c_str());
     outDir = set.repo + "\\build\\desktop_studio\\" + configName + "\\export";
     fs::create_directories(outDir);
     std::string base = outDir + "\\" + pack.character + (styleId != "default" ? "_" + styleId : std::string()) + "_" + tag;   // <char>[_<style>]_<tag>
@@ -1706,23 +1904,16 @@ bool App::exportAll(std::string& outDir, bool release) {
     if (beardOn && beardGroom.ops.size() + beardLook.over.size() > 0) {
         swapFur();
         computeBudget();
-        bool over = bud.overLimit;
-        std::string msg = bud.msg;
-        if (!over) {
-            if (smap.painted) logf("beard stiffness map: not exported (the beard fur keeps its own UVs and density map)");
-            writeFurFiles(*this, base + "_beard", false);
-        }
+        logf("export: beard budget %s (information only)", bud.msg.c_str());
+        if (smap.painted) logf("beard stiffness map: not exported (the beard fur keeps its own UVs and density map)");
+        writeFurFiles(*this, base + "_beard", false);
         swapFur();
-        if (over) {
-            status = "Beard: " + msg;
-            logf("EXPORT BLOCKED (beard): %s", msg.c_str());
-            return false;
-        }
         stiffArg += " --beard-edits \"" + base + "_beard_edits.json\" --beard-look \"" + base + "_beard_look.json\" --beard-geo \"" + base + "_beard_geo.json\"";
     }
     std::string cmd = set.python + " \"" + set.repo + "\\desktop_studio\\tools\\desk_export.py\" --cfg " + configName +
                       " --edits \"" + base + "_edits.json\" --look \"" + base + "_look.json\" --geo \"" + base + "_geo.json\" --mod " +
                       modName + " --tag " + tag + " --limit " + std::to_string(look.limit) + stiffArg + (release ? " --release" : "");
+    exportAllowPerf = false;
     if (release) {
         checkCore(true);
         logf("release export: requires %s (installed: %s)", core.required.empty() ? "the Core" : ("Hairwork for All Core v" + core.required).c_str(),
@@ -1731,6 +1922,14 @@ bool App::exportAll(std::string& outDir, bool release) {
     logf("> %s", cmd.c_str());
     std::string out;
     int rc = runCapture(cmd, set.repo, out);
+    if (rc != 0 && out.find("build the beard config once with the pipeline") != std::string::npos) {
+        // the mod folder has no entry for the beard fur yet: build the config once (writes it), then export again
+        logf("beard fur path unknown: building %s once with the pipeline, then exporting again", configName.c_str());
+        std::string bo;
+        runCapture(set.python + " \"" + set.repo + "\\tools\\hairworks\\hairpipe.py\" " + configName + " build --release", set.repo, bo);
+        out.clear();
+        rc = runCapture(cmd, set.repo, out);
+    }
     std::istringstream s(out);
     std::string l;
     while (std::getline(s, l)) logf("  %s", l.c_str());
@@ -1814,7 +2013,7 @@ void App::pollJob() {
 // a pack is current when desk_prep's format version matches, none of the build's inputs (the config JSON and its edits
 // file: desk.json "src_files") is newer than desk.json and its fur still exists. A stale pack is re-prepped; desk_prep
 // then rebuilds the fur with the pipeline when the inputs' hash changed (desk_prep.py canonical_fur).
-static const int kPrepVersion = 8;      // desk_prep.py PREP_VERSION (8: vanilla hair cards)
+static const int kPrepVersion = 9;      // desk_prep.py PREP_VERSION (8: vanilla hair cards, 9: headgear)
 
 bool App::packUpToDate(const std::string& cfg) const {
     std::string d = set.repo + "\\build\\desktop_studio\\" + cfg + "\\desk.json";
@@ -1855,6 +2054,7 @@ json App::furState() const {
     j["keep_colours"] = keepColours;
     j["stiffness"] = {{"s", smap.guideS}, {"r", smap.guideR}};
     if (!colR.empty()) { json cr = json::object(); for (auto& [i, r] : colR) cr[std::to_string(i)] = r; j["collision_r"] = cr; }
+    if (pack.colModified) { json cj = colToJson(); cj.erase("collision_r"); j["colliders"] = cj; }   // the fitted / edited set (colliders.cpp)
     return j;
 }
 
@@ -1870,6 +2070,14 @@ void App::applyFurState(const json& j) {
     json lk = j.value("look", json::object());
     for (auto& [k, v] : lk.items()) look.over[k] = v;
     colR.clear();
+    colUndoSt.clear(); colRedoSt.clear(); colSel = colSel2 = -1;
+    if (j.contains("colliders") && j["colliders"].is_object()) {
+        std::string err;
+        if (colFromJson(j["colliders"], &err)) pack.colModified = true;
+        else logf("project colliders not applied: %s", err.c_str());
+    } else if (pack.colModified) {   // another project's set is still in the pack: back to the build's own
+        pack.spheres = pack.spheres0; pack.capsules = pack.capsules0; pack.colModified = false;
+    }
     if (j.contains("collision_r")) for (auto& [k, v] : j["collision_r"].items()) colR[std::stoi(k)] = v.get<float>();
     look.enforceCaps();
     smap.reset(groom.P.size());
@@ -1893,10 +2101,24 @@ bool App::saveProject(const std::string& path) {
     j["version"] = 1;
     j["config"] = configName;
     if (guideCustom) j["guide_colour"] = {guideRgb[0], guideRgb[1], guideRgb[2]};
-    j["motion"] = {{"preset", (int)motion.preset}, {"speed", motion.speed}, {"amount", motion.amount}};
+    j["motion"] = {{"preset", (int)motion.preset}, {"speed", motion.speed}, {"amount", motion.amount}, {"wind_yaw", motion.windYawDeg}, {"wind_pitch", motion.windPitchDeg}};
     j["camera"] = {{"yaw", cam.yaw}, {"pitch", cam.pitch}, {"dist", cam.dist}, {"target", {cam.target.x, cam.target.y, cam.target.z}}};
     j["mod"] = modName;
     j["tag"] = tag;
+    if (perfAccepted) j["perf_accepted"] = true;
+    // 2026-10-15 kept vanilla cards (keep_cards, e.g. Donar's side braids): mesh index -> kept triangle indices, so a
+    // project reopens with its cards + strands mix (the game build keeps them with the beard keep_card_* keys)
+    if (!keepCards.empty()) {
+        json kc = json::object();
+        for (auto& kv : keepCards) {
+            json l = json::array();
+            for (size_t ti = 0; ti < kv.second.size(); ti++) if (kv.second[ti]) l.push_back(int(ti));
+            if (!l.empty()) kc[std::to_string(kv.first)] = l;
+        }
+        if (!kc.empty()) j["keep_cards"] = kc;
+    }
+    if (!cardOffsets.empty()) j["card_offsets"] = cardOffsets;   // 2026-10-17 moved kept card pieces (studio_card_offset)
+    j["saved_by"] = headless ? "agent" : "ui";   // 2026-10-16 agent tools: an agent's MCP layer snapshots a UI save before it edits it
     fs::create_directories(fs::path(path).parent_path());
     std::ofstream(path) << j.dump(1);
     projectPath = path;
@@ -1924,10 +2146,23 @@ bool App::loadProject(const std::string& path) {
         guideCustom = true;
         for (int i = 0; i < 3; i++) guideRgb[i] = j["guide_colour"][i].get<float>();
     }
-    if (j.contains("motion")) { motion.preset = MotionPreset(j["motion"].value("preset", 1)); motion.speed = j["motion"].value("speed", 1.0f); motion.amount = j["motion"].value("amount", 1.0f); }
+    if (j.contains("motion")) { motion.preset = MotionPreset(j["motion"].value("preset", 1)); motion.speed = j["motion"].value("speed", 1.0f); motion.amount = j["motion"].value("amount", 1.0f); motion.windYawDeg = j["motion"].value("wind_yaw", 206.565f); motion.windPitchDeg = j["motion"].value("wind_pitch", 2.85f); }
     if (j.contains("camera")) { auto& c = j["camera"]; cam.yaw = c.value("yaw", cam.yaw); cam.pitch = c.value("pitch", cam.pitch); cam.dist = c.value("dist", cam.dist); }
     snprintf(modName, sizeof modName, "%s", j.value("mod", std::string(modName)).c_str());
     snprintf(tag, sizeof tag, "%s", j.value("tag", std::string(tag)).c_str());
+    perfAccepted = j.value("perf_accepted", false);
+    keepCards.clear();
+    if (j.contains("keep_cards") && j["keep_cards"].is_object())
+        for (auto& [k, l] : j["keep_cards"].items()) {
+            int mi = std::atoi(k.c_str());
+            if (mi < 0 || mi >= int(pack.meshes.size()) || pack.meshes[mi].kind != "hair_cards") continue;
+            auto& mask = keepCards[mi];
+            mask.assign(pack.meshes[mi].t.size(), 0);
+            for (auto& t : l) { int ti = t.get<int>(); if (ti >= 0 && ti < int(mask.size())) mask[ti] = 1; }
+        }
+    cardOffsetsBase = j.contains("card_offsets") && j["card_offsets"].is_array() ? j["card_offsets"] : json::array();
+    cardSel = -1;
+    syncCardOffsets();
     stiffDirty = true;
     editsChanged();
     if (j.value("fur", std::string()) == "beard") setFur(1);
@@ -1991,4 +2226,262 @@ bool App::scalpMesh(std::vector<V3>& pos, std::vector<float>& flag, std::vector<
         return true;
     }
     return false;
+}
+
+// 2026-10-17 card_offset: per-vertex displacement of the hair-card vertices picked by each cardOffsets entry. Selection
+// (same rule as hairpipe.py card_offset): uv box = vertices of triangles whose centroid uv lies in [uv_min, uv_max];
+// near + radius_mm = with a uv box, triangles whose centroid is within the radius too, without one, whole connected card
+// strips with a vertex within the radius. Picks use the ORIGINAL vertex positions. Move = rotate_deg (X, then Y, then Z,
+// about the picked vertices' centroid) then offset.
+json App::applyCardOffsets() {
+    cardShift.clear();
+    json rep = json::array();
+    for (auto& e : cardOffsets) {
+        bool uvBox = e.contains("uv_min") && e.contains("uv_max");
+        bool nearP = e.contains("near");
+        V3 p = nearP ? V3{e["near"][0].get<float>(), e["near"][1].get<float>(), e["near"][2].get<float>()} : V3{};
+        float rad = e.value("radius_mm", 25.0f) / 1000;
+        float u0 = uvBox ? e["uv_min"][0].get<float>() : 0, v0 = uvBox ? e["uv_min"][1].get<float>() : 0;
+        float u1 = uvBox ? e["uv_max"][0].get<float>() : 0, v1 = uvBox ? e["uv_max"][1].get<float>() : 0;
+        V3 off{};
+        if (e.contains("offset")) off = {e["offset"][0].get<float>(), e["offset"][1].get<float>(), e["offset"][2].get<float>()};
+        V3 rot{};
+        if (e.contains("rotate_deg")) rot = {e["rotate_deg"][0].get<float>(), e["rotate_deg"][1].get<float>(), e["rotate_deg"][2].get<float>()};
+        int nv = 0;
+        V3 c0{};
+        for (size_t mi = 0; mi < pack.meshes.size(); mi++) {
+            const Mesh& m = pack.meshes[mi];
+            if (m.kind != "hair_cards" || m.t.empty()) continue;
+            std::vector<uint8_t> sel(m.v.size(), 0);
+            if (uvBox) {
+                if (m.uv.size() != m.v.size()) continue;
+                for (auto& t : m.t) {
+                    float cu = (m.uv[t[0]][0] + m.uv[t[1]][0] + m.uv[t[2]][0]) / 3, cv = (m.uv[t[0]][1] + m.uv[t[1]][1] + m.uv[t[2]][1]) / 3;
+                    if (cu < u0 || cu > u1 || cv < v0 || cv > v1) continue;
+                    if (nearP && len((m.v[t[0]] + m.v[t[1]] + m.v[t[2]]) * (1.0f / 3) - p) > rad) continue;
+                    sel[t[0]] = sel[t[1]] = sel[t[2]] = 1;
+                }
+            } else if (nearP) {
+                std::vector<int> par(m.v.size());
+                for (size_t i = 0; i < par.size(); i++) par[i] = int(i);
+                std::function<int(int)> fd = [&](int x) { while (par[x] != x) x = par[x] = par[par[x]]; return x; };
+                for (auto& t : m.t) { par[fd(t[1])] = fd(t[0]); par[fd(t[2])] = fd(t[0]); }
+                std::set<int> hit;
+                for (size_t i = 0; i < m.v.size(); i++) if (len(m.v[i] - p) < rad) hit.insert(fd(int(i)));
+                for (auto& t : m.t) if (hit.count(fd(t[0]))) sel[t[0]] = sel[t[1]] = sel[t[2]] = 1;
+            }
+            int n = 0;
+            V3 c{};
+            for (size_t i = 0; i < sel.size(); i++) if (sel[i]) { c = c + m.v[i]; n++; }
+            if (!n) continue;
+            c = c * (1.0f / n);
+            const float d2r = 3.14159265f / 180;
+            float cx = std::cos(rot.x * d2r), sx = std::sin(rot.x * d2r), cy = std::cos(rot.y * d2r), sy = std::sin(rot.y * d2r),
+                  cz = std::cos(rot.z * d2r), sz = std::sin(rot.z * d2r);
+            auto& sh = cardShift[int(mi)];
+            if (sh.size() != m.v.size()) sh.assign(m.v.size(), V3{});
+            for (size_t i = 0; i < sel.size(); i++) {
+                if (!sel[i]) continue;
+                V3 q = m.v[i] + sh[i] - c;
+                q = {q.x, cx * q.y - sx * q.z, sx * q.y + cx * q.z};
+                q = {cy * q.x + sy * q.z, q.y, -sy * q.x + cy * q.z};
+                q = {cz * q.x - sz * q.y, sz * q.x + cz * q.y, q.z};
+                sh[i] = q + c + off - m.v[i];
+            }
+            nv += n; c0 = c;
+        }
+        rep.push_back({{"moved_vertices", nv}, {"centroid_before", {c0.x, c0.y, c0.z}},
+                       {"centroid_after", {c0.x + off.x, c0.y + off.y, c0.z + off.z}}});
+    }
+    return rep;
+}
+
+// 2026-10-17 card pieces: the current moves = the last "card_offsets" snapshot op of the hair fur (undo / redo walk them),
+// else the project's saved list. Beard mode keeps the hair fur's moves.
+void App::syncCardOffsets() {
+    if (fur == 1) return;
+    json cur = cardOffsetsBase;
+    for (auto it = groom.ops.rbegin(); it != groom.ops.rend(); ++it)
+        if (it->value("type", std::string()) == "card_offsets") { cur = it->value("entries", json::array()); break; }
+    if (cur != cardOffsets || cardShift.empty() != cur.empty()) { cardOffsets = cur; applyCardOffsets(); }
+    if (cardSel >= (int)cardOffsets.size()) cardSel = (int)cardOffsets.size() - 1;
+}
+
+// picked vertices (original positions) + their shift under `entries` for entry `e`: centroid, ring axis, inner radius
+static bool cardPieceFrame(const App& a, const json& e, const std::map<int, std::vector<V3>>& shift, V3& c, V3& ax, float& rin) {
+    bool uvBox = e.contains("uv_min") && e.contains("uv_max");
+    bool nearP = e.contains("near");
+    V3 p = nearP ? V3{e["near"][0].get<float>(), e["near"][1].get<float>(), e["near"][2].get<float>()} : V3{};
+    float rad = e.value("radius_mm", 25.0f) / 1000;
+    std::vector<V3> pts;
+    for (size_t mi = 0; mi < a.pack.meshes.size(); mi++) {
+        const Mesh& m = a.pack.meshes[mi];
+        if (m.kind != "hair_cards" || !uvBox || m.uv.size() != m.v.size()) continue;
+        auto sh = shift.find(int(mi));
+        std::vector<uint8_t> sel(m.v.size(), 0);
+        for (auto& t : m.t) {
+            float cu = (m.uv[t[0]][0] + m.uv[t[1]][0] + m.uv[t[2]][0]) / 3, cv = (m.uv[t[0]][1] + m.uv[t[1]][1] + m.uv[t[2]][1]) / 3;
+            if (cu < e["uv_min"][0].get<float>() || cu > e["uv_max"][0].get<float>() || cv < e["uv_min"][1].get<float>() || cv > e["uv_max"][1].get<float>()) continue;
+            if (nearP && len((m.v[t[0]] + m.v[t[1]] + m.v[t[2]]) * (1.0f / 3) - p) > rad) continue;
+            sel[t[0]] = sel[t[1]] = sel[t[2]] = 1;
+        }
+        for (size_t i = 0; i < sel.size(); i++)
+            if (sel[i]) pts.push_back(m.v[i] + (sh != shift.end() && sh->second.size() == m.v.size() ? sh->second[i] : V3{}));
+    }
+    if (pts.size() < 3) return false;
+    c = {};
+    for (auto& q : pts) c = c + q;
+    c = c * (1.0f / pts.size());
+    float C[3][3] = {};
+    for (auto& q : pts) { float d[3] = {q.x - c.x, q.y - c.y, q.z - c.z}; for (int r = 0; r < 3; r++) for (int k = 0; k < 3; k++) C[r][k] += d[r] * d[k]; }
+    float tr = C[0][0] + C[1][1] + C[2][2];
+    V3 v{0.3f, 0.5f, 0.8f};   // power iteration on (tr I - C): the least-spread direction = the ring axis
+    for (int it = 0; it < 60; it++) {
+        V3 w{tr * v.x - (C[0][0] * v.x + C[0][1] * v.y + C[0][2] * v.z), tr * v.y - (C[1][0] * v.x + C[1][1] * v.y + C[1][2] * v.z),
+             tr * v.z - (C[2][0] * v.x + C[2][1] * v.y + C[2][2] * v.z)};
+        float l = len(w);
+        if (l < 1e-12f) break;
+        v = w * (1.0f / l);
+    }
+    ax = v;
+    rin = 1e9f;
+    for (auto& q : pts) { V3 d = q - c; d = d - ax * dot(d, ax); rin = std::min(rin, len(d)); }
+    return true;
+}
+
+// pushes the snapshot op (+ the "guides follow" reshapes) as one undo group
+json App::commitCardOffsets(const json& prevEntries, bool follow) {
+    json r;
+    int grp = 4000 + (++grpId);
+    int id = 0;
+    for (auto& o : groom.ops) if (o.contains("id") && o["id"].is_number_integer()) id = std::max(id, o["id"].get<int>());
+    groom.redo.clear();
+    int nf = 0;
+    if (follow && cardSel >= 0 && cardSel < (int)cardOffsets.size() && cardSel < (int)prevEntries.size()) {
+        // guides passing near the piece's OLD centre (a ponytail gathered by a ring): converge to the NEW centre inside the
+        // hole, the part above slides with a smoothstep ramp from the root, the rest is carried (jringgather.py logic)
+        json cur = cardOffsets;
+        cardOffsets = prevEntries; applyCardOffsets();
+        auto shiftOld = cardShift;
+        cardOffsets = cur; applyCardOffsets();
+        V3 c0, a0, c1, a1;
+        float r0, r1;
+        if (cardPieceFrame(*this, cardOffsets[cardSel], shiftOld, c0, a0, r0) && cardPieceFrame(*this, cardOffsets[cardSel], cardShift, c1, a1, r1)) {
+            V3 dl = c1 - c0;
+            float hole = 0.75f * r1;
+            for (size_t i = 0; i < groom.P.size(); i++) {
+                if (!groom.alive[i]) continue;
+                const Guide& G = groom.P[i];
+                float L = 0, best = 1e9f;
+                int j = 0;
+                for (size_t k = 0; k < G.size(); k++) {
+                    if (k) L += len(G[k] - G[k - 1]);
+                    float d = len(G[k] - c0);
+                    if (d < best) { best = d; j = int(k); }
+                }
+                if (best > cardFollowMm / 1000 || L < cardFollowLen || j == 0) continue;
+                std::vector<float> seg(G.size(), 0);
+                for (size_t k = 1; k < G.size(); k++) seg[k] = seg[k - 1] + len(G[k] - G[k - 1]);
+                Guide Q = G;
+                for (size_t k = 0; k < G.size(); k++) {
+                    float t = std::clamp(seg[k] / std::max(seg[j], 1e-6f), 0.0f, 1.0f);
+                    Q[k] = G[k] + dl * (t * t * (3 - 2 * t));
+                }
+                V3 rv = (Q[j] - c1) - a1 * dot(Q[j] - c1, a1);
+                float rn = len(rv);
+                if (rn > hole) {
+                    V3 fix = rv * (hole / rn - 1);
+                    for (size_t k = 0; k < G.size(); k++) { float z = (seg[k] - seg[j]) / 0.012f; Q[k] = Q[k] + fix * std::exp(-z * z); }
+                }
+                json pts = json::array();
+                for (auto& q : Q) pts.push_back({q.x, q.y, q.z});
+                json op = {{"op", "reshape"}, {"root", {G[0].x, G[0].y, G[0].z}}, {"points", pts}, {"id", ++id}, {"grp", grp}};
+                int dup = 0;   // stacked copies share one root: address the k-th one
+                for (size_t q = 0; q < i; q++) if (groom.alive[q] && len(groom.P[q][0] - G[0]) < 1e-6f) dup++;
+                if (dup) op["dup"] = dup;
+                groom.ops.push_back(op);
+                nf++;
+            }
+        }
+    }
+    groom.ops.push_back({{"type", "card_offsets"}, {"entries", cardOffsets}, {"id", ++id}, {"grp", grp}});
+    groom.replay();
+    editsChanged();
+    r["guides_followed"] = nf;
+    return r;
+}
+
+// click in the viewport (Card pieces > Pick piece): the kept card piece under the cursor becomes an entry (uv box of its
+// triangles + near / radius around them, the studio_card_offset rule) or, when an entry already covers it, is selected
+bool App::pickCardPiece(float mx, float my) {
+    V3 o, d;
+    if (!screenRay(*this, mx, my, o, d)) return false;
+    float best = 1e30f;
+    int bm = -1, bt = -1;
+    for (size_t mi = 0; mi < pack.meshes.size(); mi++) {
+        const Mesh& m = pack.meshes[mi];
+        if (m.kind != "hair_cards" || m.uv.size() != m.v.size()) continue;
+        auto kc = keepCards.find(int(mi));
+        if (!vanillaHair && kc == keepCards.end()) continue;
+        auto sh = cardShift.find(int(mi));
+        auto P = [&](int i) { return m.v[i] + (sh != cardShift.end() && sh->second.size() == m.v.size() ? sh->second[i] : V3{}); };
+        for (size_t ti = 0; ti < m.t.size(); ti++) {
+            if (!vanillaHair && (ti >= kc->second.size() || !kc->second[ti])) continue;
+            const auto& t = m.t[ti];
+            V3 a0 = P(t[0]), e1 = P(t[1]) - a0, e2 = P(t[2]) - a0;
+            V3 pv = cross(d, e2);
+            float det = dot(e1, pv);
+            if (std::fabs(det) < 1e-12f) continue;
+            float inv = 1.0f / det;
+            V3 tv = o - a0;
+            float u = dot(tv, pv) * inv;
+            if (u < 0 || u > 1) continue;
+            V3 qv = cross(tv, e1);
+            float v = dot(d, qv) * inv;
+            if (v < 0 || u + v > 1) continue;
+            float s = dot(e2, qv) * inv;
+            if (s > 0 && s < best) { best = s; bm = int(mi); bt = int(ti); }
+        }
+    }
+    if (bm < 0) { status = "Card pieces: no kept card under the cursor (keep the cards first: studio_keep_cards / project keep_cards)"; return false; }
+    const Mesh& m = pack.meshes[bm];
+    std::vector<int> par(m.v.size());
+    for (size_t i = 0; i < par.size(); i++) par[i] = int(i);
+    std::function<int(int)> fd = [&](int x) { while (par[x] != x) x = par[x] = par[par[x]]; return x; };
+    for (auto& t : m.t) { par[fd(t[1])] = fd(t[0]); par[fd(t[2])] = fd(t[0]); }
+    int root = fd(m.t[bt][0]);
+    float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+    V3 c{};
+    int n = 0;
+    std::vector<V3> cen;
+    for (auto& t : m.t) {
+        if (fd(t[0]) != root) continue;
+        float cu = (m.uv[t[0]][0] + m.uv[t[1]][0] + m.uv[t[2]][0]) / 3, cv = (m.uv[t[0]][1] + m.uv[t[1]][1] + m.uv[t[2]][1]) / 3;
+        u0 = std::min(u0, cu); v0 = std::min(v0, cv); u1 = std::max(u1, cu); v1 = std::max(v1, cv);
+        V3 q = (m.v[t[0]] + m.v[t[1]] + m.v[t[2]]) * (1.0f / 3);
+        cen.push_back(q); c = c + q; n++;
+    }
+    c = c * (1.0f / n);
+    float rad = 0;
+    for (auto& q : cen) rad = std::max(rad, len(q - c));
+    for (size_t k = 0; k < cardOffsets.size(); k++) {
+        const json& e = cardOffsets[k];
+        if (e.contains("near") && len(V3{e["near"][0].get<float>(), e["near"][1].get<float>(), e["near"][2].get<float>()} - c) < 0.006f) {
+            cardSel = int(k); status = "Card pieces: piece " + std::to_string(k + 1) + " selected"; return true;
+        }
+        if (!e.contains("near") && e.contains("uv_min") && e["uv_min"][0].get<float>() <= u0 && e["uv_max"][0].get<float>() >= u1 &&
+            e["uv_min"][1].get<float>() <= v0 && e["uv_max"][1].get<float>() >= v1) {
+            cardSel = int(k); status = "Card pieces: piece " + std::to_string(k + 1) + " selected"; return true;
+        }
+    }
+    auto r4f = [](float x) { return std::round(x * 1e4f) / 1e4f; };
+    json prev = cardOffsets;
+    cardOffsets.push_back({{"uv_min", {r4f(u0 - 0.002f), r4f(v0 - 0.002f)}}, {"uv_max", {r4f(u1 + 0.002f), r4f(v1 + 0.002f)}},
+                           {"near", {r4f(c.x), r4f(c.y), r4f(c.z)}}, {"radius_mm", std::round(rad * 1000 + 3)},
+                           {"offset", {0.0, 0.0, 0.0}}, {"rotate_deg", {0.0, 0.0, 0.0}}});
+    cardSel = (int)cardOffsets.size() - 1;
+    applyCardOffsets();
+    commitCardOffsets(prev, false);
+    status = "Card pieces: picked piece " + std::to_string(cardSel + 1) + " (" + std::to_string(n) + " triangles); move it with the fields";
+    return true;
 }

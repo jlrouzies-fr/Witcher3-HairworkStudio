@@ -29,10 +29,14 @@ cbuffer StudioLight : register(b1)
     float4 g_hair3;       // x hair colour encoding (1 = redfur values as stored, like the game; 0 = sRGB-decoded),
                           // y sky occlusion at the strand root (fibre detail in shade), z per-strand sky variation,
                           // w strand-direction term (fibre seen across vs end-on)
+    float4 g_pt;          // x game-accurate preview: share of the light the hair blocks that still reaches the meshes under it,
+                          // y root transparency mode (0 off / opaque hair, 1 alpha = saturate(t / falloff) blended, 2 alpha test)
 };
 
 Texture2D g_shadowMap : register(t8);   // R32 depth (float4-typed so the SDK shadow helpers take it)
 Texture2DArray<float> g_aoMap : register(t9);
+Texture2D g_shadowMeshMap : register(t10);            // the same maps with the meshes only (copied before the hair pass)
+Texture2DArray<float> g_aoMeshMap : register(t11);
 SamplerComparisonState g_shadowCmp : register(s2);
 SamplerState g_shadowPoint : register(s3);
 
@@ -53,7 +57,7 @@ float Studio_Rand(float2 p) { return frac(sin(dot(p, float2(12.9898f, 78.233f)))
 
 // sun visibility for opaque surfaces: contact-hardening soft shadow (blocker search, then a Poisson PCF whose radius
 // grows with the blocker - receiver distance x the sun's angular size), rotated per pixel against banding
-float Studio_Shadow(float3 wp, float2 pix)
+float Studio_ShadowIn(Texture2D map, float3 wp, float2 pix)
 {
     if (g_shadow.x <= 0.0f) return 1.0f;
     float3 sc = Studio_ShadowCoord(wp);
@@ -64,7 +68,7 @@ float Studio_Shadow(float3 wp, float2 pix)
     // blocker search over ~12 texels
     float bsum = 0.0f, bn = 0.0f;
     [unroll] for (int i = 0; i < 16; i += 2) {
-        float o = g_shadowMap.SampleLevel(g_shadowPoint, sc.xy + mul(rot, kPoisson16[i]) * g_shadow.z * 12.0f, 0).r;
+        float o = map.SampleLevel(g_shadowPoint, sc.xy + mul(rot, kPoisson16[i]) * g_shadow.z * 12.0f, 0).r;
         if (o < d) { bsum += o; bn += 1.0f; }
     }
     if (bn < 0.5f) return 1.0f;
@@ -72,8 +76,18 @@ float Studio_Shadow(float3 wp, float2 pix)
     float rad = clamp(distM * g_shadow2.w, g_shadow.w, 24.0f);          // penumbra radius in texels
     float s = 0.0f;
     [unroll] for (int j = 0; j < 16; j++)
-        s += g_shadowMap.SampleCmpLevelZero(g_shadowCmp, sc.xy + mul(rot, kPoisson16[j]) * g_shadow.z * rad, d);
+        s += map.SampleCmpLevelZero(g_shadowCmp, sc.xy + mul(rot, kPoisson16[j]) * g_shadow.z * rad, d);
     return lerp(1.0f, s / 16.0f, g_shadow.x);
+}
+
+// sun visibility of an opaque surface. Game-accurate preview (g_pt.x > 0): the hair is not an opaque occluder for the
+// meshes; part of the light it blocks reaches the skin under it (the game path-traces the strands and scatters light
+// through them onto the scalp). Hair-blocked share = mesh-only visibility - full visibility.
+float Studio_Shadow(float3 wp, float2 pix)
+{
+    float v = Studio_ShadowIn(g_shadowMap, wp, pix);
+    if (g_pt.x > 0.0f && g_shadow.x > 0.0f) v += (Studio_ShadowIn(g_shadowMeshMap, wp, pix) - v) * g_pt.x;
+    return v;
 }
 
 // SH9 irradiance / pi of the sky + ground environment along n
@@ -95,14 +109,22 @@ float3 Studio_Env(float3 d)
 }
 
 // fraction of the sky map k that sees the sky from wp (4 texels compared, 1 = open sky)
-float Studio_AoOpen(float3 wp, int k)
+float Studio_AoOpenIn(Texture2DArray<float> map, float3 wp, int k)
 {
     float4 c = mul(float4(wp, 1.0f), g_aoVP[k]);
     float2 uv = float2(c.x * 0.5f + 0.5f, 0.5f - c.y * 0.5f);
     if (any(uv < 0.0f) || any(uv > 1.0f) || c.z > 1.0f) return 1.0f;
-    float4 o = g_aoMap.Gather(g_shadowPoint, float3(uv, k));
+    float4 o = map.Gather(g_shadowPoint, float3(uv, k));
     float4 open = step(c.z - 0.0012f, o);
     return dot(open, 0.25f);
+}
+
+// fraction of sky map k that sees the sky; game-accurate preview: the hair lets part of the sky light through (as the sun)
+float Studio_AoOpen(float3 wp, int k)
+{
+    float o = Studio_AoOpenIn(g_aoMap, wp, k);
+    if (g_pt.x > 0.0f) o += (Studio_AoOpenIn(g_aoMeshMap, wp, k) - o) * g_pt.x;
+    return o;
 }
 
 // directional sky visibility of an opaque surface: the occlusion maps weighted by sky radiance x the cosine lobe

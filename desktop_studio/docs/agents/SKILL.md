@@ -30,7 +30,7 @@ Hairwork Studio converts a Witcher 3 character's hair cards to real NVIDIA HairW
 
 ## 2. Budget and path tracing (read before adding hair)
 
-- **Hair budget.** `studio_status` reports a budget ratio vs the reference build. Keep it <= 1.2. Export is blocked above it. HairWorks grows 64 x density hairs per GROWTH FACE whatever its size, so cost comes from faces, not guide count. If the ratio is pinned, run `studio_free_budget` before filling.
+- **Hair budget.** `studio_status` reports a budget ratio vs the reference build. It is INFORMATION ONLY (user 2026-10-15: "REMOVE that budget limit"): never a reason to stop, refuse or thin guides; no tool refuses or drops guides for it and export never blocks on it. GPU cost is judged from in-game measurements. HairWorks grows 64 x density hairs per GROWTH FACE whatever its size, so cost comes from faces, not guide count. `studio_free_budget` is an explicit tool only; do not run it unless asked.
 - **Path tracing.** Players with the game's path tracing on pay GPU time per hair (growth faces, low clump, strong curl). More strands = more ms. Do not densify "just in case"; fill only visible bald spots and check the budget after each pass.
 - Scalp coverage in the green overlay ignores bald skin BELOW the painted hairline: always look at `studio_compare` too.
 - Hair in front of the eyes: keep `guides_over_face` 0 and `studio_eye_check` `worst_increase` < 0.05.
@@ -53,7 +53,7 @@ Seeing: `studio_render`, `studio_closeup`, `studio_compare`, `studio_scalp_cover
 Basic edits: `studio_delete`, `studio_duplicate`, `studio_densify`, `studio_shorten`, `studio_lengthen`, `studio_move`, `studio_move_root_to_scalp`, `studio_set_point`, `studio_reshape`, `studio_curl`, `studio_mirror`, `studio_ops` (raw edit ops).
 Hairline, parting and cleanup: `studio_hairline_check`, `studio_align_to_hairline`, `studio_flow_comb`, `studio_fill_scalp`, `studio_plant_parting`, `studio_hairline_fill`, `studio_feather_hairline`, `studio_fill_below_hairline`, `studio_centre_parting`, `studio_plant_fringe`, `studio_parting_roots`, `studio_lay_down`, `studio_smooth_flow`, `studio_push_out`, `studio_trim_growth`, `studio_dedupe`, `studio_unzigzag`, `studio_hairnet`, `studio_layer_lift`, `studio_inflate`, `studio_free_budget`.
 Face and ears: `studio_clear_ear`, `studio_route_behind_ears`, `studio_clear_eye`, `studio_eye_check`, `studio_outside_vanilla`.
-Drastic reshape toward the game's own hair cards (opt-in, Studio-only): `studio_conform_to_cards`, `studio_hug_cards`, `studio_rebuild_from_cards` (start here when the starting groom is far from vanilla), `studio_regrow`, `studio_keep_cards`, `studio_make_bun`, `studio_twist_roll`.
+Drastic reshape toward the game's own hair cards (opt-in, Studio-only): `studio_conform_to_cards`, `studio_hug_cards`, `studio_rebuild_from_cards` (start here when the starting groom is far from vanilla), `studio_regrow`, `studio_keep_cards`, `studio_card_offset` (move a kept card piece, saved + exported), `studio_make_bun`, `studio_twist_roll`.
 Look and physics: `studio_look_get`, `studio_look_set`, `studio_materials`, `studio_stiffness`, `studio_rig`, `studio_simulate`, `studio_color_check`.
 Read each tool's description and schema from `tools/list`: it is the source of truth for arguments. Edit coordinates: metres, +X = character's left, +Y = forward, +Z = up. Selectors (`where`) accept guide indices, regions, `selection`.
 

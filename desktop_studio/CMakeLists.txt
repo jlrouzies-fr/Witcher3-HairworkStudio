@@ -25,7 +25,7 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/gen/gw_logo.rc" "201 RCDATA \"${GW_LOGO_
 
 set(IMGUI third_party/imgui)
 add_executable(HairworkStudio WIN32
-  src/main.cpp src/app.cpp src/ui.cpp src/agent.cpp src/serve.cpp src/curls.cpp src/gfx.cpp src/hairsdk.cpp src/deskpack.cpp src/groom.cpp src/params.cpp src/motion.cpp src/materials.cpp src/picker.cpp src/stylesw.cpp src/uitest.cpp src/lighting.cpp src/toolbar.cpp src/ui_widgets.cpp src/community.cpp src/community_gh.cpp src/pt_estimate.cpp src/windcheck.cpp src/guidevis.cpp src/app.rc
+  src/main.cpp src/colliders.cpp src/drape.cpp src/app.cpp src/ui.cpp src/agent.cpp src/serve.cpp src/curls.cpp src/gfx.cpp src/hairsdk.cpp src/deskpack.cpp src/groom.cpp src/params.cpp src/motion.cpp src/materials.cpp src/picker.cpp src/stylesw.cpp src/uitest.cpp src/lighting.cpp src/toolbar.cpp src/ui_widgets.cpp src/community.cpp src/community_gh.cpp src/pt_estimate.cpp src/windcheck.cpp src/dircheck.cpp src/guidevis.cpp src/gate.cpp src/app.rc
   "${CMAKE_CURRENT_BINARY_DIR}/gen/gw_logo.rc"
   ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp
   ${IMGUI}/imgui_impl_dx11.cpp ${IMGUI}/imgui_impl_win32.cpp)
@@ -39,7 +39,7 @@ target_compile_definitions(HairworkStudio PRIVATE
   HW_DEFAULT_SDK_DIR="${SDK_ESC}" HW_REPO_ROOT="${REPO_ESC}")
 target_compile_options(HairworkStudio PRIVATE /W3 /MP /utf-8 /Zi)
 target_link_options(HairworkStudio PRIVATE /DEBUG /OPT:REF /OPT:ICF)
-target_link_libraries(HairworkStudio PRIVATE d3d11 dxgi d3dcompiler dxguid dbghelp)
+target_link_libraries(HairworkStudio PRIVATE d3d11 dxgi d3dcompiler dxguid dbghelp shell32 ole32)
 
 # shaders: compiled at build time with fxc (Windows SDK). hair_ps includes the SDK shader header from HAIRWORKS_SDK_DIR.
 find_program(FXC fxc PATHS "$ENV{WindowsSdkVerBinPath}/x64" "C:/Program Files (x86)/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64" REQUIRED)
@@ -51,6 +51,8 @@ add_custom_command(TARGET HairworkStudio POST_BUILD
   COMMAND ${FXC} /nologo /T ps_5_0 /E ps_mesh /O3 /Fo ${OUT}/basic_ps_mesh.cso ${SH}/basic.hlsl
   COMMAND ${FXC} /nologo /T ps_5_0 /E ps_line /O3 /Fo ${OUT}/basic_ps_line.cso ${SH}/basic.hlsl
   COMMAND ${FXC} /nologo /T ps_5_0 /E ps_depth_alpha /O3 /Fo ${OUT}/basic_ps_depth_alpha.cso ${SH}/basic.hlsl
+  COMMAND ${FXC} /nologo /T vs_5_0 /E vs_full /O3 /Fo ${OUT}/pt_look_vs.cso ${SH}/pt_look.hlsl
+  COMMAND ${FXC} /nologo /T ps_5_0 /E ps_pt_look /O3 /Fo ${OUT}/pt_look_ps.cso ${SH}/pt_look.hlsl
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/assets ${OUT}/assets
   COMMENT "Compiling shaders, copying assets")
 

@@ -14,6 +14,8 @@ struct Motion {
     float speed = 1.0f;     // time scale
     float amount = 1.0f;    // amplitude scale
     float windStrength = 1.0f;
+    float windYawDeg = 206.565f;   // wind heading, degrees clockwise from +y (default = front-left towards the back)
+    float windPitchDeg = 2.85f;    // -45..45
     bool windOn = false;      // wind on top of any preset (toolbar)
     double t = 0;
 

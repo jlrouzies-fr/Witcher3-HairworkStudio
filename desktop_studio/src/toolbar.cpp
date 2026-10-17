@@ -350,6 +350,16 @@ void App::drawToolbar() {
             ImGui::SameLine(0, S(2));
         }
         barToggle("##tb_shadow", ICON_LC_CONTRAST, w::CI_NONE, rig.shadows, "Shadows: key-light shadow map on hair, head, body and ground (K)", c); if (c) rig.shadows = !rig.shadows;
+        {   // Path-traced look (same setting as Physics & motion > Game-accurate hair > Path-traced look)
+            bool pl = hw.gameAccurate && hw.ptLook;
+            barToggle("##tb_ptlook", ICON_LC_SPARKLES, w::CI_NONE, pl, "Path-traced look: show the hair like the game's path tracer (soft veil, skin through thin hair, game light).\nTurning it on also turns on Game-accurate hair.", c);
+            if (c) { if (pl) setGameAccurate({{"pt_look", false}}); else setGameAccurate({{"on", true}, {"pt_look", true}}); }
+        }
+        {   // Thin-hair model (same setting as Physics & motion > Path-traced look > Thin-hair model)
+            bool th = hw.gameAccurate && hw.ptLook && thinHair;
+            barToggle("##tb_thinhair", ICON_LC_SPLINE, w::CI_NONE, th, "Thin-hair model: many finer strands, compressed width response (path-traced look).\nTurning it on also turns on the Path-traced look.", c);
+            if (c) { if (th) setGameAccurate({{"thin_hair", false}}); else setGameAccurate({{"on", true}, {"pt_look", true}, {"thin_hair", true}}); }
+        }
         barSep(S(24));
         barToggle("##tb_collapse", ICON_LC_CHEVRON_UP, w::CI_NONE, false, "Collapse the toolbar", c); if (c) tbCollapsed = true;
     }
@@ -408,6 +418,25 @@ void App::drawToolbar() {
         if (motion.windStrength <= 0.001f) snprintf(vb, sizeof vb, "Off");
         else snprintf(vb, sizeof vb, "%.1f", motion.windStrength);
         miniSlider("##wind", &motion.windStrength, 0.0f, 5.0f, S(56), vb, "Wind strength\nx the fur's windScaler.");
+        {
+            char dv[16];
+            snprintf(dv, sizeof dv, "%.0f\xC2\xB0", motion.windYawDeg);
+            bool wopen = dropButton("##tb_winddir", ICON_LC_WIND, tc(tok::GLOW), dv, S(32));
+            tbTip("Wind direction\nYaw 0-360 (degrees clockwise from +y) and pitch -45..45. Default: from the front-left towards the back.");
+            ImVec2 wp(ImGui::GetItemRectMin().x, ImGui::GetItemRectMin().y - S(10));
+            if (wopen) ImGui::OpenPopup("##tb_winddir_pop");
+            ImGui::SetNextWindowPos(wp, ImGuiCond_Always, ImVec2(0, 1));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, S2(8, 8));
+            if (ImGui::BeginPopup("##tb_winddir_pop")) {
+                ImGui::SetNextItemWidth(S(180));
+                ImGui::SliderFloat("Yaw", &motion.windYawDeg, 0.0f, 360.0f, "%.0f deg");
+                ImGui::SetNextItemWidth(S(180));
+                ImGui::SliderFloat("Pitch", &motion.windPitchDeg, -45.0f, 45.0f, "%.0f deg");
+                if (ImGui::SmallButton("Reset")) { motion.windYawDeg = 206.565f; motion.windPitchDeg = 2.85f; }
+                ImGui::EndPopup();
+            }
+            ImGui::PopStyleVar();
+        }
         // loop progress (motion phase) along the bottom edge
         ImVec2 a = ImGui::GetWindowPos();
         float wdt = ImGui::GetWindowWidth(), y = a.y + ImGui::GetWindowHeight() - S(2);

@@ -1,0 +1,13 @@
+{"splash": false, "steps": [
+ {"do": "wait", "frames": 90},
+ {"do": "expect", "loaded": true, "picker": false},
+ {"do": "click", "label": "Colliders"}, {"do": "wait", "frames": 10},
+ {"do": "click", "label": "Find the meshes"}, {"do": "wait", "frames": 30},
+ {"do": "key", "key": "Y"}, {"do": "wait", "frames": 20},
+ {"do": "click", "xy": [1364, 1453]}, {"do": "wait", "frames": 20},
+ {"do": "shot", "name": "col_3_selected"},
+ {"do": "key", "key": "Delete"}, {"do": "wait", "frames": 20},
+ {"do": "shot", "name": "col_4_deleted"},
+ {"do": "key", "key": "Z", "ctrl": true}, {"do": "wait", "frames": 20},
+ {"do": "shot", "name": "col_5_undone"}
+]}

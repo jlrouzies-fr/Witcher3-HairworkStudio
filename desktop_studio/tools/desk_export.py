@@ -18,11 +18,11 @@ What it does (nothing is installed; output = build\desktop_studio\<cfg>\export\)
      woman_succubus growthmesh uses them). Because the build's UVs come from the card atlas (many faces share texels),
      a painted map switches the fur to UNIQUE per-face UVs: the Studio re-bakes the density map (and the colour map when
      the fur uses one) into that atlas (--density-png / --colour-png) and they ship as two more inline xbm.
-  5. Budget guard: refuses when the Studio's hair estimate (close-up) is above --limit x the reference build.
-     Performance guard (2026-10-13, tools/hairworks/perf_budget.py): when the geometry is replaced, refuses on invalid
-     solver input (zero-length segments, guides under 5 mm, shared roots, zero-area growth faces: Crach ~0.1 FPS and
+  5. Budget: the Studio's hair estimate vs the reference build is logged as information only (2026-10-15: never refuses).
+     Performance check (2026-10-13, tools/hairworks/perf_budget.py): when the geometry is replaced, WARNS (2026-10-15:
+     never refuses) on invalid solver input (zero-length segments, guides under 5 mm, shared roots, zero-area growth faces: Crach ~0.1 FPS and
      Dettlaff ~2 FPS in game, L255) or hair metres over the cap; `py tools\hairworks\perf_budget.py ops <geo>` writes
-     the fix ops. --allow-perf exports anyway (not for releases).
+     the fix ops. --allow-perf is kept as a no-op.
   6. Packages <mod>\content\blob0.bundle + metadata.store with w3lib (the pipeline's writer) + the character's w2ent
      from its release mod (mods\<mod>), INSTALL_INSTRUCTIONS.txt, and a zip. Also writes <char>_<tag>_config.json: the
      build's config + "edits" + the look changes as look.extra_set keys (a pipeline config proposal; rename it to a new
@@ -71,6 +71,20 @@ import redfur as RF  # noqa: E402
 ENUM_TYPES = {'densityTexChannel': 'EHairTextureChannel', 'stiffnessTexChannel': 'EHairTextureChannel',
               'rootStiffnessTexChannel': 'EHairTextureChannel'}
 
+# 2026-10-15 (export audit, tools/hairworks/export_audit.py): CR2W types of the fur properties that are not Float / Color /
+# Vector, read from the 117 vanilla furs of the game (each has one type in every fur that carries it). A Studio look value for
+# one of these keys is an int / string in the project ("auto" hint), so when the fur being edited does not carry the property
+# (the W3 stiffnessBone block, useCollision and strandBlendMode are missing from every beard fur and from Yennefer / Anna /
+# Graden / Ciri-wavy: the fur's material source has no such property) resolve_type had no type and SKIPPED the value: the Studio
+# showed it, the game never got it. With w3_keys on, the value is written with the type below. Opt-in: off for edit_fur()
+# unless the caller says so (beard.py studio_geo_beard.w3_keys, hairpipe studio_geo.w3_keys), so every existing build is
+# byte-identical; on by default in main() (the Studio's own export, a new file), --no-w3-keys restores the old output.
+W3_KEY_TYPES = {'stiffnessBoneEnable': 'Bool', 'stiffnessBoneIndex': 'Uint32', 'stiffnessBoneAxis': 'Uint32',
+                'useCollision': 'Bool', 'simulate': 'Bool', 'usePixelDensity': 'Bool', 'castShadows': 'Bool',
+                'useBackfaceCulling': 'Bool', 'useViewfrustrumCulling': 'Bool', 'enableDetailLOD': 'Bool',
+                'enableDistanceLOD': 'Bool', 'enableLOD': 'Bool', 'priority': 'Uint32', 'clumpNumSubclumps': 'Uint32',
+                'diffuseBoneIndex': 'Uint32', 'strandBlendMode': 'EHairStrandBlendModeType'}
+
 
 def find_type(doc, struct_bytes, path):
     """CR2W type name of path (list) inside a struct value, or None."""
@@ -86,13 +100,15 @@ def find_type(doc, struct_bytes, path):
     return None
 
 
-def resolve_type(doc, ch, path, hint, value, log):
+def resolve_type(doc, ch, path, hint, value, log, w3_keys=False):
     p = ch.get(path[0])
     t = find_type(doc, p.value, path[1:]) if p is not None else None
     if t is None:
         ms = ch.get('materialSets')
         if ms is not None and path[0] in ('physicalMaterials', 'graphicalMaterials'):
             t = find_type(doc, ms.value, list(path))
+    if t is None and w3_keys and path[-1] in W3_KEY_TYPES and not isinstance(value, (list, dict)):
+        t = W3_KEY_TYPES[path[-1]]
     if t is None:
         if hint in ('Color', 'Vector', 'Float'):
             t = hint
@@ -153,7 +169,38 @@ def set_geometry(doc, ch, geo):
     mn, mx = pts.min(0) - 0.02, pts.max(0) + 0.02
     bb = lambda v, nm: struct.pack('<HHI', doc.name(nm), doc.name('Vector'), 4 + 51) + ev(doc, list(v) + [1.0])
     ch.set('boundingBox', 'Box', b'\0' + bb(mn, 'Min') + bb(mx, 'Max') + b'\0\0')
+    set_colliders(doc, ch, geo.get('colliders'))
     set_collision_r(ch, geo.get('collision_r'))
+
+
+def set_colliders(doc, ch, cj):
+    """2026-10-14 opt-in: the Studio project's WHOLE collider set (Studio Colliders section / studio_fit_colliders), geo
+    "colliders" {spheres [{bone, bone_name, local, r}], capsules [[i, j]]}. Replaces boneSphereIndexArray / RadiusArray /
+    LocalPosArray / boneCapsuleIndices (the arrays collision.fit writes). Every bone must be one of the fur's bones (name
+    checked against boneNames); sphere / capsule limits are the vanilla maxima (85 / 75). No key = the fur's collision is
+    untouched, so every existing build is byte-identical."""
+    if not cj:
+        return
+    sp, cp = cj['spheres'], cj['capsules']
+    if len(sp) > 85 or len(cp) > 75:
+        raise SystemExit('colliders: %d spheres / %d capsules exceed the vanilla maximum 85 / 75' % (len(sp), len(cp)))
+    bn = ch.get('boneNames')
+    if bn is None:
+        raise SystemExit('colliders: the fur has no boneNames')
+    nb, = struct.unpack_from('<I', bn.value, 0)
+    names = struct.unpack_from('<%dH' % nb, bn.value, 4)
+    for i, s_ in enumerate(sp):
+        b = int(s_['bone'])
+        if b >= nb or names[b] != doc.name(s_['bone_name']):
+            raise SystemExit('colliders: sphere %d is bound to bone %r (slot %d) which is not that slot of this fur: base the build '
+                             'on the config the Studio project was made on' % (i, s_['bone_name'], b))
+    for a, b in cp:
+        if not (0 <= a < len(sp) and 0 <= b < len(sp)):
+            raise SystemExit('colliders: capsule (%d, %d) out of range' % (a, b))
+    ch.set('boneSphereLocalPosArray', 'array:2,0,Vector', RF.arr([RF.enc_vec(doc, [float(x) for x in s_['local']] + [0.0]) for s_ in sp]))
+    ch.set('boneSphereIndexArray', 'array:2,0,Uint32', RF.arr([struct.pack('<I', int(s_['bone'])) for s_ in sp]))
+    ch.set('boneSphereRadiusArray', 'array:2,0,Float', RF.arr([struct.pack('<f', float(s_['r'])) for s_ in sp]))
+    ch.set('boneCapsuleIndices', 'array:2,0,Uint32', RF.arr([struct.pack('<I', int(i)) for c in cp for i in c]))
 
 
 def set_collision_r(ch, cr):
@@ -195,7 +242,7 @@ def pick_redfur(names, comp):
     return None
 
 
-def edit_fur(fur_path, edits, look, geo, release, allow_perf, density, log, base_geo=None):
+def edit_fur(fur_path, edits, look, geo, release, allow_perf, density, log, base_geo=None, w3_keys=False):
     """the beard fur (Studio Beard mode): geometry (when there are ops) + look values, as main() does for the hair fur
     -> (bytes, changed)"""
     src_bytes = open(fur_path, 'rb').read()
@@ -219,15 +266,13 @@ def edit_fur(fur_path, edits, look, geo, release, allow_perf, density, log, base
         if m['guides_short'] > b0.get('guides_short', 0):
             log('  warning: %d beard guides under %.0f mm (%d as built)' % (m['guides_short'], perf_budget.MIN_GUIDE_MM, b0.get('guides_short', 0)))
         if worse:
-            msg = 'PERF BLOCKED (beard): worse than the build: ' + ', '.join('%s %s (built %s)' % (k, m[k], b0.get(k, 0)) for k in worse)
-            if not allow_perf or release:
-                raise SystemExit(msg)
-            log('allowed (--allow-perf): ' + msg)
+            msg = 'perf check (beard): worse than the build: ' + ', '.join('%s %s (built %s)' % (k, m[k], b0.get(k, 0)) for k in worse)
+            log('warning (budget is information only, 2026-10-15): ' + msg)
         set_geometry(doc, ch, geo)
         changed.append('geometry (%d guides, %d faces)' % (len(geo['guides']), len(geo['F'])))
     for path, (hint, value) in look.get('set', {}).items():
         pth = path.split('.')
-        typ = resolve_type(doc, ch, pth, hint, value, log)
+        typ = resolve_type(doc, ch, pth, hint, value, log, w3_keys)
         if typ is None:
             continue
         apply_value(doc, ch, pth, typ, encode(doc, typ, value))
@@ -274,6 +319,8 @@ def main():
     ap.add_argument('--colour-png', dest='colour_png')
     ap.add_argument('--release', action='store_true', help='release export: requires the Hairwork for All Core')
     ap.add_argument('--allow-perf', action='store_true', help='export despite performance-budget errors (dev only)')
+    ap.add_argument('--no-w3-keys', dest='w3_keys', action='store_false',
+                    help='old behaviour: skip look values whose CR2W type the fur does not show (stiffnessBone*, useCollision, strandBlendMode)')
     ap.add_argument('--beard-edits', dest='beard_edits', help='Studio Beard mode: edits of the beard fur')
     ap.add_argument('--beard-look', dest='beard_look')
     ap.add_argument('--beard-geo', dest='beard_geo')
@@ -283,8 +330,8 @@ def main():
         raise SystemExit('mod folder name must start with "mod" and use letters, digits and _ only')
     geo = json.load(open(a.geo))
     b = geo.get('budget', {})
-    if b.get('ratio', 0) > a.limit + 1e-6:
-        raise SystemExit('BLOCKED: %.0f %% of the reference build %s (limit %.0f %%)' % (b['ratio'] * 100, b.get('ref'), a.limit * 100))
+    # budget = information only (user 2026-10-15): never refuses; GPU cost is judged from in-game measurements
+    log('budget: %.0f %% of %s (information only)' % (b.get('ratio', 0) * 100, b.get('ref')))
     edits = json.load(open(a.edits))
     look = json.load(open(a.look))
     if edits.get('ops') or geo.get('unique_uv'):
@@ -292,10 +339,8 @@ def main():
         pr = perf_budget.check(geo, density=dens)
         log('perf budget: %s%s' % (json.dumps(pr['metrics']), ''.join('\n  warning: ' + w for w in pr['warnings'])))
         if pr['errors']:
-            msg = 'PERF BLOCKED: ' + '; '.join(pr['errors']) + r' (fix: py tools\hairworks\perf_budget.py ops <geo> -o fix.json)'
-            if not a.allow_perf or a.release:
-                raise SystemExit(msg)
-            log('allowed (--allow-perf): ' + msg)
+            msg = 'perf check: ' + '; '.join(pr['errors']) + r' (fix: py tools\hairworks\perf_budget.py ops <geo> -o fix.json)'
+            log('warning (never blocks, 2026-10-15): ' + msg)
     fur = desk_prep.find_fur(a.cfg)
     if not fur:
         raise SystemExit('no built redfur for ' + a.cfg)
@@ -314,9 +359,14 @@ def main():
     if edits.get('ops') or geo.get('unique_uv'):
         set_geometry(doc, ch, geo)
         changed.append('geometry (%d guides, %d faces)' % (len(geo['guides']), len(geo['F'])))
+    elif geo.get('colliders') or geo.get('collision_r'):
+        # 2026-10-14: collider edits alone (Colliders section / studio_fit_colliders, studio_collision_band) leave the guides as they are
+        set_colliders(doc, ch, geo.get('colliders'))
+        set_collision_r(ch, geo.get('collision_r'))
+        changed.append('colliders (%d spheres, %d capsules)' % (len((geo.get('colliders') or {}).get('spheres', [])), len((geo.get('colliders') or {}).get('capsules', []))))
     for path, (hint, value) in look.get('set', {}).items():
         p = path.split('.')
-        typ = resolve_type(doc, ch, p, hint, value, log)
+        typ = resolve_type(doc, ch, p, hint, value, log, a.w3_keys)
         if typ is None:
             continue
         apply_value(doc, ch, p, typ, encode(doc, typ, value))
@@ -336,13 +386,26 @@ def main():
         b_comp = os.path.basename(bf_path)[:-len('.redfur')].split('__', 1)[-1]
         b_rel = pick_redfur(mod['redfur'], b_comp)
         if not b_rel and (b_edits.get('ops') or b_look.get('set')):
+            # 2026-10-16 (Olgierd mcp_3 / L481): desk.json caches the release mod's entry list from prep time. The
+            # Studio's retry builds the config with `hairpipe build --release` (which writes the beard entry) and runs
+            # this export again, but the stale cached list still had no beard entry, so the retry failed too. Re-read
+            # the release mod's bundle now; only this failing path changes (exports that found the entry are untouched).
+            _C = json.load(open(os.path.join(HW, 'chars', a.cfg + '.json'))) if os.path.exists(os.path.join(HW, 'chars', a.cfg + '.json')) else {}
+            fresh = desk_prep.mod_info(_C, D.get('character') or a.cfg.split('_')[0])
+            if fresh.get('bundle') and pick_redfur(fresh['redfur'], b_comp):
+                log('release mod %s re-read (%s): %d redfur / %d w2ent entries (the pack listed %d / %d)' % (
+                    fresh['mod'], fresh['bundle'], len(fresh['redfur']), len(fresh['w2ent']), len(mod['redfur']), len(mod.get('w2ent', []))))
+                mod = fresh
+                redfur_rel = pick_redfur(mod['redfur'], D.get('comp')) or mod['redfur'][0]
+                b_rel = pick_redfur(mod['redfur'], b_comp)
+        if not b_rel and (b_edits.get('ops') or b_look.get('set')):
             raise SystemExit('the release mod %s has no %s.redfur entry: build the beard config once with the pipeline '
                              '(hairpipe build) so its in-game path is known' % (mod.get('mod'), b_comp))
         if b_rel and b_rel != redfur_rel:
             b_geo = json.load(open(a.beard_geo)) if a.beard_geo else {}
             b_dens = float((((bf.get('physical') or {}).get('volume') or {}).get('density')) or 1.0)
             b_bytes, b_changed = edit_fur(bf_path, b_edits, b_look, b_geo, a.release, a.allow_perf, b_dens, log,
-                                          base_geo=dict(guides=bf.get('guides') or [], F=bf.get('F') or []))
+                                          base_geo=dict(guides=bf.get('guides') or [], F=bf.get('F') or []), w3_keys=a.w3_keys)
             extra_files.append((b_rel, b_bytes))
             log('beard redfur: %s -> %s, %d bytes; changed: %s' % (os.path.relpath(bf_path, ROOT), b_rel, len(b_bytes),
                                                                    ', '.join(b_changed) or 'nothing'))
@@ -393,6 +456,10 @@ def main():
     ents = {e.name: e for e in bundle_entries(src_bundle)}
     for w in mod.get('w2ent', []):
         files.append((w, bundle_read(src_bundle, ents[w])))
+    _meshes = [n for n in ents if n.endswith('.w2mesh')]
+    if _meshes:   # 2026-10-16 note only: beard builds' eyebrow subset meshes (+ buffers) are not repackaged here
+        log('note: the release mod also has %d mesh(es) not in this dev export (%s); the pipeline build '
+            '(studio_to_config -> HairLab / hairpipe build) ships them' % (len(_meshes), ', '.join(os.path.basename(m) for m in _meshes)))
     bundles = [write_legacy_bundle(os.path.join(content, 'blob0.bundle'), files)]
     write_legacy_metadata_store(os.path.join(content, 'metadata.store'), bundles)
     chk = {e.name: e for e in bundle_entries(os.path.join(content, 'blob0.bundle'))}
@@ -435,7 +502,7 @@ def main():
     lk = C.setdefault('look', {})
     xs = lk.setdefault('extra_set', {})
     for path, (hint, value) in look.get('set', {}).items():
-        typ = resolve_type(doc, ch, path.split('.'), hint, value, lambda *x: None)
+        typ = resolve_type(doc, ch, path.split('.'), hint, value, lambda *x: None, a.w3_keys)
         if typ == 'Color' and isinstance(value, list) and len(value) < 4:
             value = list(value) + [255] * (4 - len(value))     # as encode() writes it into the exported redfur
         if typ:

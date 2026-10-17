@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -57,6 +58,85 @@ class Studio:
         self.n = 0
         self.cfg = None
         self.journal = []   # open + state-changing commands: replayed when the Studio process restarts
+        self.pending_snapshot = None   # an opened USER save (UI-saved project) not yet snapshotted to <char>_user_HHMM
+        self.snapshots = []
+        self._lock_path = None
+        self.take_folder_lock()
+
+    # ---- helper-folder lock (2026-10-16): two daemons must never share one output folder (one agent's renders /
+    # saves landed in another's, HAIRWORK "Regis Studio pass 3"); the port lock lives in hws.py
+    def take_folder_lock(self):
+        lp = os.path.join(self.out, ".hws_lock.json")
+        try:
+            other = json.load(open(lp))
+            if other.get("pid") != os.getpid() and pid_alive(other.get("pid")):
+                raise SystemExit("output folder %s is in use by another hairwork-studio daemon (pid %s, port %s, since %s): "
+                                 "use your own HWS_SESSION / HWS_OUT" % (self.out, other.get("pid"), other.get("port"), other.get("since")))
+        except (OSError, ValueError):
+            pass
+        json.dump({"pid": os.getpid(), "port": os.environ.get("HWS_PORT"), "since": time.strftime("%Y-%m-%d %H:%M:%S")}, open(lp, "w"))
+        self._lock_path = lp
+
+    def release_folder_lock(self):
+        try:
+            if self._lock_path and json.load(open(self._lock_path)).get("pid") == os.getpid():
+                os.remove(self._lock_path)
+        except (OSError, ValueError):
+            pass
+
+    # ---- user-save snapshot (2026-10-16, memory ref-studio-user-saves): the Studio's Save writes over the opened
+    # project, so a project saved from the UI ("saved_by": "ui", or an old file newer than its edits.json) is copied to
+    # <char>_user_HHMM (HHMM = its save time) before the first MCP edit; agents build on the snapshot
+    def note_opened(self, path):
+        self.pending_snapshot = None
+        if not path or not os.path.isfile(path):
+            return
+        name = os.path.basename(path)
+        if re.search(r"_user_\d{4}(_\d+)?\.groomproj\.json$", name):
+            return   # already a snapshot name
+        try:
+            P = json.load(open(path, encoding="utf-8-sig"))
+        except Exception:
+            return
+        by = P.get("saved_by")
+        user = by == "ui"
+        if by is None:   # before the stamp: a project newer than the edits.json the MCP save wrote next to it was re-saved by the user
+            ej = os.path.join(os.path.dirname(path), "edits.json")
+            user = os.path.exists(ej) and os.path.getmtime(path) > os.path.getmtime(ej) + 60
+        if user:
+            self.pending_snapshot = path
+
+    def snapshot_now(self):
+        src = self.pending_snapshot
+        self.pending_snapshot = None
+        if not src:
+            return None
+        try:
+            P = json.load(open(src, encoding="utf-8-sig"))
+            char = (P.get("config") or os.path.basename(src)).split("_")[0]
+            hhmm = time.strftime("%H%M", time.localtime(os.path.getmtime(src)))
+            parent = os.path.dirname(os.path.dirname(src))
+            base = "%s_user_%s" % (char, hhmm)
+            data = open(src, "rb").read()
+            name = base
+            k = 1
+            while True:
+                dst = os.path.join(parent, name, name + ".groomproj.json")
+                if not os.path.exists(dst):
+                    break
+                if open(dst, "rb").read() == data:
+                    return dst   # the same save is already snapshotted
+                k += 1
+                name = "%s_%d" % (base, k)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "wb") as f:
+                f.write(data)
+            self.snapshots.append(dst)
+            log("user save snapshotted:", src, "->", dst)
+            return dst
+        except Exception as e:
+            log("snapshot failed:", e)
+            return None
 
     def start(self):
         if self.p and self.p.poll() is None:
@@ -85,7 +165,8 @@ class Studio:
 
     READ_ONLY = {"status", "shots_list", "render", "guides", "guide", "faces", "pick", "pick_region", "scalp_coverage",
                  "look_get", "materials_list", "save_edits", "save_project", "export", "dump_params", "bench", "select", "dump_geo",
-                 "wind_check"}
+                 "wind_check", "list_colliders", "collider_report", "drape_report", "list_meshes", "handback_gate", "gate_status", "gate_fail",
+                 "check_loops", "hairline_check", "eye_check", "band_sim"}
 
     def _send(self, cmd, timeout):
         self.p.stdin.write((json.dumps(cmd) + "\n").encode())
@@ -117,6 +198,11 @@ class Studio:
             d = cmd.get("do")
             if d == "open":
                 self.journal = [cmd]
+                self.note_opened(cmd.get("project"))
+            elif d not in self.READ_ONLY and not cmd.get("baseline") and not cmd.get("dry_run") and self.pending_snapshot:
+                snap = self.snapshot_now()
+                if snap:
+                    r["user_save_snapshot"] = snap
             elif d == "reset_edits":
                 self.journal = self.journal[:1]
             elif d not in self.READ_ONLY and not cmd.get("baseline"):
@@ -131,10 +217,28 @@ class Studio:
                 self.p.wait(15)
             except Exception:
                 self.p.kill()
+        self.release_folder_lock()
+
 
     def png(self, tag):
         self.n += 1
         return os.path.join(self.out, f"{self.n:04d}_{tag}.png")
+
+
+def pid_alive(pid):
+    if not pid:
+        return False
+    try:
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return bool(ok) and code.value == 259
+    except Exception:
+        return False
 
 
 S = Studio()
@@ -255,7 +359,7 @@ def t_open(a):
     return r
 
 
-@tool("studio_status", "Current build, guide / face / op counts, unmatched roots, hair budget vs the reference (limit 1.2).",
+@tool("studio_status", "Current build, guide / face / op counts, unmatched roots, hair budget vs the reference (ratio, information only: never a reason to stop or thin).",
       obj({}))
 def t_status(a):
     return S.call({"do": "status"})
@@ -286,14 +390,25 @@ def t_shots(a):
            "baseline": {"type": "boolean"}, "hair": {"type": "boolean", "description": "false = hide the hair (see the scalp mask / skin)"},
            "vanilla": {"type": "boolean", "description": "render the game's own hair cards instead of the groom"},
            "guides_front": {"type": "boolean", "description": "with overlay 'guides': only the front-layer guides (default: studio_guide_view)"},
-           "guides_body": {"type": "boolean", "description": "with overlay 'guides': hide guide parts behind the body (default: studio_guide_view)"}}))
+           "guides_body": {"type": "boolean", "description": "with overlay 'guides': hide guide parts behind the body (default: studio_guide_view)"},
+           "colliders": {"type": "boolean", "description": "draw the collision capsules (the Studio's N overlay) in this render"},
+           "headgear": {"type": "boolean", "description": "draw the character's helmet / hat / hood in this render (default: studio_headgear)"}}))
 def t_render(a):
     extra = {"baseline": a.get("baseline", False), "hair": a.get("hair", True), "vanilla": a.get("vanilla", False)}
-    for k in ("guides_front", "guides_body"):
+    for k in ("guides_front", "guides_body", "colliders", "headgear"):
         if k in a:
             extra[k] = a[k]
     png, r = render(a, "render", extra)
     return [r, image_content(png, a.get("crop"), a.get("max_px", 1000))]
+
+
+@tool("studio_headgear", "View > 'Show headgear / outfit items': the helmet / hat / hood meshes the character wears in "
+      "the game (every appearance of its template), to see hair clipping through them. on: show / hide; app: which "
+      "appearance's headgear (see 'apps' in the reply). No arguments = report the state. Default on only when every "
+      "appearance wears headgear.",
+      obj({"on": {"type": "boolean"}, "app": {"type": "string"}}))
+def t_headgear(a):
+    return S.call(dict({"do": "headgear"}, **{k: a[k] for k in ("on", "app") if k in a}))
 
 
 @tool("studio_guide_view", "Guide visibility views (the Studio's View > 'Guides: front layer only' / 'Guides: hide behind "
@@ -654,13 +769,17 @@ def t_flow(a):
       "fill_scalp / plant_parting reject templates that would pass through the head. delete: true removes the "
       "guides instead (recommended for planted copies: pushed out they often hang as stray hair; refill with "
       "studio_fill_scalp). Only points clearly inside (> depth_mm 8 under the skull surface) count. Also reports "
-      "spans_under_skin / span_guides: guides whose straight span BETWEEN two CVs dips > 1 mm under the skin (long root "
-      "segments across the forehead; drawn as broken specks). Those are not pushed: delete them (where indices).",
+      "spans_under_skin / span_guides (deepest first, span_list 60): guides whose straight span BETWEEN two CVs dips > span_mm (2) under the skin (long root "
+      "segments across the forehead; drawn as broken specks). Those are not pushed unless fix_spans: true (opt-in 2026-10-17): "
+      "each such guide is sampled every 1 mm, samples under the RENDERED head skin are raised along the head radial to "
+      "span_standoff_mm (= standoff_mm) above it, smoothed and refit to its CV count (root exact, length kept), repeated "
+      "up to span_iterations (8) until no span dips > span_mm; reports spans_fixed / spans_under_skin_after / span_guides_after.",
       obj({"where": WHERE, "standoff_mm": {"type": "number"}, "depth_mm": {"type": "number"}, "delete": {"type": "boolean"},
-           "list_only": {"type": "boolean"}, **SHOW}))
+           "list_only": {"type": "boolean"}, "span_mm": {"type": "number"}, "span_list": {"type": "integer"},
+           "fix_spans": {"type": "boolean"}, "span_standoff_mm": {"type": "number"}, "span_iterations": {"type": "integer"}, **SHOW}))
 def t_push(a):
     return edit(a, {"do": "push_out", "where": a.get("where", {"all": True}),
-                    **{k: a[k] for k in ("standoff_mm", "depth_mm", "delete", "list_only") if k in a}})
+                    **{k: a[k] for k in ("standoff_mm", "depth_mm", "delete", "list_only", "span_mm", "span_list", "fix_spans", "span_standoff_mm", "span_iterations", "debug_index") if k in a}})
 
 
 @tool("studio_lengthen", "Make guides longer (factor > 1, e.g. 1.3) or shorter (< 1) keeping their shape: CVs re-placed along "
@@ -736,13 +855,169 @@ def t_hug_cards(a):
                                                            "inside_mm", "inside_z_mm", "list_only") if k in a}})
 
 
+CSHELL_KEYS = ("where", "protect", "surface", "cards_mix", "outer_mm", "layers", "assign", "rank_mm", "shell_pct", "cone_deg",
+               "smooth", "lump_mm", "offset_mm", "inner_mm", "thick_mm", "root_mm", "blend_mm", "flow", "flow_source",
+               "flow_cards_mix", "flow_smooth", "parting_x", "parting_band_mm", "strength", "tip_free", "exclude_fringe",
+               "fringe_back_mm", "fringe_up_mm", "alpha_vis", "node_deg", "max_slope", "capsule_mm", "debug_guide", "fringe_side_mm", "root_lift", "fringe", "fringe_fade_mm", "flow_mode", "flow_radius_mm", "scalp_pct", "trim_hem", "trim_mm", "fringe_carry_mm", "fringe_carry_max_mm", "clamp_mm", "list_only")
+
+
+@tool("studio_conform_shell", "Even, rounded layering (2026-10-16): turns uneven guides (lumps, strands wandering in and out in "
+      "depth) into concentric shells. Outer surface seen from the head centre = surface 'guides' (default: shell_pct 0.9 "
+      "envelope of the current guides, lumps standing more than lump_mm (3) above the smoothed envelope cut, then smooth (8) "
+      "passes) | 'cards' (visible vanilla card hair) | 'blend' (cards_mix 0.5), or outer_mm = constant height over the scalp; "
+      "offset_mm moves it out/in. layers (4) shells from the outer surface down to inner_mm (3) over the scalp, at most thick_mm "
+      "(14) deep. assign 'even' (default: each guide ranked by its current depth among the guides rooted within rank_mm 25, so "
+      "every shell is evenly populated) | 'depth' (nearest shell to its current depth). After root_mm (10) each guide blends "
+      "onto its shell over blend_mm (25) and stays at constant depth; its tangential direction follows a smooth flow field "
+      "(flow 0.8; flow_source guides | cards | blend with flow_cards_mix; flow_smooth 6 passes); parting_x (m from head centre) "
+      "= a parting plane the flow is never averaged across, flow leads away from it within parting_band_mm (30). tip_free "
+      "(0) = last share of the length that may leave the shell. Root + segment lengths kept, pushOut. exclude_fringe (true): "
+      "guides with points in front of the forehead below brow + fringe_up_mm (30) are left alone; protect = selector kept "
+      "unchanged; strength 0..1 blend. One undo step (plain reshape ops, saved + exported). Reports depth_wander_mm_before/"
+      "after (mean per-guide std of the depth below the outer surface), layer_population. list_only = report only.",
+      obj({"where": WHERE, "protect": WHERE, "surface": {"type": "string", "enum": ["guides", "cards", "blend"]},
+           "cards_mix": {"type": "number"}, "outer_mm": {"type": "number"}, "layers": {"type": "integer"},
+           "assign": {"type": "string", "enum": ["even", "depth"]}, "rank_mm": {"type": "number"}, "shell_pct": {"type": "number"},
+           "cone_deg": {"type": "number"}, "smooth": {"type": "integer"}, "lump_mm": {"type": "number"}, "offset_mm": {"type": "number"},
+           "inner_mm": {"type": "number"}, "thick_mm": {"type": "number"}, "root_mm": {"type": "number"}, "blend_mm": {"type": "number"},
+           "flow": {"type": "number"}, "flow_source": {"type": "string", "enum": ["neighbours", "guides", "cards", "blend"]},
+           "flow_radius_mm": {"type": "number"},
+           "flow_cards_mix": {"type": "number"}, "flow_smooth": {"type": "integer"}, "parting_x": {"type": "number"},
+           "parting_band_mm": {"type": "number"}, "strength": {"type": "number"}, "tip_free": {"type": "number"},
+           "exclude_fringe": {"type": "boolean"}, "fringe_back_mm": {"type": "number"}, "fringe_up_mm": {"type": "number"},
+           "alpha_vis": {"type": "number"}, "node_deg": {"type": "number"}, "max_slope": {"type": "number"},
+           "capsule_mm": {"type": "number"}, "fringe_side_mm": {"type": "number"}, "root_lift": {"type": "number"}, "fringe": {"type": "string", "enum": ["upper", "skip"]}, "fringe_fade_mm": {"type": "number"}, "trim_hem": {"type": "boolean", "description": "shorten strands that run past the vanilla outline below the head (collar clipping) to end trim_mm (5) past it"}, "trim_mm": {"type": "number"}, "flow_mode": {"type": "string", "enum": ["align", "follow"]}, "debug_guide": {"type": "integer"}, "list_only": {"type": "boolean"}, **SHOW}))
+def t_conform_shell(a):
+    return edit(a, {"do": "conform_shell", **{k: a[k] for k in CSHELL_KEYS if k in a}})
+
+
+@tool("studio_crown_swirl", "Comb the crown into one coherent flow (2026-10-16): guides rooted within radius_mm (50) of the crown "
+      "point (crown [x,y,z], default on the skull crown_back_deg 30 behind the top) keep their root and leave it in the swirl "
+      "direction (away from the crown, turned spiral_deg 20), lying lift_mm (4) over the skull (max_slope 0.4) for swirl_mm "
+      "(35), then rejoin their old path over rejoin_mm (35). Fringe / face-side guides (tip in front of the eye plane minus "
+      "face_back_mm 30, or within eye_mm 30 of the eyes) and protect are left alone. strength 0..1. One undo step. Follow "
+      "with studio_conform_shell for the layers. list_only reports.",
+      obj({"where": WHERE, "protect": WHERE, "crown": {"type": "array", "items": {"type": "number"}}, "crown_back_deg": {"type": "number"},
+           "radius_mm": {"type": "number"}, "swirl_mm": {"type": "number"}, "rejoin_mm": {"type": "number"}, "spiral_deg": {"type": "number"},
+           "lift_mm": {"type": "number"}, "max_slope": {"type": "number"}, "face_back_mm": {"type": "number"}, "eye_mm": {"type": "number"},
+           "strength": {"type": "number"}, "mode": {"type": "string", "enum": ["swirl", "untwist"], "description": "untwist: each crown guide's shape = gaussian mean of the crown guides rooted within nb_mm (18), passes (3): no crossing / twisting ropes"},
+           "nb_mm": {"type": "number"}, "passes": {"type": "integer"}, "list_only": {"type": "boolean"}, **SHOW}))
+def t_crown_swirl(a):
+    return edit(a, {"do": "crown_swirl", **{k: a[k] for k in ("where", "protect", "crown", "crown_back_deg", "radius_mm", "swirl_mm",
+                                                             "rejoin_mm", "spiral_deg", "lift_mm", "max_slope", "face_back_mm",
+                                                             "eye_mm", "strength", "mode", "nb_mm", "passes", "list_only") if k in a}})
+
+
+@tool("studio_check_direction", "MANDATORY before any save (2026-10-16 user rule: never strands going the wrong way). Checks every "
+      "guide's tip part (tip_part 0.5; curly guides turning > curl_turn_deg 300 there are skipped): 'up' = hanging hair "
+      "(below head centre + up_above_mm 20) rising (dz > up_thr 0.35) on >= 1/3 of the tip segments; 'against' = heading "
+      "against the guides rooted within nb_mm (20) (dot < against_thr -0.2) on most tip segments. wind (default true): the "
+      "simulated guides under wind (wind_yaw_deg = heading, clockwise from +y = face: 15 = wind from behind, 195 from the "
+      "front, 105 / 285 from the sides; wind_strength 5 = toolbar max, wind_s 3) rising (dz > wind_up_thr 0.3 and turned up "
+      "by > wind_turn 0.5 vs rest) in >= 1/3 of the samples. Returns rest_offenders (rest_up / rest_against) / "
+      "wind_offenders + lists. fix: true re-combs the offenders (mean shape of non-offending neighbours within fix_nb_mm 25 "
+      "from fix_from 0.25 of the length, gravity floor min_drop 0.2 on hanging tip segments; fix_wind false = rest "
+      "offenders only; protect = selector kept) in one undo step. Run it for all four wind_yaw_deg. The serve guard runs "
+      "the rest test around every tool that changes guides (studio_direction_guard).",
+      obj({"tip_part": {"type": "number"}, "up_thr": {"type": "number"}, "up_above_mm": {"type": "number"}, "against_thr": {"type": "number"},
+           "nb_mm": {"type": "number"}, "curl_turn_deg": {"type": "number"}, "wind": {"type": "boolean"}, "wind_yaw_deg": {"type": "number"},
+           "wind_pitch_deg": {"type": "number"}, "wind_strength": {"type": "number"}, "wind_s": {"type": "number"},
+           "wind_up_thr": {"type": "number"}, "wind_turn": {"type": "number"}, "fix": {"type": "boolean"}, "fix_wind": {"type": "boolean"},
+           "fix_nb_mm": {"type": "number"}, "fix_from": {"type": "number"}, "min_drop": {"type": "number"}, "protect": WHERE}))
+def t_check_direction(a):
+    try:
+        CALLS.append(S.call({"do": "status"})["status"]["ops"])
+    except Exception:
+        pass
+    return S.call({"do": "check_direction", **a}, timeout=900)
+
+
+@tool("studio_regrid", "Opt-in, Studio-only (2026-10-16): RE-GRID a region from a smooth flow field, the fix for crown ropes / "
+      "locks / knots (measured on Shani: groups of neighbouring guides bundling and diverging, faces of 0.9-49 mm2 that "
+      "connect guides going different ways). Deletes the guides in where (default {z_min:-0.06} = the crown; minus "
+      "protect, fringe / face-side guides, guides shorter than min_len 0.03) and rebuilds: Poisson roots on the painted "
+      "scalp within reach_mm (10) of the old roots at spacing_mm (default: keeps the region's guide count x count_scale 1), "
+      "sunk to the groom's root depth; each new guide = Gaussian mean (flow_mm 30) of the OLD guides' shapes and lengths "
+      "(neighbours whose root direction opposes the nearest guide's do not vote: partings keep both combs; length_scale 1); "
+      "faces = Delaunay stitched to the kept border, no face over a kept face, no face whose guides go opposite ways "
+      "(oppose_dot -0.2). One undoable rebuild op (saved, exported through studio_geo). Reports region_guides, "
+      "new_guides / new_faces, spacing_mm, root_depth_mm, rejected counts. list_only plans only. Then run "
+      "studio_check_faces + studio_check_direction and look from the top / 3-4 above / sides / wind.",
+      obj({"where": WHERE, "protect": WHERE, "spacing_mm": {"type": "number"}, "count_scale": {"type": "number"}, "flow_mm": {"type": "number"},
+           "reach_mm": {"type": "number"}, "min_len": {"type": "number"}, "length_scale": {"type": "number"}, "exclude_face": {"type": "boolean"},
+           "face_back_mm": {"type": "number"}, "eye_mm": {"type": "number"}, "oppose_dot": {"type": "number"}, "edge_mm": {"type": "number"},
+           "any_skin": {"type": "boolean"}, "list_only": {"type": "boolean"},
+           "dir_frac": {"type": "number", "description": "arc fraction where guide directions are compared for the vote gate / face opposition (0.3)"},
+           "gate_iters": {"type": "integer", "description": "consensus rounds dropping voters heading against the weighted mean direction (2; 0 = every neighbour votes)"},
+           "hug": {"type": "number", "description": "0..1: re-project each integrated point to the voters mean height over the skull (1; 0 = free tangent integral, leaves the skull)"},
+           "smooth_passes": {"type": "integer", "description": "3-point smoothing passes on each new strand after the projection (2)"},
+           "keep_cross": {"type": "boolean", "description": "keep the region's guides that head against the local consensus (the crossing layer of a layered style) instead of regridding them (false)"},
+           "cross_dot": {"type": "number", "description": "keep_cross threshold: dot(guide dir, consensus) below this = crossing (0)"},
+           "mode": {"type": "string", "enum": ["field", "arc"], "description": "field (default): trace each strand through the spatial flow field of the voters' segments; arc: per-arc-fraction mean tangent"},
+           **SHOW}))
+def t_regrid(a):
+    return edit(a, {"do": "regrid", **{k: a[k] for k in ("where", "protect", "spacing_mm", "count_scale", "flow_mm", "reach_mm", "min_len",
+                                                         "length_scale", "exclude_face", "face_back_mm", "eye_mm", "oppose_dot", "edge_mm",
+                                                         "any_skin", "list_only", "dir_frac", "gate_iters", "hug", "smooth_passes", "mode", "keep_cross", "cross_dot") if k in a}})
+
+
+@tool("studio_skin_guard", "Hard geometric floor (2026-10-16): moves every control point of the authored rest shape that lies "
+      "closer than margin_mm (3) to the posed skin (head, face, ears, neck: the check_faces skin field) out along the field "
+      "gradient to margin_mm; roots and the first root_mm (6) of arc length are kept. passes (3). where = guide selector. "
+      "One undo group of plain reshape ops. list_only reports guides_moved / points_moved / deepest_mm / list without moving. "
+      "Run it before colliders / stiffness work: the SDK's soft collision cannot lift hair that is authored inside the skin.",
+      obj({"margin_mm": {"type": "number"}, "root_mm": {"type": "number"}, "passes": {"type": "integer"}, "where": WHERE,
+           "list_only": {"type": "boolean"}, "cell_mm": {"type": "number"}, "reach_mm": {"type": "number"}}))
+def t_skin_guard(a):
+    return S.call({"do": "skin_guard", **a}, timeout=900)
+
+
+@tool("studio_check_faces", "Growth-face validator (2026-10-16, run before every save next to studio_check_direction). HairWorks draws "
+      "the hair of a face as blends of its 3 guides and collides only the GUIDES, so a face whose guides pass on different "
+      "sides of the head / face / neck draws hair THROUGH the skin while every guide is clean. Measures the interpolated "
+      "hair itself (samples 4 = 12 blends per face) against a signed-distance field of the posed head mesh, on the "
+      "SIMULATED guides: settled rest, then wind (fresh simulation per heading in wind_yaw_deg, default [15,105,195,285] = behind, "
+      "side, front, side; wind_strength 1 = the toolbar default the user sees, times the look windScaler; 5 = toolbar max, a stress test that overpowers the SDK collision; wind_s 2.5 s). penetration: rest / wind counts, interp_only (only the "
+      "in-between hair is inside, deeper than depth_mm 3), guides_too, list (face id, guides, centroid, depths, heading). "
+      "guides_inside: guides themselves inside the skin (collider problem). sliver: faces under sliver_mm2 (3; HairWorks "
+      "grows the same hair count on every face, so slivers render as dense bundles). big: faces over big_x (4) x the median "
+      "area (sparse hair, scalp speckle). divergent: mid spread > spread (4) x root spread or guide directions > div_deg (60) "
+      "apart; twisted = winding flips. 2026-10-16: every penetration row carries 'at' (where the deepest sample is) and 'skin' "
+      "(true = nearest to a NON-scalp vertex: face / ears / neck, visible; false = under the painted scalp: invisible hair, the "
+      "bald-patch mechanism), counts skin_rest / skin_wind / skin_interp_only; fix_what ['skin'] deletes only the interp-only "
+      "faces through the skin (studio_fix_faces_skin wraps it with a refill). fix: true deletes the faces in fix_what (default ['penetration'] = interp-only "
+      "penetrations; also 'guides', 'sliver', 'big', 'divergent') with delete_face ops in one undo group (protect = "
+      "selector whose faces are kept); check scalp coverage afterwards. where limits the faces to those touching the "
+      "selected guides. ~20-60 s with wind on.",
+      obj({"where": WHERE, "protect": WHERE, "depth_mm": {"type": "number"}, "samples": {"type": "integer"}, "sliver_mm2": {"type": "number"},
+           "big_x": {"type": "number"}, "spread": {"type": "number"}, "div_deg": {"type": "number"}, "wind": {"type": "boolean"},
+           "wind_yaw_deg": {"type": "array", "items": {"type": "number"}}, "wind_pitch_deg": {"type": "number"}, "wind_strength": {"type": "number"},
+           "wind_s": {"type": "number"}, "cell_mm": {"type": "number"}, "reach_mm": {"type": "number"}, "fix": {"type": "boolean"},
+           "fix_what": {"type": "array", "items": {"type": "string"}}, "list_only": {"type": "boolean"}}))
+def t_check_faces(a):
+    try:
+        CALLS.append(S.call({"do": "status"})["status"]["ops"])
+    except Exception:
+        pass
+    return S.call({"do": "check_faces", **a}, timeout=1800)
+
+
+@tool("studio_direction_guard", "Direction guard around every guide-changing tool (not bun / braid / curl / twist / fur): "
+      "guides the command made point the wrong way at rest (pre-existing ones are only counted) are, per mode, re-combed in "
+      "the same undo step (fix, default) | the command is undone with an error (refuse) | reported (report) | off. The mode "
+      "holds for every later command of the session; replies carry a direction_guard summary.",
+      obj({"mode": {"type": "string", "enum": ["fix", "refuse", "report", "off"]}}))
+def t_direction_guard(a):
+    return S.call({"do": "direction_guard", **a})
+
+
 @tool("studio_rebuild_from_cards", "DRASTIC, opt-in: delete ALL guides in 'where' (default all) and trace new ones from "
       "the game's own hair cards (growth.py idea: lanes along each card's root->tip texture direction, trimmed where the "
       "card alpha has no hair; roots = Poisson points on the scalp under visible card hair, spacing_mm apart, a "
       "target count, or by default spaced so the hair budget matches the build as opened (budget_target 1.0); each root follows a card lane passing near it; stacked duplicate cards dropped; strands through "
       "the head / over the eyes rejected; new growth faces = Delaunay of the roots). For builds that look nothing like "
       "vanilla (too few / wrong guides). One undoable op ('rebuild', Studio-only: the HairLab pipeline ignores it). "
-      "Spacing is raised until the budget ratio is <= the limit (1.2) unless ignore_budget. replace false = add "
+      "The budget is information only (never raises the spacing). replace false = add "
       "guides between the existing ones. hug 0..1 (0.35 as growth.py, 1 = keep the card layer's distance off the skull); "
       "offset_keep (0.3) = how much of the root's offset from the lane stays at the tip (0 = neighbours converge on "
       "one card tip). Check studio_compare after; follow with conform / smooth / look tools as needed.",
@@ -803,6 +1078,75 @@ def t_rebuild(a):
     return edit(a, {"do": "rebuild_from_cards", **{k: a[k] for k in keys if k in a}})
 
 
+@tool("studio_parting_comb", "Opt-in (2026-10-15): fix a bare split / fan of short straight stubs at a parting. Parting roots = "
+      "roots whose neighbours within detect_mm (10) start off in diverging directions (min_diverging 5). Roots within "
+      "band_mm (8) of them get the first root_part (0.3) of the strand re-aimed toward ONE side - side 'auto' (default: the "
+      "flow most neighbours within side_mm 18 share) or a direction [x,y,z] - lifted by 'lift' (0.15), blended smoothly into "
+      "the rest (segment lengths kept). Roots further away untouched. exclude [x,y,z] + exclude_mm (30) protects a crown "
+      "swirl. dry true = only count; list_core true = list detected parting roots. One undoable group.",
+      obj({"where": WHERE, "detect_mm": {"type": "number"}, "band_mm": {"type": "number"}, "root_part": {"type": "number"},
+           "lift": {"type": "number"}, "min_diverging": {"type": "integer"}, "side_mm": {"type": "number"},
+           "strength": {"type": "number"}, "side": {"type": "array"}, "exclude": {"type": "array"},
+           "exclude_mm": {"type": "number"}, "dry": {"type": "boolean"}, "list_core": {"type": "boolean"}, "plant": {"type": "boolean", "description": "v3: plant new roots across the parting band (plant_mm 3 grid within plant_band_mm 5 of each parting root, none within plant_min_mm 2.5 of a root, only between existing roots), each a copy of the nearest guide flowing the chosen way, flat on the scalp near the root (plant_flat_mm 1.5): covers bare scalp + stubs"}, "plant_mm": {"type": "number"}, "plant_band_mm": {"type": "number"}, "plant_min_mm": {"type": "number"}, "plant_flat_mm": {"type": "number"}, "plant_max": {"type": "integer", "description": "hard cap on planted guides (default no cap)"}, "faces": {"type": "string", "enum": ["drop", "keep"], "description": "drop (default, v2): remove growth faces spanning the parting (guides in the band starting off in opposite directions) so no interpolated hair spreads apart there"}, "tail": {"type": "number", "description": "share of the side direction kept past root_part (0.5) so strands do not loop back over the parting"}, **SHOW}))
+def t_parting_comb(a):
+    keys = ("where", "detect_mm", "band_mm", "root_part", "lift", "min_diverging", "side_mm", "strength", "side",
+            "exclude", "exclude_mm", "dry", "list_core", "tail", "faces", "plant", "plant_mm", "plant_band_mm", "plant_min_mm", "plant_flat_mm", "plant_max")
+    return edit(a, {"do": "parting_comb", **{k: a[k] for k in keys if k in a}})
+
+
+@tool("studio_volume_lift", "Opt-in (2026-10-15): uniform volume over a region without starbursts or bumps. Guides in 'where' "
+      "(weight 1) and those within feather_mm (25) outside it (smooth falloff) lift their outer part by offset_mm (6) along "
+      "the head-centre radial direction; the lift ramps in from the root over root_part (0.35) so roots / partings blend; "
+      "weights smoothed over smooth_mm (12), smooth_passes (2). One undoable group.",
+      obj({"where": WHERE, "offset_mm": {"type": "number"}, "feather_mm": {"type": "number"}, "root_part": {"type": "number"},
+           "smooth_mm": {"type": "number"}, "smooth_passes": {"type": "integer"}, "profile": {"type": "string", "enum": ["bump", "ramp"], "description": "bump (default, v2): lift only the near-scalp part, full at peak_at (0.3) of the length, back on the original path by return_at (0.6), segment lengths kept - long hair, no flyaways; ramp = v1"}, "peak_at": {"type": "number"}, "return_at": {"type": "number"}, **SHOW}))
+def t_volume_lift(a):
+    keys = ("where", "offset_mm", "feather_mm", "root_part", "smooth_mm", "smooth_passes", "profile", "peak_at", "return_at")
+    return edit(a, {"do": "volume_lift", **{k: a[k] for k in keys if k in a}})
+
+
+@tool("studio_thicken_lock", "Opt-in (2026-10-15): a lock that reads as a thin flat sheet gets layers (2) copies of each guide in "
+      "'where', stacked over / under it along the head radial at layer_mm (4) x index, root jitter_mm (1.5), offset ramping in over "
+      "root_part (0.2); under copies shortened by under_shrink (0.9). Copies join the growth mesh. One undoable group.",
+      obj({"where": WHERE, "layers": {"type": "integer"}, "layer_mm": {"type": "number"}, "jitter_mm": {"type": "number"},
+           "root_part": {"type": "number"}, "under_shrink": {"type": "number"}, **SHOW}))
+def t_thicken_lock(a):
+    keys = ("where", "layers", "layer_mm", "jitter_mm", "root_part", "under_shrink")
+    return edit(a, {"do": "thicken_lock", **{k: a[k] for k in keys if k in a}})
+
+
+@tool("studio_rebuild_rounded", "DRASTIC, opt-in (2026-10-15): rounded short haircut generator (pixie / crop, Ves). "
+      "Deletes the guides in 'where' (default all) and grows new ones: even Poisson roots (spacing_mm, default 3.5) on the "
+      "painted scalp wherever vanilla card hair covers it (swirl included, no roots past the vanilla hairline); flow = the "
+      "card root->tip texture direction projected on the scalp and smoothed (shell_flow_mm 18); around the crown swirl "
+      "(crown [x,y,z], default 'auto' = where the card flow diverges most on the back top; null = none) the flow "
+      "radiates out (swirl_radius_mm 45, swirl_spiral 0.5; nothing flows back toward it within swirl_outward_mm 80). Each strand lifts off the scalp (rise_mm 18, steeper near "
+      "the crown: swirl_rise_mm 3) to the shell and follows it. shell_mode uniform (default): scalp + ONE thickness (shell_thick_mm, default the shell_thick_pct 0.75 percentile of the card heights + offset_mm 5): round, even, no sags; cards = local card height + offset; hull = convex envelope (experimental); the tip ends shell_tip_in_mm "
+      "(5) inside it where the card outline ends or at the card hair length (shell_len_pct 0.9 of the card hair over the root) + offset (length_scale 1). New growth faces = "
+      "Delaunay of the roots. Ignores the hair budget. One undoable op ('rebuild', Studio-only), exports via studio_to_config.",
+      obj({"where": WHERE, "spacing_mm": {"type": "number"}, "offset_mm": {"type": "number"},
+           "crown": {"description": "[x,y,z] edit frame, 'auto' (default) or 'none'"},
+           "swirl_radius_mm": {"type": "number"}, "swirl_spiral": {"type": "number"}, "swirl_rise_mm": {"type": "number"},
+           "rise_mm": {"type": "number"}, "shell_tip_in_mm": {"type": "number"}, "length_scale": {"type": "number"},
+           "shell_flow_mm": {"type": "number"}, "shell_col_mm": {"type": "number", "description": "column radius for the card shell height (28)"},
+           "shell_pct": {"type": "number", "description": "percentile of the card hair heights in the column = shell (0.45)"},
+           "shell_smooth": {"type": "number", "description": "0..0.95 low-pass of the shell height along the strand (0.9)"},
+           "shell_step_mm": {"type": "number"}, "shell_inertia": {"type": "number"}, "shell_min_mm": {"type": "number"},
+           "shell_min_len_mm": {"type": "number"}, "reach_mm": {"type": "number"}, "zmin_rel": {"type": "number"},
+           "edge_mm": {"type": "number"}, "copy_mm": {"type": "number"}, "eye_mm": {"type": "number"},
+           "eye_mode": {"type": "string", "enum": ["reject", "cut"]}, "alpha_vis": {"type": "number"},
+           "uv_mode": {"type": "string"}, "density": {"type": "number"}, "skin_exact": {"type": "boolean"},
+           **SHOW}))
+def t_rebuild_rounded(a):
+    keys = ("where", "spacing_mm", "offset_mm", "crown", "swirl_radius_mm", "swirl_spiral", "swirl_rise_mm", "rise_mm",
+            "shell_tip_in_mm", "length_scale", "shell_flow_mm", "shell_col_mm", "shell_pct", "shell_smooth", "shell_step_mm",
+            "shell_inertia", "shell_min_mm", "shell_min_len_mm", "reach_mm", "zmin_rel", "edge_mm", "copy_mm", "eye_mm",
+            "eye_mode", "alpha_vis", "uv_mode", "density", "skin_exact", "cand_samples", "scalp_only", "layer", "raise_mm", "shell_len_pct", "swirl_outward_mm", "swirl_min_out", "shell_mode", "shell_cone_deg", "shell_hull_mix", "shell_thick_mm", "shell_thick_pct", "shell_taper_mm", "shell_root", "shell_gap_mm", "shell_fill_mm", "shell_lap_mm", "shell_lap_iter", "shell_lap_from", "shell_dir_mm", "shell_dir_iter")
+    cmd = {"do": "rebuild_from_cards", "trace": "shell", "spacing_mm": 3.5, "ignore_budget": True, "cand_samples": 400000, "layer": "inner"}
+    cmd.update({k: a[k] for k in keys if k in a})
+    return edit(a, cmd)
+
+
 @tool("studio_make_bun", "Opt-in, Studio-only: recreate a vanilla BUN from strands that HOLDS in place. Finds the bun in the "
       "game's hair cards (most protruding card mass off the skull; or centre [x,y,z] + radius_mm), then reshapes the "
       "gathered guides (all in 'where' except those rooted more than keep_front_mm (35) forward of the head centre): "
@@ -821,7 +1165,7 @@ def t_rebuild(a):
            "messy": {"type": "number", "description": "0..1 (0): random radius / depth jitter of the coil = looser, messier bun"},
            "keep_side_z_mm": {"type": "number", "description": "also keep guides rooted lower than head centre + this (mm) and more than keep_side_fwd_mm (0) forward: temple / sideburn locks stay loose instead of being dragged over the ears"},
            "keep_side_fwd_mm": {"type": "number"},
-           "fill": {"type": "boolean", "description": "after gathering, densify a thin crown / sides: the widest gap between strands lying on the skin (card footprint, fill_reach_mm 20, above head centre - fill_z_below_mm 60, not ears / under the bun) gets a new guide with its own bun path, repeated while a gap is wider than cover_mm (7), fill_spacing_mm (8) apart, up to fill_max_new (60), within max_ratio (1.2) of the budget"},
+           "fill": {"type": "boolean", "description": "after gathering, densify a thin crown / sides: the widest gap between strands lying on the skin (card footprint, fill_reach_mm 20, above head centre - fill_z_below_mm 60, not ears / under the bun) gets a new guide with its own bun path, repeated while a gap is wider than cover_mm (7), fill_spacing_mm (8) apart, up to fill_max_new (60) (budget: information only)"},
            "densify_only": {"type": "boolean", "description": "the guides already form the bun (an earlier make_bun with the SAME bun parameters): skip the reshape, only fill"},
            "cover_mm": {"type": "number"}, "fill_spacing_mm": {"type": "number"}, "fill_max_new": {"type": "integer"},
            "fill_reach_mm": {"type": "number"}, "fill_z_below_mm": {"type": "number"}, "max_ratio": {"type": "number"},
@@ -860,6 +1204,41 @@ def t_outside(a):
     return edit(a, {"do": "outside_vanilla", **{k: a[k] for k in ("where", "tol_mm", "delete") if k in a}})
 
 
+@tool("studio_braid", "Opt-in, Studio-only: small HairWorks 3-strand PLAIT (beard / hair braids) replacing vanilla braid "
+      "cards. Source from: 'kept' (default: the studio_keep_cards / project keep_cards triangles, grouped into braids; "
+      "only: index picks one), 'card' (near [x,y,z] + radius_mm: card strips touching the sphere) or 'points' (explicit "
+      "top->bottom control points, width_mm, width_axis, tassel_mm). The centreline, length and width taper come from the "
+      "card strips (PCA + slices; the biggest strip = braid body, strips below it = tie / tassel). Three lobes interleave as a "
+      "real plait (period_mm 9, tightness 0.8 = over/under depth x lobe radius, lobe 0.3 = lobe radius / width, twist_deg, "
+      "spin_per_mm, width_scale, taper 0.35, top_taper_mm 6, width_min_mm / width_max_mm), tie (tie_mm 3, tie_width 0.55), "
+      "tassel (tassel_scale 1, tassel_spread 1.6, tassel_guides 6). Hair: each lobe = overlapping short PIECES (K CVs over "
+      "piece_mm, default ~cvs_per_period 6 CVs per period; overlap 2) of guides_per_lobe (3) guides on a ring (ring 0.6 x "
+      "lobe radius) with growth faces ONLY inside each lobe piece (no faces to other lobes / the beard = no strays). Roots "
+      "are skinned like base_root's guide (default: the live guide nearest the braid top), so the braid holds like the "
+      "cards; piece_mm >= braid length = whole-length guides that swing. stiffness (1): per-guide map value. uv [u,v]: "
+      "growth uv (default the base guide's). drop_cards (true for kept / card) removes the braid from the kept cards. "
+      "list_only: report the detected braids. One undoable 'rebuild' op (saved in projects, exported as shown). Run it on "
+      "the live fur (studio_fur beard for beard braids).",
+      obj({"from": {"type": "string", "enum": ["kept", "card", "points"]}, "only": {"type": "integer"},
+           "near": {"type": "array", "items": {"type": "number"}}, "radius_mm": {"type": "number"},
+           "points": {"type": "array"}, "width_mm": {"type": "number"}, "width_axis": {"type": "array", "items": {"type": "number"}},
+           "period_mm": {"type": "number"}, "tightness": {"type": "number"}, "lobe": {"type": "number"}, "twist_deg": {"type": "number"},
+           "spin_per_mm": {"type": "number"}, "width_scale": {"type": "number"}, "taper": {"type": "number"},
+           "top_taper_mm": {"type": "number"}, "width_min_mm": {"type": "number"}, "width_max_mm": {"type": "number"},
+           "tie_mm": {"type": "number"}, "tie_width": {"type": "number"}, "tassel_mm": {"type": "number"},
+           "tassel_scale": {"type": "number"}, "tassel_spread": {"type": "number"}, "tassel_guides": {"type": "integer"},
+           "piece_mm": {"type": "number"}, "cvs_per_period": {"type": "number"}, "overlap": {"type": "number"},
+           "guides_per_lobe": {"type": "integer"}, "ring": {"type": "number"}, "base_root": {"type": "array", "items": {"type": "number"}},
+           "stiffness": {"type": "number"}, "uv": {"type": "array", "items": {"type": "number"}}, "drop_cards": {"type": "boolean"},
+           "top_points": {"type": "array", "description": "[[x,y,z],..] edit frame: each braid starts at the nearest one (mouth corners = out of the moustache sides); card points within top_blend_mm (8) dropped"}, "top_blend_mm": {"type": "number"}, "join_mm": {"type": "number"}, "slices": {"type": "integer"}, "list_only": {"type": "boolean"}, **SHOW}))
+def t_braid(a):
+    keys = ("from", "only", "near", "radius_mm", "points", "width_mm", "width_axis", "period_mm", "tightness", "lobe", "twist_deg",
+            "spin_per_mm", "width_scale", "taper", "top_taper_mm", "width_min_mm", "width_max_mm", "tie_mm", "tie_width", "tassel_mm",
+            "tassel_scale", "tassel_spread", "tassel_guides", "piece_mm", "cvs_per_period", "overlap", "guides_per_lobe", "ring",
+            "base_root", "stiffness", "uv", "drop_cards", "top_points", "top_blend_mm", "join_mm", "slices", "list_only")
+    return edit(a, {"do": "braid", **{k: a[k] for k in keys if k in a}})
+
+
 @tool("studio_keep_cards", "Opt-in PREVIEW of cards + strands mixed: the vanilla hair cards picked by near [x,y,z] (edit "
       "frame, e.g. studio_pick scalp_edit) + radius_mm (25) stay drawn WITH the groom in every render / compare. by: "
       "'component' (default, whole card strips with a vertex in the sphere) or 'triangle'; z_min / z_max (m, absolute) "
@@ -873,6 +1252,21 @@ def t_outside(a):
 def t_keep_cards(a):
     return S.call({"do": "keep_cards", **{k: a[k] for k in ("near", "radius_mm", "by", "z_min", "z_max", "uv_min", "uv_max",
                                                               "add", "clear") if k in a}})
+
+
+@tool("studio_card_offset", "MOVE kept vanilla card pieces (e.g. Junior's wooden tie ring, uv_min [0.95,0.94] uv_max "
+      "[1,1]): the hair-card vertices picked by uv_min/uv_max (triangle centroid uv in the box) and/or near [x,y,z] + "
+      "radius_mm are rotated by rotate_deg [x,y,z] about their centroid, then moved by offset [dx,dy,dz] (m, z up). SAVED "
+      "in the project (card_offsets) and exported by studio_to_config.py as the config key card_offset, which the game "
+      "build applies to the split_cards kept mesh. add: true appends a move (default replaces all); clear: true removes "
+      "every move. Pair with studio_keep_cards so the piece is drawn.",
+      obj({"uv_min": {"type": "array", "items": {"type": "number"}}, "uv_max": {"type": "array", "items": {"type": "number"}},
+           "near": {"type": "array", "items": {"type": "number"}}, "radius_mm": {"type": "number"},
+           "offset": {"type": "array", "items": {"type": "number"}}, "rotate_deg": {"type": "array", "items": {"type": "number"}},
+           "add": {"type": "boolean"}, "clear": {"type": "boolean"}}))
+def t_card_offset(a):
+    return S.call({"do": "card_offset", **{k: a[k] for k in ("uv_min", "uv_max", "near", "radius_mm", "offset", "rotate_deg",
+                                                               "add", "clear") if k in a}})
 
 
 @tool("studio_feather_hairline", "Soften a HARD hairline (dense wall of roots, harsh under root alpha mode 0): removes "
@@ -948,9 +1342,10 @@ def t_wind_check(a):
       obj({"amounts": {"type": "array", "items": {"type": "number"}}, "seconds": {"type": "number"}, "repeats": {"type": "integer"},
            "wind_noise": {"type": "number"}, "margin_mm": {"type": "number"}, "worst": {"type": "integer"}, "sway_below_z": {"type": "number"},
            "mesh": {"type": "string"}, "z_range": {"type": "array", "items": {"type": "number"}}, "max_height_mm": {"type": "number"},
-           "min_coverage": {"type": "number"}}))
+           "min_coverage": {"type": "number"},
+           "wind_yaw_deg": {"type": "number"}, "wind_pitch_deg": {"type": "number"}}))
 def t_band_sim(a):
-    keys = ("amounts", "seconds", "repeats", "wind_noise", "margin_mm", "worst", "sway_below_z", "mesh", "z_range", "max_height_mm", "min_coverage")
+    keys = ("amounts", "seconds", "repeats", "wind_noise", "margin_mm", "worst", "sway_below_z", "mesh", "z_range", "max_height_mm", "min_coverage", "wind_yaw_deg", "wind_pitch_deg")
     return S.call({"do": "band_sim", **{k: a[k] for k in keys if k in a}}, timeout=7200)
 
 
@@ -967,6 +1362,151 @@ def t_band_sim(a):
 def t_collision_band(a):
     keys = ("clearance_mm", "min_r_mm", "list_only", "set", "reset", "mesh", "z_range", "max_height_mm", "min_coverage")
     return S.call({"do": "collision_band", **{k: a[k] for k in keys if k in a}})
+
+
+@tool("studio_list_colliders", "List the collision spheres / capsules of the open fur (the fur's own, or the project's fitted / edited set): "
+      "per sphere {i, bone, grp (0 base = cranium / neck / ears, kept by a fit; 1 fitted or outfit / back item, replaced by a fit; 2 manual; -1 as built, not "
+      "classified yet), tag (fit target), local_mm (bone-local), c_mm (rest, model space), r_mm, capsules_with}, the capsule pairs, counts "
+      "(limits 85 spheres / 75 capsules) and the last fit report. targets: true also lists the meshes studio_fit_colliders can fit "
+      "(outfit meshes incl. outfit-mod ones, hood, scabbard, sword; ids to pass as `meshes`).",
+      obj({"targets": {"type": "boolean"}, "scan": {"type": "boolean", "description": "re-scan the fit targets"}}))
+def t_list_colliders(a):
+    return S.call({"do": "list_colliders", **{k: a[k] for k in ("targets", "scan") if k in a}})
+
+
+@tool("studio_fit_colliders", "Fit collision spheres + capsules to the geometry shown on the character (the pipeline's own fitters, run on this "
+      "Studio's hair): meshes = target ids / labels from studio_list_colliders targets (or 'default' / 'all'; none = the defaults). Each sphere is "
+      "bound to the skin bone that moves the mesh part and a capsule joins neighbours; spheres that would be alone get a twin + capsule (only capsules "
+      "collide). The previous outfit / back-item colliders are replaced; head / neck / ear colliders and manual ones (keep_manual, default true) stay. "
+      "max_spheres / max_capsules (85 / 75, the vanilla maxima, twins included): per-mesh sphere counts shrink until the set fits. pad_mm (2) is "
+      "added to every radius; reach_mm only fits mesh parts within that distance of a guide (default: as the config says; 0 = whole mesh). "
+      "The first fit of a build also runs the pipeline once (~1 min) to learn which spheres are outfit ones. Project state (undo with studio_edit_collider "
+      "op undo, saved in the project, exported into the fur). Returns report {targets {id: spheres, vertices, coverage_pct (share of the mesh vertices within 8 mm "
+      "of a capsule, whole set), coverage_before_pct}, total_spheres, total_capsules, ...}. Does not support dry_run.",
+      obj({"meshes": {"type": "array", "items": {"type": "string"}}, "max_spheres": {"type": "integer"}, "max_capsules": {"type": "integer"},
+           "pad_mm": {"type": "number"}, "reach_mm": {"type": "number"}, "keep_manual": {"type": "boolean"}}))
+def t_fit_colliders(a):
+    return S.call({"do": "fit_colliders", **{k: a[k] for k in ("meshes", "max_spheres", "max_capsules", "pad_mm", "reach_mm", "keep_manual") if k in a}}, timeout=1800)
+
+
+@tool("studio_edit_collider", "Edit one collider by hand (all undoable): op add {bone (name; default = the bone of the region the sphere sits in: head above the neck, neck, else torso3), world_mm [x,y,z] or local_mm, r_mm (20), "
+      "twin (true: + a twin sphere and capsule)}, move / set {index or indices, local_mm (absolute, bone-local), offset_mm (relative, bone-local), "
+      "world_mm (absolute) or world_offset_mm; set also r_mm / scale}, resize {index, r_mm or scale}, bone {index, bone: rebind keeping the world "
+      "position}, delete {index / indices; their twins go too}, mirror {index / indices: mirror image about the head's mid-plane on the l_/r_ "
+      "bone, with capsules between mirrored spheres}, link / unlink {a, b: capsule between two spheres}, select {index, index2}, reset (back to the build's "
+      "own set), undo, redo. A hand-edited fitted sphere becomes manual (a refit keeps it). "
+      "FLATS (HairWorks collides with spheres / capsules only, so a flat is a panel of N thin parallel capsules side by side across its "
+      "width, each running along its height, each a pair of spheres tagged \"flat#k\", grp 2 manual; one undo step per op): add_flat {bone (default "
+      "torso3), world_mm or centre_mm [x,y,z] (centre, rest pose, default the head), width_mm, height_mm, thickness_mm (= capsule radius), "
+      "yaw_deg / pitch_deg / roll_deg or angle [yaw, pitch, roll] or normal [x,y,z] (0/0/0 = facing +y, width along x, height along z), count "
+      "(default width / (2 * thickness), capped to the free budget of 85 spheres / 75 capsules)} -> {tag, flat, sphere_indices, params}. "
+      "The flat ops take tag (\"flat#k\"), flat (k) or index (one of its spheres): flat_move {world_mm / centre_mm absolute or world_offset_mm, "
+      "bone}, flat_resize {width_mm, height_mm, thickness_mm, count, scale}, flat_rotate {yaw_deg, pitch_deg, roll_deg, angle, normal, or "
+      "d_yaw_deg / d_pitch_deg / d_roll_deg relative}, flat_set (any of these), flat_mirror (mirror copy on the l_/r_ bone), flat_delete. "
+      "studio_list_colliders lists them under 'flats'.",
+      obj({"op": {"type": "string", "enum": ["add", "move", "set", "resize", "bone", "rebind", "delete", "mirror", "link", "unlink", "select", "reset", "undo", "redo",
+                                             "add_flat", "flat_move", "flat_resize", "flat_rotate", "flat_set", "flat_mirror", "flat_delete"]},
+           "tag": {"type": "string"}, "flat": {"type": "integer"}, "centre_mm": {"type": "array", "items": {"type": "number"}},
+           "width_mm": {"type": "number"}, "height_mm": {"type": "number"}, "thickness_mm": {"type": "number"}, "count": {"type": "integer"},
+           "yaw_deg": {"type": "number"}, "pitch_deg": {"type": "number"}, "roll_deg": {"type": "number"},
+           "d_yaw_deg": {"type": "number"}, "d_pitch_deg": {"type": "number"}, "d_roll_deg": {"type": "number"},
+           "angle": {"type": "array", "items": {"type": "number"}}, "normal": {"type": "array", "items": {"type": "number"}},
+           "index": {"type": "integer"}, "indices": {"type": "array", "items": {"type": "integer"}}, "index2": {"type": "integer"},
+           "a": {"type": "integer"}, "b": {"type": "integer"}, "bone": {"type": "string"},
+           "local_mm": {"type": "array", "items": {"type": "number"}}, "offset_mm": {"type": "array", "items": {"type": "number"}},
+           "world_mm": {"type": "array", "items": {"type": "number"}}, "world_offset_mm": {"type": "array", "items": {"type": "number"}},
+           "r_mm": {"type": "number"}, "scale": {"type": "number"}, "twin": {"type": "boolean"}}, ["op"]))
+def t_edit_collider(a):
+    return S.call({"do": "edit_collider", **a})
+
+
+@tool("studio_rebind_colliders", "2026-10-16: rebind collision spheres to the bone of the REGION they sit in (head above the neck bone + 20 mm, "
+      "neck / neck2 within 40 mm below it, else torso3), or to `bone`, keeping their rest-pose world position (local recomputed through "
+      "the target bone's bind pose). Why: a sphere placed around the head but bound to torso3 (the old default of new spheres / flats; "
+      "geralt_user_1949: 18 headband-ring spheres) does not turn with the head in game and eats the hair when the character moves. "
+      "Default every sphere; indices limits it; capsule partners are rebound together. list_only reports the plan. One undo step. "
+      "studio_list_colliders flags such spheres under misbound (bone_suggested per sphere).",
+      obj({"indices": {"type": "array", "items": {"type": "integer"}}, "bone": {"type": "string"}, "list_only": {"type": "boolean"}}))
+def t_rebind_colliders(a):
+    return S.call({"do": "edit_collider", "op": "rebind", **{k: a[k] for k in ("indices", "bone", "list_only") if k in a}})
+
+
+@tool("studio_collider_report", "Clearance report of the colliders (read-only). (1) guides whose strand ends inside a collider: mode 'rest' = the authored hair "
+      "at rest; mode 'sim' = the SDK simulation read back after `steps` (180) frames with a motion `preset` (Idle, TurnHead, Nod, Walk, Run, SpinBody, "
+      "Wind; default the current one), CVs from from_cv on, deeper than tol_mm (1) inside a capsule; per guide the deepest CV, the capsule and its "
+      "group. (2) capsules poking out of the skin: surface samples of every capsule outside the nearest shown mesh surface (head, body, outfit, scabbard, sword) by more than poke_mm (3), "
+      "indicative. Also spheres_without_capsule (inactive in the game).",
+      obj({"mode": {"type": "string", "enum": ["rest", "sim"]}, "preset": {"type": "string"}, "steps": {"type": "integer"}, "wind": {"type": "number"},
+           "tol_mm": {"type": "number"}, "poke_mm": {"type": "number"}, "from_cv": {"type": "integer"}, "worst": {"type": "integer"}}))
+def t_collider_report(a):
+    return S.call({"do": "collider_report", **a}, timeout=1800)
+
+
+DRAPE_MESHES = {"type": "array", "items": {"type": ["string", "integer"]},
+                "description": "scene meshes: indices from studio_list_meshes, substrings of name / texture / path (e.g. 'item_10', 'scabbard', 'sword'), "
+                               "'hood' (the modCiri hood roll chunks), 'outfit' (all outfit pieces), 'all'"}
+
+
+@tool("studio_list_meshes", "List the scene meshes a drape / report can use (outfit pieces, outfit-mod meshes, hood, scabbard, sword): index, name, "
+      "texture, triangles, height range, hood flag.", obj({}))
+def t_list_meshes(a):
+    return S.call({"do": "list_meshes", "meshes": ["all"]})
+
+
+@tool("studio_drape_outfit", "Opt-in: DRAPE hair over scene meshes (hood, scabbard, sword, outfit pieces incl. outfit-mod meshes). At rest, guide points "
+      "that are inside or within pad_mm (3) of the selected meshes' OUTER surface (outermost radius around the body axis per azimuth / height) are "
+      "moved to the outside and the rest of the strand is carried so it keeps its segment lengths and shape and drapes over the piece. The first "
+      "root_mm (20) of every strand never moves; points more than max_push_mm (150) under the surface are left alone. One reshape op per changed "
+      "guide (undoable with studio_undo, saved by studio_save, replayed by the export). Reports guides / points moved, max shift, max length "
+      "change (fallback = a segment had to stretch). box [xmin,xmax,ymin,ymax,zmin,zmax] limits the triangles used; axis [x,y] = body axis "
+      "(default the head centre); where = guide selector; list_only = measure only.",
+      obj({"meshes": DRAPE_MESHES, "pad_mm": {"type": "number"}, "root_mm": {"type": "number"}, "max_push_mm": {"type": "number"},
+           "box": {"type": "array", "items": {"type": "number"}}, "axis": {"type": "array", "items": {"type": "number"}},
+           "where": WHERE, "list_only": {"type": "boolean"},
+           "shell": {"type": "boolean", "description": "only points between the pieces' inner and outer surface count as inside (default on when "
+                     "only sword / scabbard meshes are selected: hair between the back and the sword stays put)"},
+           "tube": {"type": "boolean", "description": "fit the pieces as one long thin piece (sword hilt) along its own axis and move hair SIDEWAYS off that "
+                    "axis around it (the default radial push throws the back hair over a hilt into a wing)"},
+           "split_faces": {"type": "boolean", "description": "with tube: also remove the growth faces whose in-between hair runs through the piece "
+                           "(guides on both sides of the hilt) -> hair parts around it"}, "face_pad_mm": {"type": "number"}, "face_zmin": {"type": "number"}, "face_zmax": {"type": "number"}, "tube_side": {"type": "string", "enum": ["body", "outer", "axis"], "description": "tube: which side every strand passes (axis = straight off the axis, default; body = between the back/head and the piece: tested worse on Ciri, cut a hole)"}, **SHOW}, ["meshes"]))
+def t_drape(a):
+    return edit(a, {"do": "drape_outfit", **{k: a[k] for k in ("meshes", "pad_mm", "root_mm", "max_push_mm", "box", "axis", "where", "list_only", "shell", "tube", "split_faces", "face_pad_mm", "face_zmin", "face_zmax", "tube_side") if k in a}})
+
+
+@tool("studio_drape_report", "Read-only: how many guides / points are inside (or within pad_mm) the selected meshes. mode 'rest' = the authored strands "
+      "(CVs after the root part + 2 samples per span); mode 'sim' = the SDK simulation read back after `steps` (240) frames with a motion `preset` "
+      "(Idle, Walk, ...; the meshes are posed like the Studio draws them), lower 60 % of the refined strand, frames of the second half. "
+      "Returns guides_inside, points_inside, ..._or_within_pad, deepest_mm; ids: true adds ids_deeper_5mm / 10mm / 20mm (guide ids).",
+      obj({"meshes": DRAPE_MESHES, "mode": {"type": "string", "enum": ["rest", "sim"]}, "preset": {"type": "string"}, "steps": {"type": "integer"},
+           "wind": {"type": "number"}, "pad_mm": {"type": "number"}, "root_mm": {"type": "number"}, "max_push_mm": {"type": "number"},
+           "box": {"type": "array", "items": {"type": "number"}}, "axis": {"type": "array", "items": {"type": "number"}}, "ids": {"type": "boolean"}}, ["meshes"]))
+def t_drape_report(a):
+    return S.call({"do": "drape_report", **a}, timeout=1800)
+
+
+@tool("studio_grow_colliders", "Opt-in: FILL the shell of a piece with collision spheres. The chosen spheres (spheres [indices], or tag = the fit target they "
+      "came from, e.g. 'hood' after studio_fit_colliders, or sphere_box [xmin,xmax,ymin,ymax,zmin,zmax] on their centres) are re-centred between the "
+      "inner and the outer surface of the selected meshes (same azimuth and height, the outer surface + pad_mm (2) stays touched) and get the radius that "
+      "spans both (min_r_mm 8 .. max_r_mm 60). The pipeline's back-item fit puts small spheres on the back surface of a thick rolled hood; hair that falls "
+      "in over its top edge ends up inside the cloth between those spheres and the neck. Undoable (studio_edit_collider undo), saved in the project, "
+      "written into the fur by the export. list_only: report the changes.",
+      obj({"meshes": DRAPE_MESHES, "pad_mm": {"type": "number"}, "min_r_mm": {"type": "number"}, "max_r_mm": {"type": "number"}, "spheres": {"type": "array", "items": {"type": "integer"}},
+           "tag": {"type": "string"}, "sphere_box": {"type": "array", "items": {"type": "number"}},
+           "box": {"type": "array", "items": {"type": "number"}}, "axis": {"type": "array", "items": {"type": "number"}}, "list_only": {"type": "boolean"}}, ["meshes"]))
+def t_grow_colliders(a):
+    return S.call({"do": "grow_colliders", **a})
+
+
+@tool("studio_shell_colliders", "Opt-in: collision chains that FILL the shell of a piece: for each height in rows_z (m) spheres every step_deg (30) around the body axis from "
+      "az_from to az_to (degrees, 0 = +x, -90 = straight back; default -165 .. -20), each re-centred between the inner and the outer surface of the selected meshes "
+      "(radius up to max_r_mm 60, outer surface + pad_mm 2 touched), chained with capsules. replace {tag, z_tol_mm}: removes the spheres with that fit tag "
+      "(e.g. 'hood') at those heights first. For a thick rolled hood the pipeline's back sheet leaves the sides of the collar open, hair falls in there and ends "
+      "up inside the cloth. Budget 85 spheres is checked. Undoable (studio_edit_collider undo), saved in the project, exported into the fur. list_only: report the spheres.",
+      obj({"meshes": DRAPE_MESHES, "rows_z": {"type": "array", "items": {"type": "number"}}, "az_from": {"type": "number"}, "az_to": {"type": "number"},
+           "step_deg": {"type": "number"}, "pad_mm": {"type": "number"}, "min_r_mm": {"type": "number"}, "max_r_mm": {"type": "number"}, "bone": {"type": "string"},
+           "replace": {"type": "object"}, "box": {"type": "array", "items": {"type": "number"}}, "axis": {"type": "array", "items": {"type": "number"}}, "list_only": {"type": "boolean"}}, ["meshes", "rows_z"]))
+def t_shell_colliders(a):
+    return S.call({"do": "shell_colliders", **a})
 
 
 @tool("studio_dedupe", "Remove duplicate guides (root within tol_mm 0.6 and tip within 4x that of another guide): "
@@ -1156,8 +1696,8 @@ def t_plant(a):
       "length factor), hugging the scalp (lift_mm 2, span_mm 25). Copies over the eyes / face (below brow + brow_clear_mm "
       "12), on the ears (box + ear_pad_mm 5), through the head or sticking up are rejected; roots already within "
       "covered_mm of a guide are skipped. New roots past the growth-mesh edge get growth faces fanned onto it, so their "
-      "hair renders. straighten: true plants along a smoothed line (local mean over smooth_mm 12). Budget: refuses when "
-      "the budget ratio is above max_ratio (1.2) and drops the outermost new guides until it is back under. list_only: "
+      "hair renders. straighten: true plants along a smoothed line (local mean over smooth_mm 12). Budget: information only, "
+      "never refuses or drops guides. list_only: "
       "report the planned roots without planting. Then studio_compare front + both 3/4 sides.",
       obj({"part": {"type": "string", "enum": ["all", "front", "left_temple", "right_temple", "temples", "ears", "sides"]},
            "rows": {"type": "integer"}, "offsets_mm": {"type": "array"}, "spacing_mm": {"type": "number"},
@@ -1167,15 +1707,16 @@ def t_plant(a):
            "covered_mm": {"type": "number"}, "brow_clear_mm": {"type": "number"}, "ear_pad_mm": {"type": "number"},
            "front_deg": {"type": "number"}, "temple_deg": {"type": "number"}, "ear_deg": {"type": "number"},
            "edge_faces": {"type": "boolean", "description": "default true: new roots past the growth-mesh edge get growth faces (false = split the nearest face only)"},
+           "ignore_budget": {"type": "boolean", "description": "no-op since 2026-10-15 (the budget never blocks)"},
            "list_only": {"type": "boolean"}, **SHOW}))
 def t_hairline_fill(a):
     return edit(a, {"do": "hairline_fill", **{k: a[k] for k in (
         "part", "rows", "offsets_mm", "spacing_mm", "min_length", "taper", "lift_mm", "span_mm", "template_mm", "straighten",
         "smooth_mm", "max_new", "max_ratio", "covered_mm", "brow_clear_mm", "ear_pad_mm", "front_deg", "temple_deg", "ear_deg",
-        "edge_faces", "list_only") if k in a}})
+        "edge_faces", "ignore_budget", "list_only") if k in a}})
 
 
-@tool("studio_free_budget", "Make room in the hair budget so fills can land when the ratio is pinned at the limit (1.2). "
+@tool("studio_free_budget", "Explicit tool only (never called automatically; the budget no longer blocks anything since 2026-10-15): thins / merges guides to lower the budget ratio. "
       "The budget counts 64 x density hairs per GROWTH FACE whatever its size, so deleting an interior guide (its hole is "
       "re-fanned: 2 faces fewer) frees what one planted guide costs. (1) merge: guides whose root is within merge_mm (2.5) "
       "of an earlier guide's root and whose shape is within shape_mm (6, mean point distance) go (copies left by fills); "
@@ -1201,8 +1742,8 @@ def t_free_budget(a):
       "rotated about the skull centre, root on the skin, length_scale / max_length, root part hugging the skin (span_mm "
       "20, lift_mm 1.5). Rejected: through the head, sticking up (tuft_mm 12), over the face / eyes, on the ears. New "
       "roots get growth faces fanned onto the mesh edge. side left|right|both, where {near, radius} / {z_min, z_max}. "
-      "Budget: refuses above max_ratio (1.2), drops the last copies to stay under. list_only: plan only.",
-      obj({"side": {"type": "string", "enum": ["both", "left", "right"]}, "where": WHERE, "spacing_mm": {"type": "number"},
+      "Budget: information only, never refuses or drops. list_only: plan only. allow_temple (opt-in 2026-10-17): the over-face test lets the temple skin pass (lateral of the outer eye corners + temple_inset_mm 8, above the eye centre + temple_min_z_mm 0; eyes / brows still rejected); face_ok_box [x0,x1,y0,y1,z0,z1] (edit frame, not mirrored) passes too.",
+      obj({"allow_temple": {"type": "boolean"}, "temple_inset_mm": {"type": "number"}, "temple_min_z_mm": {"type": "number"}, "face_ok_box": {"type": "array", "items": {"type": "number"}}, "side": {"type": "string", "enum": ["both", "left", "right"]}, "where": WHERE, "spacing_mm": {"type": "number"},
            "below_mm": {"type": "number"}, "reach_mm": {"type": "number"}, "cover_mm": {"type": "number"},
            "cover_height_mm": {"type": "number"}, "interp": {"type": "boolean"}, "min_length": {"type": "number"},
            "template_mm": {"type": "number"}, "length_scale": {"type": "number"}, "max_length": {"type": "number"},
@@ -1216,9 +1757,107 @@ def t_fill_below(a):
     cmd = {"do": "fill_below_hairline", **{k: a[k] for k in (
         "side", "where", "spacing_mm", "below_mm", "reach_mm", "cover_mm", "cover_height_mm", "interp", "min_length",
         "template_mm", "length_scale", "max_length", "lift_mm", "span_mm", "tuft_mm", "alpha_vis", "brow_clear_mm",
-        "ear_pad_mm", "max_new", "max_ratio", "ignore_budget", "shots", "sample_px", "list_only") if k in a}}
+        "ear_pad_mm", "max_new", "max_ratio", "ignore_budget", "shots", "sample_px", "list_only",
+        "allow_temple", "temple_inset_mm", "temple_min_z_mm", "face_ok_box") if k in a}}
     cmd.update(cam_args(a))   # a camera = closed loop on that render (shot / view / eye)
     return edit(a, cmd)
+
+
+@tool("studio_plant_flow", "Opt-in, Studio-only (2026-10-15): plant NEW guides on bare skin with a GIVEN flow instead of "
+      "copying neighbours (hairline_fill / fill_below_hairline copy the nearest guide, e.g. a hanging front lock). Seeds: "
+      "points [[x,y,z],..] (edit frame, snapped to the skin), or shots [ids] = the skin SEEN bare in those cameras' scalp "
+      "overlay, or area samples of the head skin with no strand over it (uncovered_only, cover_mm 3); limit with box "
+      "[x0,x1,y0,y1,z0,z1] (edit frame), near [x,y,z] + radius (m), side left|right|both. Poisson at spacing_mm (5), at "
+      "least clear_mm from existing roots, planted nearest the existing hair first (growth faces chain outward). Each "
+      "strand walks ALONG THE SKIN from its root in direction [x,y,z] (given for the +x side, x mirrored on the other side "
+      "unless mirror_x false; default = the mean root direction of guides within flow_mm 30) for walk_mm (40), lift "
+      "base_mm (1) -> lift_mm (2) above the skin, then joins the nearest existing guide running the same way within "
+      "join_mm (30): its remaining shape, the gap fading over fade_mm (40) to fade_keep (0.5) of it, so copies do not stack on "
+      "one guide (join false = walk only; never joins a guide hanging over the face, nor join_exclude; join_spread_mm (0) "
+      "adds that much distance per earlier join onto the same guide, so a dense row spreads over several tails instead of "
+      "bundling into one); length (m) caps it. "
+      "Pushed out of the head (standoff_mm 2); over the face / eyes or on the ears rejected. uv [u,v] = texel of the new "
+      "growth faces (see studio_face_texel). over_ear: roots in front of / below the ear top go up (reaching that height over_ear_front_mm (4) in front of the ear) "
+      "to over_ear_clear_mm (9) above the ear, over it to over_ear_behind_mm (10) behind it (layered: higher / farther-forward roots pass up to over_ear_spread_mm (14) higher, plus over_ear_keep (0; 0.5 = "
+      "parallel sweep) of the root's height above ear top - over_ear_base_mm (20; 0 with keep 1 = roots above the ear go straight "
+      "back, only lower ones rise); over_ear_all: also roots above the clearance line, so they pass behind the ear before "
+      "joining), then walk in direction and join (temple / sideburn hair "
+      "swept back over the ear); stop_at_ear_mm (off): the walk ends that far before the ear (short flat sideburn hair "
+      "swept back toward the ear, use with join false); max_turn_deg (off): reject strands whose summed bending exceeds it (kinked / looped short walks; 300 is a safe value); new faces over an ear are dropped (drop_ear_faces, on with over_ear; face_max_mm drops "
+      "longer-edged new faces). ear_box [x0,x1,y0,y1,z0,z1] (the +x ear, mirrored) replaces the automatic ear boxes "
+      "(too big on some heads: check ear_boxes in the result). Budget: information only, never refuses. list_only: plan only. allow_temple (opt-in 2026-10-17): the over-face test lets the temple skin pass (lateral of the outer eye corners + temple_inset_mm 8, above the eye centre + temple_min_z_mm 0; eyes / brows still rejected); face_ok_box [x0,x1,y0,y1,z0,z1] (edit frame, not mirrored) passes too. points_exact (opt-in 2026-10-17): every explicit point is projected onto the skin surface and kept as its own seed (no clear_mm / spacing_mm thinning).",
+      obj({"points": {"type": "array"}, "points_exact": {"type": "boolean"}, "allow_temple": {"type": "boolean"}, "temple_inset_mm": {"type": "number"}, "temple_min_z_mm": {"type": "number"}, "face_ok_box": {"type": "array", "items": {"type": "number"}}, "shots": {"type": "array"}, "box": {"type": "array", "items": {"type": "number"}},
+           "near": {"type": "array", "items": {"type": "number"}}, "radius": {"type": "number"},
+           "side": {"type": "string", "enum": ["both", "left", "right"]}, "direction": {"type": "array", "items": {"type": "number"}},
+           "mirror_x": {"type": "boolean"}, "spacing_mm": {"type": "number"}, "clear_mm": {"type": "number"},
+           "walk_mm": {"type": "number"}, "step_mm": {"type": "number"}, "base_mm": {"type": "number"}, "lift_mm": {"type": "number"},
+           "join": {"type": "boolean"}, "join_mm": {"type": "number"}, "fade_mm": {"type": "number"}, "fade_keep": {"type": "number"}, "join_exclude": WHERE, "join_spread_mm": {"type": "number"}, "length": {"type": "number"},
+           "over_ear": {"type": "boolean"}, "ear_box": {"type": "array", "items": {"type": "number"}}, "over_ear_clear_mm": {"type": "number"}, "over_ear_behind_mm": {"type": "number"}, "over_ear_spread_mm": {"type": "number"}, "over_ear_front_mm": {"type": "number"}, "over_ear_keep": {"type": "number"}, "over_ear_base_mm": {"type": "number"}, "over_ear_all": {"type": "boolean"}, "stop_at_ear_mm": {"type": "number"}, "max_turn_deg": {"type": "number"},
+           "drop_ear_faces": {"type": "boolean"}, "face_max_mm": {"type": "number"},
+           "min_length": {"type": "number"}, "standoff_mm": {"type": "number"}, "flow_mm": {"type": "number"},
+           "uncovered_only": {"type": "boolean"}, "cover_mm": {"type": "number"}, "cover_height_mm": {"type": "number"},
+           "ear_pad_mm": {"type": "number"}, "brow_clear_mm": {"type": "number"}, "uv": {"type": "array"},
+           "sample_px": {"type": "integer"}, "max_new": {"type": "integer"}, "max_ratio": {"type": "number"},
+           "ignore_budget": {"type": "boolean"}, "list_only": {"type": "boolean"}, **SHOW}))
+def t_plant_flow(a):
+    keys = ("points", "shots", "box", "near", "radius", "side", "direction", "mirror_x", "spacing_mm", "clear_mm", "walk_mm",
+            "step_mm", "base_mm", "lift_mm", "join", "join_mm", "fade_mm", "fade_keep", "join_exclude", "join_spread_mm", "length", "over_ear", "ear_box", "over_ear_clear_mm", "over_ear_behind_mm", "over_ear_spread_mm", "over_ear_front_mm", "over_ear_keep", "over_ear_base_mm", "over_ear_all", "stop_at_ear_mm", "max_turn_deg",
+            "drop_ear_faces", "face_max_mm", "min_length", "standoff_mm", "flow_mm",
+            "uncovered_only", "cover_mm", "cover_height_mm", "ear_pad_mm", "brow_clear_mm", "uv", "sample_px", "max_new",
+            "max_ratio", "ignore_budget", "list_only", "points_exact", "allow_temple", "temple_inset_mm", "temple_min_z_mm", "face_ok_box")
+    return edit(a, {"do": "plant_flow", **{k: a[k] for k in keys if k in a}})
+
+
+@tool("studio_face_texel", "Opt-in, Studio-only (2026-10-15): per-area colour / density through the growth-face uv. Every "
+      "texture-driven fur value (root / tip colour, density, root / tip width, clump, wave) is read at the face uv; this "
+      "moves the corners of the guides in 'where' to the texel whose values best match the targets, all other maps held: "
+      "root_brightness / tip_brightness (factor on the colour maps), density (factor on the density map: < 1 thins / "
+      "feathers an edge), width (factor on the root width map). corners guide (default: only the selected guides' corners, "
+      "so the hair blends into the neighbours) | face. The reachable range is what the fur's own maps hold (reported: "
+      "texel_before / target / chosen). list_only: report only. Needs a fur with texture maps.",
+      obj({"where": WHERE, "root_brightness": {"type": "number"}, "tip_brightness": {"type": "number"},
+           "density": {"type": "number"}, "width": {"type": "number"},
+           "corners": {"type": "string", "enum": ["guide", "face"]}, "grid": {"type": "integer"},
+           "list_only": {"type": "boolean"}, **SHOW}, ["where"]))
+def t_face_texel(a):
+    keys = ("where", "root_brightness", "tip_brightness", "density", "width", "corners", "grid", "list_only")
+    return edit(a, {"do": "face_texel", **{k: a[k] for k in keys if k in a}})
+
+
+@tool("studio_soften_hairline", "Opt-in, Studio-only (2026-10-15): soften a square / blunt planted hairline without deleting "
+      "anything. Row 1 = guides on the open edge of the growth mesh inside where (default front), row 2 = their face "
+      "neighbours (rows 2): their growth-face texels get density [0.35, 0.7] and root width [0.6, 0.85] of the current "
+      "texel (as studio_face_texel, corners guide, so it fades across the faces), and row-1 roots move jitter_mm (3) back or "
+      "forward along their flow (seed) for an irregular line. list_only: rows only.",
+      obj({"where": WHERE, "rows": {"type": "integer"}, "density": {"type": "array", "items": {"type": "number"}},
+           "width": {"type": "array", "items": {"type": "number"}}, "jitter_mm": {"type": "number"}, "seed": {"type": "integer"},
+           "list_only": {"type": "boolean"}, **SHOW}))
+def t_soften_hairline(a):
+    return edit(a, {"do": "soften_hairline", **{k: a[k] for k in ("where", "rows", "density", "width", "jitter_mm", "seed", "list_only") if k in a}})
+
+
+@tool("studio_fade_hairline", "Opt-in, Studio-only (2026-10-15): make a hairline GROW out of the skin (sparse fine "
+      "strands at the very edge, denser over a few mm, no stair steps / cut-off blocks). HairWorks samples the fur maps "
+      "per hair at its uv interpolated across the growth face, so the corners of the edge rows (rows (3) face rings from "
+      "the visible hairline of the growth mesh, inside where: an open edge with cover_min (2) roots within probe_radius_mm 5 "
+      "or guides lying within cover_mm 5, at probe_mm 6 beyond it is a hole inside the hair / the nape under long hair and is "
+      "left alone; cover_exclude = guides not counted as cover, e.g. front locks over the forehead) are put on a monotone DENSITY RAMP of the fur's own density map "
+      "(the vanilla hairline fade): searched over the whole map (every stride_px 3) for a monotone ramp of at least "
+      "min_ramp_px (8) down to density low (12), reached from the nearest interior guide's texel by a clean uv segment, "
+      "with the other maps held within colour_tol 30 / width_tol 40 / clump_tol 60 / wave_tol 60; "
+      "row k takes density[k] x the interior density (default [0.06, 0.39, 0.72]). The root part (flat_mm 6) of rows "
+      "1..flat_rows (2) is laid onto the skin (lift_mm 0.6) so no stub stands out. Reports each group's ramp and texels. "
+      "Guides and faces stay. Use instead of soften_hairline / feather_hairline (their far-off texels and deleted faces "
+      "make speckles and saw teeth). list_only: report only.",
+      obj({"where": WHERE, "rows": {"type": "integer"}, "density": {"type": "array", "items": {"type": "number"}},
+           "inner_mm": {"type": "number"}, "stride_px": {"type": "integer"}, "min_ramp_px": {"type": "number"}, "low": {"type": "number"}, "probe_mm": {"type": "number"}, "probe_radius_mm": {"type": "number"}, "cover_mm": {"type": "number"}, "cover_min": {"type": "integer"}, "relax": {"type": "number"}, "facing": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}}, "facing_deg": {"type": "number"}, "extend_mm": {"type": "number"}, "extend_density": {"type": "number"}, "extend_length": {"type": "number"}, "extend_flat_mm": {"type": "number"}, "extend_lift_mm": {"type": "number"}, "flat_first_lift_mm": {"type": "number"}, "cover_exclude": WHERE,
+           "colour_tol": {"type": "number"}, "width_tol": {"type": "number"}, "clump_tol": {"type": "number"},
+           "wave_tol": {"type": "number"}, "flat_mm": {"type": "number"}, "lift_mm": {"type": "number"},
+           "flat_rows": {"type": "integer"}, "list_only": {"type": "boolean"}, **SHOW}))
+def t_fade_hairline(a):
+    keys = ("where", "rows", "density", "inner_mm", "stride_px", "min_ramp_px", "low", "probe_mm", "probe_radius_mm", "cover_mm", "cover_min", "relax", "facing", "facing_deg", "extend_mm", "extend_density", "extend_length", "extend_flat_mm", "extend_lift_mm", "flat_first_lift_mm", "cover_exclude", "colour_tol", "width_tol", "clump_tol", "wave_tol",
+            "flat_mm", "lift_mm", "flat_rows", "list_only")
+    return edit(a, {"do": "fade_hairline", **{k: a[k] for k in keys if k in a}})
 
 
 @tool("studio_centre_parting", "Shape a parting line and comb the hair away from it on both sides. line [[p0],[p1]] "
@@ -1452,6 +2091,31 @@ def t_reset(a):
 
 
 # --- look, physics, lighting
+@tool("studio_wind_natural", "2026-10-17 (FINDINGS 11.5 / 11.6): make the open groom move naturally in wind from near the root at a "
+      "sane GPU cost. Measured on the Svanrige and Yennefer user saves: the upper half of every strand is held rigid by rootStiffness "
+      "(and stiffness), not by stiffnessStrength; strength below 1 is what costs the GPU (15 -> 80-180 ms). Sets strength 1, "
+      "rootStiffness root (0), stiffness (.9), tipStiffness 0, bendStiffness bend (.9) = the tuned recipe u1 (FINDINGS 11.6: 132 % of the "
+      "Svanrige user save's motion, from the root; .3 / .3 = 250 %, wild); keeps everything else (curves, bone stiffness, "
+      "collision, widths, colours). Returns the values before / after. Measure with tools/hairworks/toolarch/wind_motion.py.",
+      obj({"root": {"type": "number", "description": "rootStiffness (0; .1-.2 for a little hold at the scalp)"},
+           "stiffness": {"type": "number", "description": "stiffness (.9; .93 = the user save's amount of motion, .3 = 2.5x)"}, "bend": {"type": "number", "description": "bendStiffness (.9)"},
+           "damping": {"type": "number", "description": "optional stiffnessDamping (.5) and simulation damping (.3) for less flutter"}}))
+def t_wind_natural(a):
+    S = "physicalMaterials.stiffness."
+    keys = [S + k for k in ("stiffnessStrength", "rootStiffness", "stiffness", "tipStiffness", "bendStiffness", "stiffnessDamping")] + ["physicalMaterials.simulation.damping"]
+    before = S_call_values(keys)
+    sv = {S + "stiffnessStrength": 1.0, S + "rootStiffness": float(a.get("root", 0.0)), S + "stiffness": float(a.get("stiffness", 0.9)),
+          S + "tipStiffness": 0.0, S + "bendStiffness": float(a.get("bend", 0.9))}
+    if a.get("damping") is not None:
+        sv[S + "stiffnessDamping"] = float(a["damping"]); sv["physicalMaterials.simulation.damping"] = 0.3
+    r = t_lookset({"set": sv, "force": True})
+    return {"before": before, "after": S_call_values(keys), "set": sv, "look": r}
+
+
+def S_call_values(keys):
+    return S.call({"do": "look_get", "keys": keys}).get("values", {})
+
+
 @tool("studio_look_get", "Current look / physics values (fur parameter paths). keys: optional list of path prefixes.",
       obj({"keys": {"type": "array", "items": {"type": "string"}}}))
 def t_lookget(a):
@@ -1460,16 +2124,26 @@ def t_lookget(a):
 
 @tool("studio_look_set", "Set look / physics values {param path: value}, e.g. graphicalMaterials.color.rootColor, "
       "physicalMaterials.stiffness.tipStiffness, graphicalMaterials.width.rootWidth, density... Caps are re-enforced.",
-      obj({"set": {"type": "object"}, **SHOW}))
+      obj({"set": {"type": "object"}, "force": {"type": "boolean", "description": "2026-10-17: also set a parameter the fur's own property pack "
+           "does not carry (e.g. physicalMaterials.stiffness.stiffnessStrength on a vanilla hair fur: the UI slider sets it, look_get calls it unknown)"}, **SHOW}))
 def t_lookset(a):
     sv = a.get("set")
     if sv is None:   # flat form {path: value, ...} accepted too
-        sv = {k: v for k, v in a.items() if "." in k}
+        sv = {k: v for k, v in a.items() if "." in k and k != "force"}
     if not sv:
         raise RuntimeError('nothing to set: use {"set": {"graphicalMaterials.color.rootColor": [r,g,b]}} (or the flat '
                            'form with dotted paths); got keys: ' + ", ".join(a.keys()))
     chk = S.call({"do": "look_get", "keys": list(sv.keys())}).get("values", {})
     bad = [k for k, v in chk.items() if isinstance(v, dict) and v.get("error")]
+    if bad and a.get("force"):
+        bad = [k for k in bad if not k.startswith(("physicalMaterials.", "graphicalMaterials.", "levelOfDetail."))]
+    # 2026-10-17 (L593): a colour given as [r, g, b] (0-255) is stored in the UI's struct form; the Studio's preview reads only
+    # the struct (hairsdk color()) and rendered a list-form colour as WHITE while the export / game used it correctly
+    for k, v in list(sv.items()):
+        if k.endswith("Color") and isinstance(v, list) and len(v) in (3, 4) and all(isinstance(x, (int, float)) for x in v):
+            m = 255.0 if max(v) > 1.0 else 1.0
+            sv[k] = {"Red": int(round(v[0] * 255 / m)), "Green": int(round(v[1] * 255 / m)), "Blue": int(round(v[2] * 255 / m)),
+                     "Alpha": int(round(v[3] * 255 / m)) if len(v) == 4 else 255}
     if bad:
         raise RuntimeError("unknown look path(s): " + ", ".join(bad) + " (studio_look_get {} lists every path)")
     return edit(a, {"do": "look", "set": sv})
@@ -1498,10 +2172,33 @@ def t_rig(a):
     return S.call({"do": "rig", **a["set"]})
 
 
-@tool("studio_simulate", "Run physics: preset idle / walk / run / turn / nod / spin / wind / rest for seconds "
+@tool("studio_game_accurate", "Game-accurate hair preview (DEFAULT ON): the hair as the game's path tracer builds it "
+      "(32 hairs per growth face, no LOD, density texture per hair, the fur's width, root transparency from the user's "
+      "dx12user.settings, closest hair only). on=false = the old HairWorks 1.2.1 raster preview (close-up detail LOD, ~2.8x more, "
+      "thinner hairs). Optional: width_scale, hairs_per_face, root_alpha_mode 0/1/2, root_alpha_falloff, spline, hair_scatter "
+      "(share of the light the hair blocks that still reaches the skin, 0.5). Returns the current values.",
+      obj({"on": {"type": "boolean"}, "width_scale": {"type": "number"}, "hairs_per_face": {"type": "integer"},
+           "root_alpha_mode": {"type": "integer"}, "root_alpha_falloff": {"type": "number"}, "spline": {"type": "integer"},
+           "hair_scatter": {"type": "number"}, "wave_scale": {"type": "number"},
+           "lod_emu": {"type": "boolean", "description": "detail-LOD emulation (default true, L480): width -> lerp(width, detailLODWidth, t), hairs kept x lerp(1, detailLODDensity, t), t from the camera distance"},
+           "lod_dist_scale": {"type": "number", "description": "LOD distance = SDK camera distance x this (1.64)"},
+           "lod_t": {"type": "number", "description": ">= 0: fixed LOD factor (calibration); -1 = from the camera"},
+           "width_const": {"type": "number"}, "width_exp": {"type": "number"}, "scale_exp": {"type": "number"},
+           "count_exp": {"type": "number", "description": "width x (hairs / 32)^-count_exp: fewer hairs look thicker in game (0.3)"},
+           "roughness": {"type": "number", "description": "PTHairRoughness (-1 auto): a hair brightness gain (.15 x1.05, .8 x.60)"},
+           "tb_exp": {"type": "number", "description": "textureBrightness gain exponent (1.28)"},
+           "neutralise": {"type": "boolean", "description": "ignore the knobs the game ignores (specular, diffuseHairNormalWeight, ambientEnvScale, shadowSigma / DensityScale), default true"},
+           "stiff_by_fur": {"type": "boolean", "description": "scale the bone-stiffness hold by the fur stiffness (default true: stiffness 0 lets the hair fall as in game)"}}))
+def t_game_accurate(a):
+    return S.call({"do": "game_accurate", **a})
+
+
+@tool("studio_simulate","Run physics: preset idle / walk / run / turn / nod / spin / wind / rest for seconds "
       "(settle = rest pose). on=false keeps hair on the rest shape.",
       obj({"preset": {"type": "string"}, "seconds": {"type": "number"}, "on": {"type": "boolean"}, "reset": {"type": "boolean"},
-           "amount": {"type": "number", "description": "motion / wind strength multiplier (1)"}, "speed": {"type": "number"}}))
+           "amount": {"type": "number", "description": "motion / wind strength multiplier (1)"}, "speed": {"type": "number"},
+           "wind_yaw_deg": {"type": "number", "description": "wind heading 0-360 (default 206.6 = front-left towards back)"},
+           "wind_pitch_deg": {"type": "number", "description": "wind pitch -45..45 (default 2.85)"}}))
 def t_sim(a):
     if "on" in a:
         return S.call({"do": "simulate", "on": a["on"]})
@@ -1509,29 +2206,417 @@ def t_sim(a):
     if p == "rest":
         return S.call({"do": "settle", "seconds": a.get("seconds", 2)})
     return S.call({"do": "motion", "preset": p, "seconds": a.get("seconds", 2), "reset": a.get("reset", False),
-                   "amount": a.get("amount", 1.0), "speed": a.get("speed", 1.0)})
+                   "amount": a.get("amount", 1.0), "speed": a.get("speed", 1.0),
+                   **{k: a[k] for k in ("wind_yaw_deg", "wind_pitch_deg") if k in a}})
 
 
 @tool("studio_dump_geo", "Read-only: write the groom as it is now (alive guides in order with all control points, edit frame, "
       "faces by alive index with per-corner uv, K) to a JSON file (path; default <out>/geo.json). For offline checks / diffs. "
-      "guides[n] is NOT Studio guide n: use index[n] (its Studio index) before passing it to any other tool.",
-      obj({"path": {"type": "string"}}))
+      "guides[n] is NOT Studio guide n: use index[n] (its Studio index) before passing it to any other tool. "
+      "render: true also writes render[n] = the points the Studio draws / exports (edit point + the build's per-CV "
+      "fur-frame offset of the base guide, up to ~15 mm). Reshape ops are in the edit frame: when you design shapes "
+      "relative to the head / scalp, design them in the render frame and write points = design - (render - guides).",
+      obj({"path": {"type": "string"}, "render": {"type": "boolean"}}))
 def t_dump_geo(a):
-    return S.call({"do": "dump_geo", "path": a.get("path") or os.path.join(S.out, "geo.json")})
+    return S.call({"do": "dump_geo", "path": a.get("path") or os.path.join(S.out, "geo.json"),
+                   **({"render": True} if a.get("render") else {})})
+
+
+# --- composite fixers (2026-10-16, agent tools): the recipes that worked, in one call each, with numbers before / after
+def gate_cameras(names=None):
+    cams = S.call({"do": "gate_cameras"})["cameras"]
+    return [c for c in cams if not names or c["name"] in names]
+
+
+def cam_keys(c):
+    return {"eye": c["eye"], "target": c["target"], "fovy": c.get("fovy", 26)}
+
+
+@tool("studio_fix_direction_all", "Wrong-direction strands, fixed and RE-VERIFIED in one call (user rule 2026-10-16: never a "
+      "strand going the wrong way). Pass 1..passes (2): studio_check_direction {fix: true} at rest, then at every heading of "
+      "wind_yaw_deg ([15, 105, 195, 285]) at wind_strength (5 = toolbar max, covers 1); stops early when a pass finds nothing. "
+      "Then VERIFIES: rest + every heading at strengths [1, 5] without fix, and reports before / after / remaining per run "
+      "(remaining lists the guide ids: explain or delete them). protect = selector of guides never re-combed. The fix is the "
+      "proven one (mean shape of the non-offending neighbours within fix_nb_mm 25 from fix_from 0.25, gravity floor), one undo "
+      "group per pass. ~1-3 min.",
+      obj({"passes": {"type": "integer"}, "wind_yaw_deg": {"type": "array", "items": {"type": "number"}},
+           "wind_strength": {"type": "number"}, "verify_strengths": {"type": "array", "items": {"type": "number"}},
+           "protect": WHERE, "fix_nb_mm": {"type": "number"}, "fix_from": {"type": "number"}, "min_drop": {"type": "number"},
+           "wind_s": {"type": "number"}}))
+def t_fix_direction_all(a):
+    yaws = a.get("wind_yaw_deg", [15, 105, 195, 285])
+    strength = a.get("wind_strength", 5)
+    extra = {k: a[k] for k in ("protect", "fix_nb_mm", "fix_from", "min_drop", "wind_s") if k in a}
+    try:
+        CALLS.append(S.call({"do": "status"})["status"]["ops"])
+    except Exception:
+        pass
+    before = S.call({"do": "check_direction", "wind": False}).get("result", {})
+    hist = []
+    for p in range(a.get("passes", 2)):
+        fixed = 0
+        row = {"pass": p + 1, "runs": []}
+        r = S.call({"do": "check_direction", "wind": False, "fix": True, **extra}, timeout=900).get("result", {})
+        fixed += r.get("fixed", 0)
+        row["runs"].append({"wind": 0, "rest_offenders": r.get("rest_offenders"), "fixed": r.get("fixed", 0), "after": r.get("rest_offenders_after_fix")})
+        for y in yaws:
+            r = S.call({"do": "check_direction", "wind": True, "wind_yaw_deg": y, "wind_strength": strength, "fix": True, **extra}, timeout=900).get("result", {})
+            fixed += r.get("fixed", 0)
+            row["runs"].append({"wind": strength, "yaw": y, "rest_offenders": r.get("rest_offenders"), "wind_offenders": r.get("wind_offenders"), "fixed": r.get("fixed", 0)})
+        row["fixed"] = fixed
+        hist.append(row)
+        if fixed == 0:
+            break
+    # verify without fixing
+    ver = {"rest": None, "wind": []}
+    r = S.call({"do": "check_direction", "wind": False}).get("result", {})
+    ver["rest"] = {"offenders": r.get("rest_offenders"), "list": r.get("rest_list", [])[:40]}
+    remaining = set(e["i"] for e in r.get("rest_list", []))
+    for s in a.get("verify_strengths", [1, 5]):
+        for y in yaws:
+            r = S.call({"do": "check_direction", "wind": True, "wind_yaw_deg": y, "wind_strength": s}, timeout=900).get("result", {})
+            ver["wind"].append({"yaw": y, "strength": s, "offenders": r.get("wind_offenders"), "list": r.get("wind_list", [])[:20]})
+            remaining.update(e["i"] for e in r.get("wind_list", []))
+    total_wind = sum(w["offenders"] or 0 for w in ver["wind"])
+    return {"before": {"rest_offenders": before.get("rest_offenders"), "rest_up": before.get("rest_up"), "rest_against": before.get("rest_against")},
+            "passes": hist, "verify": ver, "remaining_guides": sorted(remaining),
+            "clean": (ver["rest"]["offenders"] or 0) == 0 and total_wind == 0,
+            "note": "clean = 0 rest and 0 wind offenders over the verify runs (the SDK wind is not deterministic: a single "
+                    "offender that moves between runs is noise; re-run to confirm). Remaining guides: look at them in the wind "
+                    "renders, then shorten / reshape / delete, never hand back with them unexplained."}
+
+
+@tool("studio_fix_faces_skin", "Hair through the FACE / EARS / NECK that comes from growth faces, not guides (HairWorks draws a "
+      "face's hair as blends of its 3 guides; a face whose guides pass on different sides of the head draws hair through the "
+      "skin while every guide is clean: Corinne mcp_18, Keira mcp_1). One call: studio_check_faces at wind_strength (1 = the "
+      "user's wind) deletes ONLY the faces whose interpolated hair goes through the SKIN (fix_what ['skin']: the deepest "
+      "sample is nearest to a non-scalp vertex), never the under-scalp ones that cover a parting (TAF 8.4: a full "
+      "penetration fix reopens holes); then refills what it opened with studio_fill_scalp from the cameras in refill "
+      "(['topdown', '34_above', '34_above_left'] of the gate set; [] = no refill), then re-checks. Reports faces "
+      "through the skin before / after, deleted, planted, scalp px per refill camera before / after. ~1-2 min.",
+      obj({"wind_strength": {"type": "number"}, "refill": {"type": "array", "items": {"type": "string"}},
+           "max_new": {"type": "integer"}, "spacing_mm": {"type": "number"}, "protect": WHERE, "where": WHERE}))
+def t_fix_faces_skin(a):
+    try:
+        CALLS.append(S.call({"do": "status"})["status"]["ops"])
+    except Exception:
+        pass
+    ws = a.get("wind_strength", 1)
+    refill = a.get("refill", ["topdown", "34_above", "34_above_left"])
+    cams = gate_cameras(refill) if refill else []
+    scalp0 = {}
+    for c in cams:
+        png = S.png("ffs_before_" + c["name"])
+        S.call({"do": "render", "path": png, "overlay": "scalp", "size": 1000, **cam_keys(c)})
+        scalp0[c["name"]] = green_px(png)
+    where = {k: a[k] for k in ("where", "protect") if k in a}
+    r1 = S.call({"do": "check_faces", "wind_strength": ws, "fix": True, "fix_what": ["skin"], **where}, timeout=1800).get("result", {})
+    pen1 = r1.get("penetration", {})
+    planted = []
+    for c in cams:
+        f = S.call({"do": "fill_scalp", "size": 1000, "max_new": a.get("max_new", 40), **({"spacing_mm": a["spacing_mm"]} if "spacing_mm" in a else {}), **cam_keys(c)}, timeout=900)
+        planted.append({"camera": c["name"], "planted": f.get("planted", 0)})
+    r2 = S.call({"do": "check_faces", "wind_strength": ws, "list_only": True, **where}, timeout=1800).get("result", {})
+    pen2 = r2.get("penetration", {})
+    scalp1 = {}
+    for c in cams:
+        png = S.png("ffs_after_" + c["name"])
+        S.call({"do": "render", "path": png, "overlay": "scalp", "size": 1000, **cam_keys(c)})
+        scalp1[c["name"]] = green_px(png)
+    return {"before": {"through_skin_rest": pen1.get("skin_rest"), "through_skin_wind": pen1.get("skin_wind"), "interp_only": pen1.get("interp_only"), "guides_inside": r1.get("guides_inside", {}).get("count")},
+            "deleted_faces": r1.get("deleted_faces", 0), "planted": planted,
+            "after": {"through_skin_rest": pen2.get("skin_rest"), "through_skin_wind": pen2.get("skin_wind"), "interp_only": pen2.get("interp_only"), "guides_inside": r2.get("guides_inside", {}).get("count"),
+                      "list": [e for e in pen2.get("list", []) if e.get("skin")][:40]},
+            "scalp_px": {k: {"before": scalp0.get(k), "after": scalp1.get(k)} for k in scalp0},
+            "note": "faces still through the skin after the fix have a GUIDE inside the skin (guides_inside): fix the guide (push_out / "
+                    "delete / collider) rather than the face. Scalp px that went UP = the deleted faces covered scalp: refill from that camera."}
+
+
+def green_px(png):
+    if Image is None:
+        return None
+    im = Image.open(png).convert("RGB")
+    import numpy as np
+    A = np.asarray(im)
+    return int(((A[:, :, 1] > 200) & (A[:, :, 0] < 60) & (A[:, :, 2] < 60)).sum())
+
+
+@tool("studio_scalp_report", "Bald patches, measured and LOCATED (checklist 5): for each gate camera (names; default the "
+      "views agents skip: topdown, 34_above, 34_above_left, side_right, side_left, back, low_nape) renders the scalp overlay, "
+      "counts the green scalp pixels now and in the reference (baseline = the build as opened, or a reference project "
+      "path), and picks the centre of the biggest visible scalp blob (studio_pick auto scalp): scalp_world point, hair or "
+      "skin, nearest guides, so the next studio_fill_scalp / studio_rebuild_from_cards {where: {near, radius}} has a target. "
+      "worse = more than reference x 1.1 + 400 px. Returns the per-camera table and the overlay images' paths.",
+      obj({"names": {"type": "array", "items": {"type": "string"}}, "reference": {"type": "string"}, "size": {"type": "integer"},
+           "pick": {"type": "boolean", "description": "locate the biggest blob per camera (default true)"}}))
+def t_scalp_report(a):
+    names = a.get("names", ["topdown", "34_above", "34_above_left", "side_right", "side_left", "back", "low_nape"])
+    cams = gate_cameras(names)
+    size = a.get("size", 1000)
+    ref = a.get("reference")
+    rows = []
+    for c in cams:
+        png = S.png("scalp_" + c["name"])
+        S.call({"do": "render", "path": png, "overlay": "scalp", "size": size, **cam_keys(c)})
+        row = {"camera": c["name"], "scalp_px": green_px(png), "png": png}
+        if not ref or ref == "baseline":
+            pngb = S.png("scalpbase_" + c["name"])
+            S.call({"do": "render", "path": pngb, "overlay": "scalp", "size": size, "baseline": True, **cam_keys(c)})
+            row["reference_px"] = green_px(pngb)
+        if row.get("reference_px") is not None and row["scalp_px"] is not None:
+            row["worse"] = row["scalp_px"] > row["reference_px"] * 1.1 + 400
+        if a.get("pick", True) and (row["scalp_px"] or 0) > 0:
+            try:
+                p = S.call({"do": "pick", "auto": "scalp", "size": size, "n": 4, "tag": "scalp_" + c["name"], **cam_keys(c)})
+                row["biggest_blob"] = {"scalp_world": p.get("scalp_world"), "scalp_edit": p.get("scalp_edit"), "top": p.get("top"),
+                                       "nearest_guides_by_root": p.get("nearest_guides_by_root", [])[:4], "pixel": p.get("pixel")}
+            except Exception as e:
+                row["biggest_blob"] = {"error": str(e)}
+        rows.append(row)
+    if ref and ref != "baseline":
+        g = S.call({"do": "handback_gate", "reference": ref, "skip": ["roots", "loops", "direction", "faces", "colliders", "silhouette", "views", "export"], "tag": "scalp_report", "size": size}, timeout=3600)
+        refpx = {c["camera"]: c["reference_px"] for c in g.get("items", {}).get("scalp", {}).get("cameras", [])}
+        for row in rows:
+            row["reference_px"] = refpx.get(row["camera"])
+            if row["reference_px"] is not None and row["scalp_px"] is not None:
+                row["worse"] = row["scalp_px"] > row["reference_px"] * 1.1 + 400
+    return {"cameras": rows, "worse": [r["camera"] for r in rows if r.get("worse")],
+            "note": "fix order (AGENT_DIFFICULTIES 1b): too few guides -> rebuild_from_cards {where: {near: blob.scalp_edit, radius: 0.04}, spacing_mm: 6, uv_mode: nearest}; "
+                    "a local hole -> fill_scalp from that camera (several passes); hair inside the skull -> check_faces interp_only + plant_parting. Never density / width tweaks."}
+
+
+@tool("studio_hairline_fix", "Forehead / cheek / neck roots, fixed and re-measured in one call (user rules 2026-10-15: no hair "
+      "roots from the forehead or the neck). (1) studio_hairline_check lists roots on skin outside the painted scalp and guides "
+      "over the face; (2) the roots farther than tolerance_mm (4) from the hairline are deleted (delete_off_scalp true) and "
+      "guides over the face too (delete_over_face true); roots within tolerance are moved onto the hairline "
+      "(studio_align_to_hairline inset_mm 3); (3) hairline_fill part (default 'all'; '' = none) refills the gap from the scalp "
+      "side; (4) fade_hairline (false) softens the new front; (5) re-check. Reports before / after counts and the deleted "
+      "guides. Not for grooms whose scalp mask is wrong (Birna: hundreds of roots 'off' that are on the real hairline): "
+      "check roots_off_scalp_count against the reference first (studio_handback_gate reports both).",
+      obj({"tolerance_mm": {"type": "number"}, "delete_off_scalp": {"type": "boolean"}, "delete_over_face": {"type": "boolean"},
+           "inset_mm": {"type": "number"}, "part": {"type": "string"}, "fade": {"type": "boolean"}, "max_delete": {"type": "integer"},
+           "fill_args": {"type": "object"}}))
+def t_hairline_fix(a):
+    try:
+        CALLS.append(S.call({"do": "status"})["status"]["ops"])
+    except Exception:
+        pass
+    tol = a.get("tolerance_mm", 4)
+    before = S.call({"do": "hairline_check"})
+    off = before.get("roots_off_scalp", [])
+    far = [e["i"] for e in off if e.get("to_hairline_mm", 0) > tol]
+    over = [e["i"] for e in before.get("over_face", [])]
+    todel = sorted(set((far if a.get("delete_off_scalp", True) else []) + (over if a.get("delete_over_face", True) else [])))
+    mx = a.get("max_delete", 400)
+    deleted = 0
+    if todel and len(todel) <= mx:
+        S.call({"do": "delete", "where": {"indices": todel}})
+        deleted = len(todel)
+    elif len(todel) > mx:
+        return {"error": "%d guides to delete, more than max_delete %d: the scalp mask is probably wrong for this head (compare with the reference); "
+                         "pass max_delete to force" % (len(todel), mx), "before": {"roots_off_scalp": len(off), "guides_over_face": len(over)}}
+    moved = S.call({"do": "align_to_hairline", "tolerance_mm": 0.5, "inset_mm": a.get("inset_mm", 3)}).get("moved", 0)
+    filled = None
+    if a.get("part", "all"):
+        filled = S.call({"do": "hairline_fill", "part": a.get("part", "all"), **(a.get("fill_args") or {})}, timeout=900)
+        filled = {k: filled.get(k) for k in ("planted", "rows", "part", "skipped") if k in filled}
+    faded = None
+    if a.get("fade"):
+        faded = S.call({"do": "fade_hairline"}, timeout=900)
+        faded = {k: faded.get(k) for k in ("changed", "planted", "guides") if k in faded}
+    after = S.call({"do": "hairline_check"})
+    return {"before": {"roots_off_scalp": len(off), "guides_over_face": len(over), "far_than_tol": len(far)},
+            "deleted_guides": deleted, "deleted_ids": todel, "moved_to_hairline": moved, "hairline_fill": filled, "fade_hairline": faded,
+            "after": {"roots_off_scalp": after.get("roots_off_scalp_count"), "guides_over_face": after.get("guides_over_face"),
+                      "lifted": after.get("lifted_count"), "flow_outliers": after.get("flow_outliers_count")},
+            "note": "then LOOK: front close-up with overlay guides, both 3/4 at full size; a hard new edge -> studio_soften_hairline on the "
+                    "front row (never on freshly planted temple rows: it thins them to bare)."}
+
+
+@tool("studio_crown_metric", "Crown ropes / knots, measured (TOOL_ARCHITECT_FINDINGS 1, tools/hairworks/toolarch/crown_metric.py): "
+      "for every guide rooted within crown_mm (60) of the head top, the angle between its drawn direction at 25 / 50 / 75 % "
+      "of its length and the mean direction of the guides rooted within nb_mm (20). Targets: median < 15 deg and p90 < 45 "
+      "at 25 % (approved packs 12-16 / 34-45; Shani's ropes 22.7 / 68.7). Also face-area percentiles (ratio p95/p5 < 10; "
+      "slivers < 4 mm2 are dense bundles). Fix that worked: studio_regrid {count_scale 0.75, keep_cross true, cross_dot 0.6, "
+      "oppose_dot -1} + fill_scalp x 3 cameras + studio_fix_direction_all; NOT conform_shell alone, crown_swirl r70/90, "
+      "deleting slivers, flow_whorl.",
+      obj({"crown_mm": {"type": "number"}, "nb_mm": {"type": "number"}}))
+def t_crown_metric(a):
+    geo = os.path.join(S.out, "crown_metric_geo.json")
+    S.call({"do": "dump_geo", "path": geo, "render": True})
+    script = os.path.join(REPO, "tools", "hairworks", "toolarch", "crown_metric.py")
+    r = subprocess.run([sys.executable, script, geo, str(a.get("crown_mm", 60)), str(a.get("nb_mm", 20))], capture_output=True, text=True, cwd=REPO, timeout=600)
+    if r.returncode:
+        return {"error": r.stderr[-800:]}
+    out = {"raw": r.stdout.strip().splitlines(), "fractions": {}}
+    import re as _re
+    for l in out["raw"]:
+        m = _re.match(r"frac (\S+): median\s+([\d.]+) deg\s+p90\s+([\d.]+)\s+>45deg\s+(\d+)\s+of (\d+)", l)
+        if m:
+            out["fractions"][m.group(1)] = {"median_deg": float(m.group(2)), "p90_deg": float(m.group(3)), "over_45": int(m.group(4)), "crown_guides": int(m.group(5))}
+        m = _re.match(r"faces (\d+): area mm2 p5/p50/p95 = ([\d.]+) / ([\d.]+) / ([\d.]+)\s+ratio p95/p5 ([\d.]+)\s+<4mm2: (\d+)", l)
+        if m:
+            out["faces"] = {"count": int(m.group(1)), "area_p5": float(m.group(2)), "area_p50": float(m.group(3)), "area_p95": float(m.group(4)), "ratio_p95_p5": float(m.group(5)), "slivers_under_4mm2": int(m.group(6))}
+    f25 = out["fractions"].get("0.25", {})
+    out["pass"] = bool(f25) and f25["median_deg"] < 15 and f25["p90_deg"] < 45
+    out["target"] = "25 %: median < 15 deg, p90 < 45; face area ratio p95/p5 < 10"
+    return out
+
+
+@tool("studio_parting_check", "A parting, measured (checklist 4 / 6): line [[x,y,z],[x,y,z]] (edit frame, front -> back) and "
+      "band_mm (12). Reports (1) faces across the line: divergent faces (studio_check_faces, rest only) whose centroid lies "
+      "within the band, split into 'opposite' (guide directions > 120 deg apart: hair blended INSIDE the skull, the bare-strip "
+      "mechanism) and 'divergent'; (2) interp-only penetrations in the band (invisible hair); (3) scalp px from the top-down "
+      "and 3/4-above gate cameras now vs the baseline (build as opened). Fix that worked: delete the opposite faces "
+      "(studio_check_faces fix_what ['divergent'] where {near: mid, radius}) then studio_plant_parting on the line + "
+      "studio_fill_scalp from the top; design new shapes in the drawn frame (studio_dump_geo render: true).",
+      obj({"line": {"type": "array"}, "band_mm": {"type": "number"}, "size": {"type": "integer"}}, ["line"]))
+def t_parting_check(a):
+    import numpy as np
+    p0, p1 = np.array(a["line"][0], float), np.array(a["line"][1], float)
+    band = a.get("band_mm", 12) / 1000.0
+    L = p1 - p0
+    def dist(c):
+        c = np.array(c, float)
+        t = float(np.clip(np.dot(c - p0, L) / max(np.dot(L, L), 1e-9), 0, 1))
+        return float(np.linalg.norm(p0 + t * L - c))
+    mid = ((p0 + p1) / 2).tolist()
+    radius = float(np.linalg.norm(L) / 2 + 0.03)
+    f = S.call({"do": "check_faces", "wind": False, "list_only": True, "where": {"near": mid, "radius": radius}}, timeout=1800).get("result", {})
+    div = [e for e in f.get("divergent", {}).get("list", []) if dist(e["centroid"]) < band]
+    opp = [e for e in div if e.get("angle_deg", 0) > 120]
+    pen = [e for e in f.get("penetration", {}).get("list", []) if e.get("interp_only") and dist(e["centroid"]) < band]
+    rows = []
+    for c in gate_cameras(["topdown", "34_above", "34_above_left"]):
+        png = S.png("part_" + c["name"]); pngb = S.png("partbase_" + c["name"])
+        S.call({"do": "render", "path": png, "overlay": "scalp", "size": a.get("size", 1000), **cam_keys(c)})
+        S.call({"do": "render", "path": pngb, "overlay": "scalp", "size": a.get("size", 1000), "baseline": True, **cam_keys(c)})
+        rows.append({"camera": c["name"], "scalp_px": green_px(png), "baseline_px": green_px(pngb), "png": png})
+    return {"faces_in_band": {"divergent": len(div), "opposite": len(opp), "interp_only_penetrations": len(pen)},
+            "opposite_faces": opp[:60], "divergent_faces": [e for e in div if e not in opp][:40], "penetrations": pen[:40],
+            "scalp": rows, "band_mm": a.get("band_mm", 12), "line": a["line"],
+            "note": "opposite faces = guides from both sides of the parting in one face: their in-between hair lies inside the skull. "
+                    "Delete them (ids above, studio_check_faces fix_what ['divergent'] with where near the line), replant with studio_plant_parting, refill, re-run."}
+
+
+# --- hand-back gate (2026-10-16): the whole checklist of tools/hairworks/AGENT_DIFFICULTIES.md in one call
+GATE_KEYS = ("reference", "tag", "size", "skip", "use_shots", "cam_dist", "cam_fovy", "tile", "wind_yaw_deg", "wind_strengths", "wind_s",
+             "faces_wind", "max_roots_off", "max_over_face", "max_loops", "max_rest", "max_wind", "max_through_skin", "small_mm",
+             "scalp_tol", "scalp_abs", "flare_px", "flare_frac", "flare_min_px", "loss_frac", "silhouette_info_only")
+
+
+def labelled_sheet(pngs, names, out, tile=500, cols=5):
+    """contact sheet with the camera name on every tile (the Studio writes an unlabelled one)"""
+    if Image is None or not pngs:
+        return None
+    from PIL import ImageDraw
+    rows = (len(pngs) + cols - 1) // cols
+    sh = Image.new("RGB", (cols * tile, rows * (tile + 22)), (20, 20, 24))
+    d = ImageDraw.Draw(sh)
+    for i, (p, n) in enumerate(zip(pngs, names)):
+        try:
+            im = Image.open(p).convert("RGB").resize((tile, tile))
+        except Exception:
+            continue
+        x, y = (i % cols) * tile, (i // cols) * (tile + 22)
+        sh.paste(im, (x, y + 22))
+        d.text((x + 6, y + 5), n, fill=(230, 220, 200))
+    sh.save(out)
+    return out
+
+
+def run_export_audit(cfg, project, fur=None):
+    """tools/hairworks/export_audit.py on the open build (JSON); None when it cannot run"""
+    script = os.path.join(REPO, "tools", "hairworks", "export_audit.py")
+    if not os.path.exists(script):
+        return None
+    cmd = [sys.executable, script, cfg, "--json"]
+    if project:
+        cmd += ["--project", project]
+    if fur:
+        cmd += ["--fur", fur]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO, timeout=1800)
+        res = json.loads(r.stdout)[0]
+    except Exception as e:
+        return {"error": "export_audit.py failed: %s" % e}
+    furs = res.get("furs", [])
+    return {"checked": sum(f.get("n_checked", 0) for f in furs), "ok": sum(f.get("n_ok", 0) for f in furs),
+            "diff": sum(f.get("n_diff", 0) for f in furs), "missing": sum(f.get("n_missing", 0) for f in furs),
+            "problems": [p for f in furs for p in f.get("problems", [])][:40], "project_how": res.get("project_how"),
+            "notes": res.get("notes", [])[:10]}
+
+
+@tool("studio_handback_gate", "MANDATORY before handing a groom back (2026-10-16): runs the whole hand-back checklist of "
+      "tools/hairworks/AGENT_DIFFICULTIES.md on the open project and returns pass / fail with the defect list and a contact "
+      "sheet. Items: roots (hairline_check: roots_off_scalp 0, guides_over_face 0), loops (0), direction (rest + wind at yaw "
+      "15/105/195/285 x strengths [1, 5]: 0 offenders), faces (check_faces at wind 1: 0 faces drawing hair through the SKIN, "
+      "face / ears / neck; under-scalp penetrations and divergent faces are reported only), colliders (misbound 0; small "
+      "isolated spheres reported), scalp (green scalp px per camera vs the reference project, must not be worse than "
+      "reference x (1 + scalp_tol 0.1) + scalp_abs 400), silhouette (hair outside the reference silhouette: flare > max(flare_min_px 300, "
+      "flare_frac 0.03 x reference hair px) fails; loss of covered hair > loss_frac 0.06 fails), views (front, both 3/4, both "
+      "sides, back, top-down, 3/4 above both sides, low nape -> contact sheet), export (the Studio's own dev export must "
+      "succeed; look.extra_set of the exported config carries every project look key with the same value; no "
+      "textureBrightness / strandBlendScale 0; beards on Coarse short). reference = the user snapshot project you started from "
+      "(<char>_user_HHMM.groomproj.json; default: the build as opened). export_audit: true also runs export_audit.py on the "
+      "build (slow: builds the pick). skip = item names to leave out (explain why in your report). The verdict is recorded: "
+      "while it is FAIL, studio_save / export / save_project are refused unless they pass override='<reason>' (logged). "
+      "Takes 2-6 min (8 wind runs + 4 for faces + ~30 renders). Returns the JSON report and the sheet image.",
+      obj({"reference": {"type": "string", "description": "reference project path (.groomproj.json): the user's snapshot; 'baseline' = the build as opened"},
+           "tag": {"type": "string"}, "size": {"type": "integer", "description": "render size px (1000)"},
+           "skip": {"type": "array", "items": {"type": "string"}, "description": "items to skip: roots loops direction faces colliders scalp silhouette views export"},
+           "export_audit": {"type": "boolean", "description": "also run tools/hairworks/export_audit.py (minutes)"},
+           "wind_strengths": {"type": "array", "items": {"type": "number"}}, "wind_yaw_deg": {"type": "array", "items": {"type": "number"}},
+           "wind_s": {"type": "number"}, "faces_wind": {"type": "number"},
+           "max_roots_off": {"type": "integer"}, "max_over_face": {"type": "integer"}, "max_loops": {"type": "integer"},
+           "max_rest": {"type": "integer"}, "max_wind": {"type": "integer"}, "max_through_skin": {"type": "integer"},
+           "small_mm": {"type": "number"}, "scalp_tol": {"type": "number"}, "scalp_abs": {"type": "integer"},
+           "flare_px": {"type": "number"}, "flare_frac": {"type": "number"}, "flare_min_px": {"type": "integer"}, "loss_frac": {"type": "number"},
+           "silhouette_info_only": {"type": "boolean"}, "use_shots": {"type": "boolean"}, "tile": {"type": "integer"},
+           "show": {"type": "boolean", "description": "return the contact sheet image (default true)"}}))
+def t_handback_gate(a):
+    cmd = {"do": "handback_gate", **{k: a[k] for k in GATE_KEYS if k in a}}
+    r = S.call(cmd, timeout=7200)
+    views = r.get("items", {}).get("views", {})
+    if views.get("pngs"):
+        lab = labelled_sheet(views["pngs"], views.get("order", []), os.path.join(r.get("dir", S.out), (a.get("tag") or "gate") + "_sheet_labelled.png"), a.get("tile", 500))
+        if lab:
+            r["sheet_labelled"] = lab
+    if a.get("export_audit"):
+        st = S.call({"do": "status"})["status"]
+        r["export_audit"] = run_export_audit(st["config"], r.get("project") or None)
+        ea = r["export_audit"] or {}
+        if ea.get("error") or ea.get("missing") or ea.get("diff"):
+            r["pass"] = False
+            r.setdefault("failed", []).append("export_audit: %s" % (ea.get("error") or "%d MISSING, %d DIFF" % (ea.get("missing", 0), ea.get("diff", 0))))
+            S.call({"do": "gate_fail", "why": r["failed"][-1]})
+    out = [r]
+    if a.get("show", True) and (r.get("sheet_labelled") or r.get("sheet")):
+        out.append(image_content(r.get("sheet_labelled") or r["sheet"], None, a.get("max_px", 1400)))
+    return out
+
+
+@tool("studio_gate_status", "The last hand-back gate verdict on the open build: ran, pass, when, stale (edits since), failed items, "
+      "and whether the save / export guard applies.", obj({}))
+def t_gate_status(a):
+    return S.call({"do": "gate_status"})
 
 
 # --- saving
 @tool("studio_save", "Save the current edits under a NEW variant name into build/desktop_studio/mcp/<name>/ "
       "(edits.json, look, project). Never overwrites approved builds. export: true also builds the mod zip "
-      "(not installed); release: true adds the Core requirement.",
-      obj({"name": {"type": "string"}, "export": {"type": "boolean"}, "release": {"type": "boolean"}}, ["name"]))
+      "(not installed); release: true adds the Core requirement. REFUSED while the last studio_handback_gate on this build "
+      "FAILED, unless override='<reason>' is given (the reason is logged in <out>/gate_overrides.log).",
+      obj({"name": {"type": "string"}, "export": {"type": "boolean"}, "release": {"type": "boolean"},
+           "override": {"type": "string", "description": "reason to save despite a failed gate (logged)"}}, ["name"]))
 def t_save(a):
     d = os.path.join(S.out, a["name"])
     os.makedirs(d, exist_ok=True)
-    r = S.call({"do": "save_edits", "path": os.path.join(d, "edits.json")})
-    r["project"] = S.call({"do": "save_project", "path": os.path.join(d, a["name"] + ".groomproj.json")})
+    ov = {"override": a["override"]} if a.get("override") else {}
+    r = S.call({"do": "save_edits", "path": os.path.join(d, "edits.json"), **ov})
+    r["project"] = S.call({"do": "save_project", "path": os.path.join(d, a["name"] + ".groomproj.json"), **ov})
     if a.get("export"):
-        r["export"] = S.call({"do": "export", "tag": a["name"], "release": a.get("release", False)}, timeout=1200)
+        r["export"] = S.call({"do": "export", "tag": a["name"], "release": a.get("release", False), **ov}, timeout=1200)
     r["dir"] = d
     return r
 
@@ -1567,7 +2652,7 @@ def handle(msg):
     if m == "initialize":
         return {"protocolVersion": msg.get("params", {}).get("protocolVersion", PROTOCOL),
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "hairwork-studio", "version": "0.2.1"},
+                "serverInfo": {"name": "hairwork-studio", "version": "0.4.0"},
                 "instructions": "Live Hairwork Studio session (Witcher 3 HairWorks grooms). Start with studio_open, "
                                 "studio_shots, studio_compare (vanilla | as opened | current). Find bald patches with "
                                 "studio_render overlay=scalp + studio_scalp_coverage, locate them with studio_pick / "

@@ -40,9 +40,23 @@ float Strand_Spec(float3 t, float3 v, float3 l, float power)
     return pow(s, max(power, 1.0f)) * saturate(dot(l, cross(t, cross(l, t))) * 0.5f + 0.5f);
 }
 
+// multiple-scattering saturation of the fibre hue (max channel 1): hue^k, or (g_pt.z = 1, game-accurate PT look) the same
+// saturation with the hue kept: every channel moves away from 1 by the factor that takes the lowest channel to min^k, so
+// orange stays orange instead of turning crimson (hue^k darkens green faster than red: Triss L387); grey hair is unchanged
+float3 MsSat(float3 hue, float k) {
+    float3 h = max(hue, 1e-3f);
+    float3 p = pow(h, k);
+    float m = min(h.r, min(h.g, h.b));
+    float f = m < 0.999f ? (1.0f - pow(m, k)) / (1.0f - m) : k;
+    float3 q = saturate(1.0f - (1.0f - h) * f);
+    return lerp(p, q, saturate(g_pt.z));
+}
+
 [earlydepthstencil]
-float4 main(NvHair_PixelShaderInput input) : SV_Target
+// SV_Target1 (path-traced look only, otherwise unbound): +1 per hair fragment and sample, added up (strand layers per pixel)
+float4 main(NvHair_PixelShaderInput input, out float4 layers : SV_Target1) : SV_Target
 {
+    layers = float4(1.0f, 0.0f, 0.0f, 0.0f);
     NvHair_ShaderAttributes a = NvHair_GetShaderAttributes(input, g_hair);
     NvHair_Material m = g_hair.defaultMaterial;
 
@@ -65,6 +79,9 @@ float4 main(NvHair_PixelShaderInput input) : SV_Target
         float3 tc = lerp(r, t, NvHair_GetRootTipRatio(s, m));
         base = pow(max(tc, 0.0f), encExp) * g_mat.z;
     }
+    // game-accurate colour gain (g_pt.w, App): textureBrightness without a card texture (in game it scales the hair colour,
+    // L480) x the PTHairRoughness brightness; the card-texture path above already carries textureBrightness in g_mat.z
+    if (g_pt.w > 0.0f) base *= g_pt.w;
     base *= g_params.y;
     // per-strand variation (strand definition): the fur's diffuseNoiseScale + the rig's variation, by hair id
     float hv = Strand_Var(a.hairID * 1.731f + 0.37f);
@@ -80,10 +97,10 @@ float4 main(NvHair_PixelShaderInput input) : SV_Target
     // light that reaches the eye from inside a groom has crossed several fibres, each filtering it by the fibre colour:
     // the diffuse colour of a path-traced groom is more saturated than one fibre (multiple scattering). g_extra.z = k in
     // albedo x hue^k (0 = single fibre), fitted on the in-game frames (blond: game lit hair G/R .42, B/R .06)
-    float3 baseD = base * pow(max(hue, 1e-3f), g_extra.z);
+    float3 baseD = base * MsSat(hue, g_extra.z);
     // sky / ground light enters from every side and leaves after fewer fibre crossings: less saturated (the in-game
     // shadowed side of a blond groom is olive, the sunlit side orange-gold)
-    float3 baseA = base * pow(max(hue, 1e-3f), g_extra.z * g_extra.w);
+    float3 baseA = base * MsSat(hue, g_extra.z * g_extra.w);
 
     // deep shadow through the hair volume. shadowSigma (cm) = the depth over which hair becomes shadowed; light hair
     // scatters light deeper into the groom (multiple scattering), more in its own colour: per channel the depth scale
@@ -183,6 +200,8 @@ float4 main(NvHair_PixelShaderInput input) : SV_Target
     float sunVis = dot(sunT, float3(0.2126f, 0.7152f, 0.0722f));
 
     float alpha = NvHair_ComputeAlpha(g_hair, m, a);
+    int rootMode = (int)(g_pt.y + 0.5f);
+    if (rootMode == 2) { clip(alpha - 0.5f); alpha = 1.0f; }
     // debug views (g_shadow2.y): 1 N.L diffuse term, 2 specular only, 3 shadow / visibility term, 4 albedo, 5 tangent
     int dbg = (int)(g_shadow2.y + 0.5f);
     if (dbg == 1) return float4(diff.xxx, alpha);

@@ -142,7 +142,7 @@ def main():
     open(os.path.join(out, 'AGENTS.md'), 'w', encoding='utf-8', newline=chr(10)).write(agents_text.AGENTS_ROOT_MD)
     os.makedirs(os.path.join(out, 'desktop_studio', 'tools'))
     for f in os.listdir(os.path.join(ds, 'tools')):
-        if f not in DS_SKIP_TOOLS:
+        if f not in DS_SKIP_TOOLS and os.path.isfile(os.path.join(ds, 'tools', f)):   # per-session scratch folders stay private
             cp(os.path.join(ds, 'tools', f), os.path.join(out, 'desktop_studio', 'tools', f))
     shutil.copytree(os.path.join(ds, 'tests'), os.path.join(out, 'desktop_studio', 'tests'), ignore=IGN)
     for f in ('CMakeLists.txt', 'README.md', 'LICENSE.md', '.gitignore'):

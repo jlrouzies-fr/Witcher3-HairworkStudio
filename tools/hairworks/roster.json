@@ -77,7 +77,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "anna_henrietta",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "annastrenger": {
    "name": "Anna Strenger",
@@ -116,7 +122,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "tamara",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "avallach": {
    "name": "Avallac'h",
@@ -175,7 +187,21 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": "hb_01_ma__avallach.w2mesh",
+    "appearance": "avallach_uncloaked",
+    "evidence": "hb_01_ma__avallach.w2mesh holds only eyebrow cards (210), no beard cards",
+    "appearances_with_beard": [
+     "avallach_clothes_disappearing",
+     "avallach_masked",
+     "avallach_naked",
+     "avallach_uncloaked",
+     "avallach_uncloaked_cutscenes",
+     "avallach_unmasked"
+    ]
+   }
   },
   "baron": {
    "name": "Phillip Strenger (Bloody Baron)",
@@ -217,7 +243,22 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_02_ms__nml_baron.w2mesh",
+    "appearance": "baron",
+    "cards": 166,
+    "brow_cards": 187,
+    "triangles": 1860,
+    "evidence": "hb_02_ms__nml_baron.w2mesh: 166 beard cards (1860 tris) + 187 eyebrow cards, pbr_hair, appearance baron",
+    "appearances_with_beard": [
+     "baron",
+     "baron_armed",
+     "baron_fistfight"
+    ],
+    "head_hair": "hh_01_ms__nml_baron.w2mesh (pbr_hair, z 1.76..1.86, 0.10 m tall) = the hood / cap (L235); same in all 3 appearances"
+   }
   },
   "bedlam": {
    "name": "Francis Bedlam (King of Beggars)",
@@ -255,7 +296,20 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__francis_bedlam.w2mesh",
+    "appearance": "francis_bedlam",
+    "cards": 1166,
+    "brow_cards": 15,
+    "triangles": 4472,
+    "evidence": "hb_01_ma__francis_bedlam.w2mesh: 1166 beard cards (4472 tris) + 15 eyebrow cards, pbr_hair, appearance francis_bedlam",
+    "appearances_with_beard": [
+     "__q302_francis_bedlam_bathhouse",
+     "francis_bedlam"
+    ]
+   }
   },
   "birna": {
    "name": "Birna Bran",
@@ -294,7 +348,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "lady_bran",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "caranthir": {
    "name": "Caranthir",
@@ -329,7 +389,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "canaris",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "carlo": {
    "name": "Carlo Varese (Cleaver)",
@@ -367,7 +433,20 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_da__carl_varese.w2mesh",
+    "appearance": "karl_varese",
+    "cards": 247,
+    "brow_cards": 110,
+    "triangles": 3084,
+    "evidence": "hb_01_da__carl_varese.w2mesh: 247 beard cards (3084 tris) + 110 eyebrow cards, pbr_hair, appearance karl_varese",
+    "appearances_with_beard": [
+     "__q302_karl_varese_bathhouse",
+     "karl_varese"
+    ]
+   }
   },
   "cerys": {
    "name": "Cerys an Craite",
@@ -423,7 +502,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "becca",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "ciri": {
    "name": "Ciri",
@@ -508,7 +593,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "ciri",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "corinne": {
    "name": "Corinne Tilly",
@@ -546,7 +637,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "dreamer",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "crach": {
    "name": "Crach an Craite",
@@ -584,7 +681,21 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_mb__skelige_crach.w2mesh",
+    "appearance": "crach_an_creite",
+    "cards": 337,
+    "brow_cards": 36,
+    "triangles": 1988,
+    "evidence": "hb_01_mb__skelige_crach.w2mesh: 337 beard cards (1988 tris) + 36 eyebrow cards, pbr_hair, appearance crach_an_creite",
+    "appearances_with_beard": [
+     "crach_an_creite",
+     "crach_an_creite_dying",
+     "crach_an_creite_fur"
+    ]
+   }
   },
   "damien": {
    "name": "Damien de la Tour",
@@ -623,7 +734,22 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_mb__damien_de_la_tour.w2mesh",
+    "appearance": "olivier",
+    "cards": 64,
+    "brow_cards": 0,
+    "triangles": 364,
+    "evidence": "hb_01_mb__damien_de_la_tour.w2mesh: 64 beard cards (364 tris) + 0 eyebrow cards, pbr_hair, appearance olivier",
+    "appearances_with_beard": [
+     "massacred",
+     "mourning",
+     "olivier",
+     "scars"
+    ]
+   }
   },
   "dandelion": {
    "name": "Dandelion",
@@ -683,7 +809,24 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__dandelion.w2mesh",
+    "appearance": "dandelion",
+    "cards": 128,
+    "brow_cards": 0,
+    "triangles": 815,
+    "evidence": "hb_01_ma__dandelion.w2mesh: 128 beard cards (815 tris) + 0 eyebrow cards, pbr_hair, appearance dandelion",
+    "other_beard_meshes": [
+     "hb_01_ma__dandelion_gaged.w2mesh"
+    ],
+    "appearances_with_beard": [
+     "dandelion",
+     "dandelion_gag",
+     "dandelion_mask"
+    ]
+   }
   },
   "dettlaff": {
    "name": "Dettlaff",
@@ -747,7 +890,28 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__dettlaff.w2mesh",
+    "appearance": "dettlaff_human",
+    "evidence": "hb_01_ma__dettlaff.w2mesh: unreadable (ValueError); beard mesh present, card count UNVERIFIED",
+    "other_beard_meshes": [
+     "hb_01_ma__dettlaff_vampire.w2mesh"
+    ],
+    "appearances_with_beard": [
+     "dettlaff_destroyed",
+     "dettlaff_human",
+     "dettlaff_human_ring",
+     "dettlaff_human_vampire_eyes_morph",
+     "dettlaff_vampire",
+     "dettlaff_vampire_both_hands_morph",
+     "dettlaff_vampire_left_hand_morph",
+     "dettlaff_vampire_no_right_hand_morph",
+     "dettlaff_vampire_right_hand_eyes_morph",
+     "dettlaff_vampire_right_hand_morph"
+    ]
+   }
   },
   "dijkstra": {
    "name": "Sigismund Dijkstra",
@@ -783,7 +947,20 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ms__djikstra.w2mesh",
+    "appearance": "djikstra",
+    "cards": 461,
+    "brow_cards": 15,
+    "triangles": 3064,
+    "evidence": "hb_01_ms__djikstra.w2mesh: 461 beard cards (3064 tris) + 15 eyebrow cards, pbr_hair, appearance djikstra",
+    "appearances_with_beard": [
+     "__q302_djikstra_bathhouse",
+     "djikstra"
+    ]
+   }
   },
   "donar": {
    "name": "Donar an Hindar",
@@ -823,7 +1000,19 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__donnar_an_hindar.w2mesh",
+    "appearance": "donar_an_hindar",
+    "cards": 353,
+    "brow_cards": 14,
+    "triangles": 2428,
+    "evidence": "hb_01_ma__donnar_an_hindar.w2mesh: 353 beard cards (2428 tris) + 14 eyebrow cards, pbr_hair, appearance donar_an_hindar",
+    "appearances_with_beard": [
+     "donar_an_hindar"
+    ]
+   }
   },
   "dudu": {
    "name": "Dudu Biberveldt",
@@ -857,7 +1046,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "dudu",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "emhyr": {
    "name": "Emhyr var Emreis",
@@ -895,7 +1090,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "painted",
+    "mesh": null,
+    "appearance": "emhyr",
+    "evidence": "HAIRWORK.md Beards: stubble painted in the head texture"
+   }
   },
   "eredin": {
    "name": "Eredin",
@@ -956,7 +1157,26 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": "hb_01_ma__eredin.w2mesh",
+    "appearance": "eredin_no_helmet",
+    "evidence": "hb_01_ma__eredin.w2mesh holds only eyebrow cards (178), no beard cards",
+    "other_beard_meshes": [
+     "hb_02_ma__eredin.w2mesh"
+    ],
+    "appearances_with_beard": [
+     "eredin",
+     "eredin_cs",
+     "eredin_dying",
+     "eredin_no_helmet",
+     "eredin_open_helmet",
+     "eredin_open_helmet_cs",
+     "eredin_open_helmet_scratched",
+     "eredin_scratched"
+    ]
+   }
   },
   "ermion": {
    "name": "Ermion (Mousesack)",
@@ -995,7 +1215,20 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__mousesack.w2mesh",
+    "appearance": "mousesack",
+    "cards": 184,
+    "brow_cards": 176,
+    "triangles": 2764,
+    "evidence": "hb_01_ma__mousesack.w2mesh: 184 beard cards (2764 tris) + 176 eyebrow cards, pbr_hair, appearance mousesack",
+    "appearances_with_beard": [
+     "mousesack"
+    ],
+    "head_hair": "hh_01_ma__mousesack.w2mesh (pbr_hair, z 1.66..1.84, template c_01_ma__mousesack.w2ent) sits UNDER the antler hat c_01_ma__mousesack (z 1.71..2.18); the roster auto analysis misses it (below head top 1.89). Hair cards exist, hidden by the hat in the only appearance"
+   }
   },
   "eskel": {
    "name": "Eskel",
@@ -1031,7 +1264,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "painted",
+    "mesh": null,
+    "appearance": "eskel",
+    "evidence": "HAIRWORK.md Beards: stubble painted in the head texture"
+   }
   },
   "eveline": {
    "name": "Eveline Gallo",
@@ -1074,7 +1313,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "eveline_gallo",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "ewald": {
    "name": "Ewald Borsodi",
@@ -1121,7 +1366,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "ewald_borsody",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "fringilla": {
    "name": "Fringilla Vigo",
@@ -1159,7 +1410,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "fringilla",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "gaunter": {
    "name": "Gaunter O'Dimm",
@@ -1195,7 +1452,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "mirror_man",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "geels": {
    "name": "Ge'els",
@@ -1233,7 +1496,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "geels__civil",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "graden": {
    "name": "Graden",
@@ -1272,7 +1541,29 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "__q103_graden",
+    "evidence": "no hb_* mesh in __q103_graden",
+    "other_beard_meshes": [
+     "hb_10_ma__beard_08_01.w2mesh",
+     "hb_20_ma__beard_06_01.w2mesh",
+     "hb_28_ma__beard_12_01.w2mesh",
+     "hb_28_mb__skellige_villager.w2mesh",
+     "hb_33_ma__beard_04_01.w2mesh",
+     "hb_38_ma__novigrad_citizen_03.w2mesh"
+    ],
+    "appearances_with_beard": [
+     "__mq3035_hunter2",
+     "inquisition_soldier_lvl2_01",
+     "inquisition_soldier_lvl2_04",
+     "inquisition_soldier_lvl2_06",
+     "inquisition_soldier_lvl2_08",
+     "inquisition_soldier_lvl2_09"
+    ]
+   }
   },
   "guillaume": {
    "name": "Guillaume",
@@ -1312,7 +1603,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "guillaume",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "hjalmar": {
    "name": "Hjalmar",
@@ -1371,7 +1668,26 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_mb_hjalmar.w2mesh",
+    "appearance": "hjalmar",
+    "cards": 129,
+    "brow_cards": 0,
+    "triangles": 1988,
+    "evidence": "hb_01_mb_hjalmar.w2mesh: 129 beard cards (1988 tris) + 0 eyebrow cards, pbr_hair, appearance hjalmar",
+    "other_beard_meshes": [
+     "hb_02_mb_hjalmar.w2mesh"
+    ],
+    "appearances_with_beard": [
+     "__q206_hjalmar_beaten_up",
+     "__q206_hjalmar_beaten_up_no_blood",
+     "__q208_crown",
+     "hjalmar",
+     "hjalmar_beaten_and_crowned"
+    ]
+   }
   },
   "horst": {
    "name": "Horst Borsodi",
@@ -1405,7 +1721,24 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__horst_borsody.w2mesh",
+    "appearance": "horst_borsody",
+    "cards": 63,
+    "brow_cards": 31,
+    "triangles": 138,
+    "evidence": "hb_01_ma__horst_borsody.w2mesh: 63 beard cards (138 tris) + 31 eyebrow cards, pbr_hair, appearance horst_borsody",
+    "other_beard_meshes": [
+     "hb_01_ma__horst_borsody_massacred.w2mesh"
+    ],
+    "appearances_with_beard": [
+     "horst_borsody",
+     "horst_borsody_blood",
+     "horst_borsody_ring"
+    ]
+   }
   },
   "imlerith": {
    "name": "Imlerith",
@@ -1441,7 +1774,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "painted",
+    "mesh": null,
+    "appearance": "__q111_no_helmet",
+    "evidence": "HAIRWORK.md Beards: stubble painted in the head texture"
+   }
   },
   "iris": {
    "name": "Iris von Everec",
@@ -1497,7 +1836,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "iris_no_veil",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "johnny": {
    "name": "Johnny (godling)",
@@ -1588,7 +1933,24 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__junior.w2mesh",
+    "appearance": "cyprian_willey",
+    "cards": 373,
+    "brow_cards": 226,
+    "triangles": 2552,
+    "evidence": "hb_01_ma__junior.w2mesh: 373 beard cards (2552 tris) + 226 eyebrow cards, pbr_hair, appearance cyprian_willey",
+    "appearances_with_beard": [
+     "__q302_beaten",
+     "__q302_beaten_dressed",
+     "__q302_naked",
+     "__q310_dudu",
+     "__q310_poor",
+     "cyprian_willey"
+    ]
+   }
   },
   "keira": {
    "name": "Keira Metz",
@@ -1646,7 +2008,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "keira_metz",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "lambert": {
    "name": "Lambert",
@@ -1684,7 +2052,22 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__lambert.w2mesh",
+    "appearance": "lambert",
+    "cards": 340,
+    "brow_cards": 244,
+    "triangles": 2284,
+    "evidence": "hb_01_ma__lambert.w2mesh: 340 beard cards (2284 tris) + 244 eyebrow cards, pbr_hair, appearance lambert",
+    "appearances_with_beard": [
+     "lambert",
+     "lambert_sorceress",
+     "lambert_vesemirs_hat",
+     "lambert_wounded"
+    ]
+   }
   },
   "letho": {
    "name": "Letho of Gulet",
@@ -1716,7 +2099,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "painted",
+    "mesh": null,
+    "appearance": "letho",
+    "evidence": "HAIRWORK.md Beards: stubble painted in the head texture"
+   }
   },
   "lugos": {
    "name": "Madman Lugos",
@@ -1753,7 +2142,20 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_09_mb__lugos_09_01.w2mesh",
+    "appearance": "lugos",
+    "cards": 1015,
+    "brow_cards": 0,
+    "triangles": 2319,
+    "evidence": "hb_09_mb__lugos_09_01.w2mesh: 1015 beard cards (2319 tris) + 0 eyebrow cards, pbr_hair, appearance lugos",
+    "appearances_with_beard": [
+     "lugos",
+     "lugos_fistfight"
+    ]
+   }
   },
   "margarita": {
    "name": "Margarita Laux-Antille",
@@ -1792,7 +2194,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "margaritta",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "marlene": {
    "name": "Marlene de Trastamara",
@@ -1834,7 +2242,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "old_woman_wight_fed",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "menge": {
    "name": "Caleb Menge",
@@ -1868,7 +2282,19 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_03_mg__menge.w2mesh",
+    "appearance": "menge",
+    "cards": 347,
+    "brow_cards": 0,
+    "triangles": 930,
+    "evidence": "hb_03_mg__menge.w2mesh: 347 beard cards (930 tris) + 0 eyebrow cards, pbr_hair, appearance menge",
+    "appearances_with_beard": [
+     "menge"
+    ]
+   }
   },
   "milton": {
    "name": "Milton de Peyrac-Peyran",
@@ -1905,7 +2331,22 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_mb__bob_milton.w2mesh",
+    "appearance": "milton",
+    "cards": 552,
+    "brow_cards": 45,
+    "triangles": 2702,
+    "evidence": "hb_01_mb__bob_milton.w2mesh: 552 beard cards (2702 tris) + 45 eyebrow cards, pbr_hair, appearance milton",
+    "appearances_with_beard": [
+     "milton",
+     "milton_helmet",
+     "milton_helmet_open",
+     "q701__milton_dying"
+    ]
+   }
   },
   "olgierd": {
    "name": "Olgierd von Everec",
@@ -1943,7 +2384,27 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__olgierd.w2mesh",
+    "appearance": "olgierd",
+    "cards": 1592,
+    "brow_cards": 317,
+    "triangles": 3460,
+    "evidence": "hb_01_ma__olgierd.w2mesh: 1592 beard cards (3460 tris) + 317 eyebrow cards, pbr_hair, appearance olgierd",
+    "other_beard_meshes": [
+     "hb_01_ma__olgierd_cutoff.w2mesh",
+     "hb_01_ma__olgierd_young.w2mesh"
+    ],
+    "appearances_with_beard": [
+     "olgierd",
+     "olgierd_blood_hand",
+     "olgierd_decapitated",
+     "olgierd_decapitated_healed",
+     "olgierd_young"
+    ]
+   }
   },
   "oriana": {
    "name": "Orianna",
@@ -1986,7 +2447,19 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": "hb_01_ma__orianna.w2mesh",
+    "appearance": "oriana",
+    "evidence": "hb_01_ma__orianna.w2mesh holds only eyebrow cards (176), no beard cards",
+    "appearances_with_beard": [
+     "oriana",
+     "oriana_blood",
+     "oriana_blood_morph",
+     "oriana_fangs"
+    ]
+   }
   },
   "palmerin": {
    "name": "Palmerin de Launfal",
@@ -2023,7 +2496,22 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__palmerin.w2mesh",
+    "appearance": "palmerin",
+    "cards": 90,
+    "brow_cards": 182,
+    "triangles": 1072,
+    "evidence": "hb_01_ma__palmerin.w2mesh: 90 beard cards (1072 tris) + 182 eyebrow cards, pbr_hair, appearance palmerin",
+    "appearances_with_beard": [
+     "palmerin",
+     "palmerin_bow",
+     "palmerin_helmet",
+     "palmerin_helmet_open"
+    ]
+   }
   },
   "philippa": {
    "name": "Philippa Eilhart",
@@ -2067,7 +2555,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "filippa",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "priscilla": {
    "name": "Priscilla",
@@ -2105,7 +2599,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "pryscilla",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "radovid": {
    "name": "Radovid V",
@@ -2139,7 +2639,19 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__radovid.w2mesh",
+    "appearance": "radovid",
+    "cards": 340,
+    "brow_cards": 12,
+    "triangles": 2284,
+    "evidence": "hb_01_ma__radovid.w2mesh: 340 beard cards (2284 tris) + 12 eyebrow cards, pbr_hair, appearance radovid",
+    "appearances_with_beard": [
+     "radovid"
+    ]
+   }
   },
   "regis": {
    "name": "Regis",
@@ -2192,7 +2704,33 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__regis.w2mesh",
+    "appearance": "regis_human",
+    "cards": 90,
+    "brow_cards": 182,
+    "triangles": 1072,
+    "evidence": "hb_01_ma__regis.w2mesh: 90 beard cards (1072 tris) + 182 eyebrow cards, pbr_hair, appearance regis_human",
+    "other_beard_meshes": [
+     "hb_01_ma__regis_vampire.w2mesh"
+    ],
+    "appearances_with_beard": [
+     "regis_human",
+     "regis_human_cs",
+     "regis_human_ring",
+     "regis_human_skinned_dress",
+     "regis_human_tired",
+     "regis_human_tired_skinned_dress",
+     "regis_human_wound_healed",
+     "regis_human_wounded_morph",
+     "regis_vampire",
+     "regis_vampire_rage",
+     "regis_vampire_rage_cut_on_hand",
+     "regis_vampire_ring"
+    ]
+   }
   },
   "roche": {
    "name": "Vernon Roche",
@@ -2227,7 +2765,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "painted",
+    "mesh": null,
+    "appearance": "roche",
+    "evidence": "no hb_* mesh; stubble painted in the head texture (UNVERIFIED: texture not inspected)"
+   }
   },
   "shani": {
    "name": "Shani",
@@ -2273,7 +2817,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "shani",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "sheala": {
    "name": "Sile de Tancarville",
@@ -2311,7 +2861,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "__q310_tortured",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "svanrige": {
    "name": "Svanrige",
@@ -2351,7 +2907,20 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__svanrige.w2mesh",
+    "appearance": "svanrige",
+    "cards": 99,
+    "brow_cards": 0,
+    "triangles": 732,
+    "evidence": "hb_01_ma__svanrige.w2mesh: 99 beard cards (732 tris) + 0 eyebrow cards, pbr_hair, appearance svanrige",
+    "appearances_with_beard": [
+     "__q208_crown",
+     "svanrige"
+    ]
+   }
   },
   "syanna": {
    "name": "Syanna",
@@ -2419,7 +2988,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "syanna",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "tamara": {
    "name": "Tamara Strenger",
@@ -2457,7 +3032,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "tamara",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "thaler": {
    "name": "Thaler",
@@ -2489,7 +3070,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "talar",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "triss": {
    "name": "Triss Merigold",
@@ -2570,7 +3157,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "triss",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "udalryk": {
    "name": "Udalryk",
@@ -2612,7 +3205,23 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_ma__udalryk.w2mesh",
+    "appearance": "uldaryk",
+    "cards": 128,
+    "brow_cards": 0,
+    "triangles": 1031,
+    "evidence": "hb_01_ma__udalryk.w2mesh: 128 beard cards (1031 tris) + 0 eyebrow cards, pbr_hair, appearance uldaryk",
+    "appearances_with_beard": [
+     "__q203_band",
+     "__q203_eye_patch",
+     "__q203_eye_patch_normal_shadow",
+     "__q203_no_eye",
+     "uldaryk"
+    ]
+   }
   },
   "ves": {
    "name": "Ves",
@@ -2652,7 +3261,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "ves",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "vesemir": {
    "name": "Vesemir",
@@ -2696,7 +3311,23 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_mg__vesemir.w2mesh",
+    "appearance": "vesemir",
+    "cards": 81,
+    "brow_cards": 0,
+    "triangles": 482,
+    "evidence": "hb_01_mg__vesemir.w2mesh: 81 beard cards (482 tris) + 0 eyebrow cards, pbr_hair, appearance vesemir",
+    "appearances_with_beard": [
+     "__cs001_wounded",
+     "__q002_bloody",
+     "__q401_dirty",
+     "vesemir",
+     "vesemir_young"
+    ]
+   }
   },
   "vivienne": {
    "name": "Vivienne de Tabris",
@@ -2737,7 +3368,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "vivienne_de_tabris",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "vlodimir": {
    "name": "Vlodimir von Everec",
@@ -2775,7 +3412,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "witold_no_ghost",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "voorhis": {
    "name": "Morvran Voorhis",
@@ -2813,7 +3456,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "voorhis",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "yennefer": {
    "name": "Yennefer",
@@ -2893,7 +3542,13 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "none",
+    "mesh": null,
+    "appearance": "yennefer_travel_outfit",
+    "evidence": "no hb_* beard mesh in any appearance"
+   }
   },
   "zoltan": {
    "name": "Zoltan Chivay",
@@ -2929,7 +3584,19 @@
      "thumb_vanilla": null
     }
    ],
-   "hairstyles_src": "roster.py"
+   "hairstyles_src": "roster.py",
+   "beard": {
+    "type": "cards",
+    "mesh": "hb_01_da__zoltan.w2mesh",
+    "appearance": "zoltan",
+    "cards": 247,
+    "brow_cards": 271,
+    "triangles": 2812,
+    "evidence": "hb_01_da__zoltan.w2mesh: 247 beard cards (2812 tris) + 271 eyebrow cards, pbr_hair, appearance zoltan",
+    "appearances_with_beard": [
+     "zoltan"
+    ]
+   }
   },
   "geralt": {
    "name": "Geralt of Rivia",

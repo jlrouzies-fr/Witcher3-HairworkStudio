@@ -1,4 +1,4 @@
-﻿r"""hairpipe - one entry point: vanilla hair cards of a character -> HairWorks fur mod.
+r"""hairpipe - one entry point: vanilla hair cards of a character -> HairWorks fur mod.
 
   py tools\hairworks\hairpipe.py <char> discover          # appearances, hair components, heads, bodies, beards
   py tools\hairworks\hairpipe.py <char> plot [OUT.png]    # offline guide / lane plots (no game)
@@ -356,6 +356,48 @@ def _split_tri_mask(sc, ch, head, log=None):
             elif log:
                 log('  split_cards: %s point %s matches no card vertex (nearest %.1f mm)' % (key, list(q), d * 1000))
     return kept_l[lab[idx[:, 0]]]
+
+
+def card_offset_pos(entries, ch, log=None):
+    """card_offset (2026-10-17 opt-in, Junior's tie ring; written by studio_to_config.py from the Studio project's
+    card_offsets = studio_card_offset): list of {uv_min, uv_max and/or near [x,y,z] + radius_mm, offset [dx,dy,dz] m,
+    rotate_deg [x,y,z]} moving pieces of the split_cards KEPT card mesh. Same rule as the Studio (App::applyCardOffsets):
+    uv box = vertices of triangles whose centroid uv is in the box (and, with near, whose centroid is within radius);
+    near alone = whole connected strips with a vertex within the radius. Rotation X, Y, Z about the picked centroid, then
+    the offset. Returns new positions for chunk `ch`, or None when nothing is picked."""
+    idx = np.asarray(ch['idx']).reshape(-1, 3)
+    pos0 = np.asarray(ch['pos'], float)
+    pos = pos0.copy()
+    uv = np.asarray(ch['uv'], float)
+    hit = False
+    for e in entries:
+        sel = np.zeros(len(pos0), bool)
+        nearp = np.asarray(e['near'], float) if e.get('near') is not None else None
+        rad = float(e.get('radius_mm', 25.0)) / 1000.0
+        if e.get('uv_min') is not None and e.get('uv_max') is not None:
+            cu = uv[idx].mean(1)
+            t_ = np.all((cu >= np.asarray(e['uv_min'], float)) & (cu <= np.asarray(e['uv_max'], float)), axis=1)
+            if nearp is not None:
+                t_ &= np.linalg.norm(pos0[idx].mean(1) - nearp, axis=1) <= rad
+            sel[idx[t_].reshape(-1)] = True
+        elif nearp is not None:
+            lab = G.components(ch['nv'], ch['idx'])
+            sel = np.isin(lab, np.unique(lab[np.linalg.norm(pos0 - nearp, axis=1) < rad]))
+            sel &= np.isin(np.arange(len(pos0)), np.unique(idx))
+        if not sel.any():
+            continue
+        hit = True
+        c = pos0[sel].mean(0)
+        rx, ry, rz = np.radians(np.asarray(e.get('rotate_deg', [0, 0, 0]), float))
+        Rx = np.array([[1, 0, 0], [0, np.cos(rx), -np.sin(rx)], [0, np.sin(rx), np.cos(rx)]])
+        Ry = np.array([[np.cos(ry), 0, np.sin(ry)], [0, 1, 0], [-np.sin(ry), 0, np.cos(ry)]])
+        Rz = np.array([[np.cos(rz), -np.sin(rz), 0], [np.sin(rz), np.cos(rz), 0], [0, 0, 1]])
+        M = Rz @ Ry @ Rx
+        pos[sel] = (pos[sel] - c) @ M.T + c + np.asarray(e.get('offset', [0, 0, 0]), float)
+        if log:
+            log('  card_offset: %d vertices moved by %s m (rotate %s deg), centroid %s' % (
+                int(sel.sum()), e.get('offset'), e.get('rotate_deg', [0, 0, 0]), np.round(c, 4).tolist()))
+    return pos if hit else None
 
 
 def split_tint_texture(sc, tex, prefix, base, log=print):
@@ -1267,7 +1309,23 @@ def generate(C, hair=None, log=print, prefix=''):
         log('  preset: material from %s, explicit overrides %s; source values kept for %s' % (
             L['mat_src'], sorted(expl & set(L)), dropped))
     look = dict(mat_src=C['look']['mat_src'], set=s, textures=tx)
+    if C['look'].get('splineMultiplier'):   # opt-in (2026-10-15, L354): segments per CV span (default: the source's 3)
+        look['splineMultiplier'] = int(C['look']['splineMultiplier'])
     split_files = []
+    if C['look'].get('density_flat') is not None and not (C.get('studio_geo') or {}).get('density_png'):   # a painted project: studio_geo scales its atlas instead
+        # 2026-10-16 opt-in (FINDINGS 10.3, user OK; the hair counterpart of beard.density_flat): the game's path tracer
+        # ignores the density scalar (32 hairs per face, kept by the density map), while the Studio thins with it. A
+        # look density below 1 goes into a FLAT density map (keep probability for every hair), so the game thins the
+        # same share. studio_to_config writes it when the project's density is in (0, 1); absent = unchanged builds.
+        import headtex
+        _pf = float(np.clip(float(C['look']['density_flat']), 0.0, 1.0))
+        _d8 = np.full((64, 64), round(_pf * 255.0), np.float32)
+        _dp = prefix + fur_path(C, hair['comp'])[:-len('.redfur')] + '_density.xbm'
+        split_files.append((_dp, headtex.make_xbm(headtex.CARD_STUB, 64, 64, headtex.encode_dxt5_alpha(_d8), _dp, 64 // 4 * 16)))
+        look['textures'][('physicalMaterials', 'volume', 'densityTex')] = _dp
+        look['set'][('physicalMaterials', 'volume', 'densityTexChannel')] = ('EHairTextureChannel', 'ALPHA')
+        look['set'][('physicalMaterials', 'volume', 'usePixelDensity')] = ('Bool', 1)
+        log('  look.density_flat %.3f: flat density map %s (every hair kept with that probability, as the Studio thins)' % (_pf, _dp))
     if (C.get('split_cards') or {}).get('tint') and L['use_card_texture'] and not L.get('card_density_only'):
         _tp, _td, _timg, _tb = split_tint_texture(C['split_cards'], tex, prefix, fur_path(C, hair['comp'])[:-len('.redfur')], log=log)
         split_files.append((_tp, _td))
@@ -1345,6 +1403,22 @@ def generate(C, hair=None, log=print, prefix=''):
         import studio_geo
         data, _sg_files = studio_geo.apply(C, data, fur_path(C, hair['comp']), len(bones), log=log)
         extra_files = list(extra_files) + _sg_files
+        if C['studio_geo'].get('look'):
+            # 2026-10-15 opt-in (Geralt headband L356): the Studio export's _look.json written onto the fur LAST with the
+            # Studio's own desk_export.edit_fur (look only). Needed with ref_fur, whose material import (yenref) drops
+            # look.extra_set, so the user's look never reached the fur.
+            import tempfile
+            DE = studio_geo._desk_export()
+            _lk = json.load(open(studio_geo._path(C['studio_geo']['look'])))
+            _fd, _tmp = tempfile.mkstemp(suffix='.redfur')
+            try:
+                with os.fdopen(_fd, 'wb') as _fh:
+                    _fh.write(data)
+                data, _chg = DE.edit_fur(_tmp, {}, _lk, None, False, True, None, log,
+                                         w3_keys=bool(C['studio_geo'].get('w3_keys')))   # opt-in 2026-10-15: stiffnessBone* / useCollision / strandBlendMode (desk_export.W3_KEY_TYPES)
+            finally:
+                os.remove(_tmp)
+            log('  studio_geo.look %s: %d values set' % (C['studio_geo']['look'], len(_chg)))
     redfur.verify(data)
     try:                                # R78: HairWorks Preview data pack (reads the fur bytes only; never breaks a build)
         strand_edits.export_hw_pack(C, data, _edit_path, tex=tex, comp=hair['comp'], index=_idx, log=log)
@@ -1573,7 +1647,8 @@ def build(C, install=False, log=print, prefix='', assemble=False):
             sc_ = C['split_cards'] if isinstance(C['split_cards'], dict) else {}
             head_ = growth.Head(C.get('head_mesh') or info['heads'][0])
             new_mesh = P(hair['mesh'][:-len('.w2mesh')] + '_updo.w2mesh')
-            w, b, stt = template.subset_mesh(hair['mesh'], lambda ch, head_=head_: ('tris', split_tri_mask(sc_, ch, head_)))
+            _mv = (lambda ch, _co=C['card_offset']: card_offset_pos(_co, ch, log=log)) if C.get('card_offset') else None
+            w, b, stt = template.subset_mesh(hair['mesh'], lambda ch, head_=head_: ('tris', split_tri_mask(sc_, ch, head_)), move_fn=_mv)
             log('  split_cards: vanilla updo cards kept as %s: (verts, live tris, tris) per chunk %s' % (new_mesh, stt))
             files.append((new_mesh, w))
             bufs.append((new_mesh + '.1.buffer', b))
@@ -1633,7 +1708,20 @@ def build(C, install=False, log=print, prefix='', assemble=False):
             # by loading a file only that mod ships (mod_guard.py)
             import mod_guard
             extra = list(extra) + [(hair['comp'] + mod_guard.CARDS_SUFFIX, hair['mesh'])]
+        template.OUTER_ONLY = bool(C.get('template_outer_only'))
+        template.DROP_FLAT = bool(C.get('template_drop_flat'))
+        template.FLAT_COMP = C.get('template_flat_comp')
+        template.FLAT_NULL_FURS = tuple(C.get('template_flat_null_furs', ()))   # 2026-10-15 opt-in, see template.OUTER_ONLY
         new = template.patch(_tsrc, hair['comp'], fp, extra, fallback)
+        if C.get('clear_component_meshes') and not (C.get('lore_guard') and C.get('lore_guard_hide')):
+            # 2026-10-15 opt-in: e.g. Triss's i_01 clips showing through the fur (dev builds). With the lore guard +
+            # lore_guard_hide the mesh stays and the guard script hides it only when the lore hair is present.
+            new = template.clear_meshes(new, C['clear_component_meshes'])
+        if C.get('template_drop_flat'):
+            # 2026-10-15 opt-in (Geralt Ard headband, L353): the source coif's STALE flatCompiledData (broken fur path,
+            # original card mesh) is what the game instantiated, so the outer-table patch never showed. Drop the flat
+            # data: the engine builds the item from the outer components (ours).
+            new = template.drop_flat(new)
         if C.get('lore_guard'):
             new = template.add_script_component(new, lore_guard.CLASS, lore_guard.COMP)
         if C.get('mod_guard'):
@@ -1648,6 +1736,12 @@ def build(C, install=False, log=print, prefix='', assemble=False):
         beard.add_to_build(C, info, files, bufs, tpls, P, log)
     if assemble:
         return files, bufs, tpls
+    _scalp = None
+    if C.get('scalp_recolour'):
+        # 2026-10-16 opt-in (scalp_recolour.py): the head diffuse's painted scalp recoloured to the hair colour; its
+        # xbm stub(s) go into blob0.bundle, the mips into content\texture.cache. Without the key nothing changes here.
+        import scalp_recolour
+        _scalp = scalp_recolour.add_to_mod(C, files, log)
     mod = mod_src(C)
     content = os.path.join(mod, 'content')
     if os.path.isdir(mod):
@@ -1657,6 +1751,8 @@ def build(C, install=False, log=print, prefix='', assemble=False):
     if bufs:
         bundles.append(write_legacy_bundle(os.path.join(content, 'buffers0.bundle'), bufs))
     write_legacy_metadata_store(os.path.join(content, 'metadata.store'), bundles)
+    if _scalp:
+        scalp_recolour.write_cache(os.path.join(content, 'texture.cache'), _scalp)
     ents = {e.name: e for e in bundle_entries(os.path.join(content, 'blob0.bundle'))}
     for rel, data in files:
         assert bundle_read(os.path.join(content, 'blob0.bundle'), ents[rel]) == data
@@ -1670,7 +1766,7 @@ def build(C, install=False, log=print, prefix='', assemble=False):
         meta = K.write_release_files(mod, C['mod'], K.required_version(), dict(config=C['name']), salt=(C['name'],))
         if C.get('lore_guard'):
             import lore_guard
-            lore_guard.write_script(mod, hair['comp'], hair['mesh'])
+            lore_guard.write_script(mod, hair['comp'], hair['mesh'], C.get('lore_guard_hide') or ())
             log('lore guard: script + scripted component (Nexus 6457 required at runtime)')
         if C.get('mod_guard'):
             import mod_guard
@@ -1704,8 +1800,13 @@ def do_install(C, files, log=print):
     assert not running(), 'witcher3.exe is running: not installing'
     dst = os.path.join(GAME, 'mods', C['mod'])
     mine = {r.lower() for r, _ in files}
+    # 2026-10-15 opt-in "install_override": [mod folder names] whose files this mod deliberately overrides (Geralt Ard
+    # headband: the source mod's own coif entity; our name sorts first, so ours wins). Default: any shared file = conflict.
+    _ovr = [os.path.abspath(os.path.join(GAME, 'mods', m)).lower() for m in C.get('install_override', [])]
     for root, _, fs in os.walk(os.path.join(GAME, 'mods')):
         if os.path.abspath(root).startswith(os.path.abspath(dst)):
+            continue
+        if any(os.path.abspath(root).lower().startswith(o) for o in _ovr):
             continue
         for fn in fs:
             if fn.endswith('.bundle'):

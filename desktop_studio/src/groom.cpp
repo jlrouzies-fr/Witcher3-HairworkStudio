@@ -4,7 +4,9 @@
 #include "groom.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <sstream>
@@ -285,8 +287,11 @@ int Groom::baseOf(int i) const {
 }
 
 V3 Groom::renderPoint(int i, int k) const {
+    if (i < 0 || i >= (int)P.size() || k < 0 || k >= (int)P[i].size()) return V3{};   // stale index (crash 2026-10-15, stage input)
     int b = baseOf(i);
     const int K0 = pack->K;
+    if (b >= (int)pack->guides.size() || b >= (int)pack->guidesEdit.size()
+        || (int)pack->guides[b].size() < K0 || (int)pack->guidesEdit[b].size() < K0) return P[i][k];
     if (K == K0) return P[i][k] + (pack->guides[b][k] - pack->guidesEdit[b][k]);
     // resampled groom: the build's per-CV fur-frame offset taken at the same fraction of the guide
     float f = K > 1 ? float(k) * float(K0 - 1) / float(K - 1) : 0.0f;
@@ -310,6 +315,43 @@ int Groom::numAlive() const {
 
 std::vector<int> Groom::match(const json& roots) {
     std::vector<int> out;
+    // many roots: bucket the alive roots in a uniform grid of cell >= tol once per call (perf 2026-10-15, 3000-guide
+    // Yennefer); the nearest root within tol is always in the 3x3x3 neighbour cells, ties keep the lowest index, so the
+    // result equals the brute-force scan below
+    if (roots.size() >= 4 && P.size() >= 64 && tol > 0) {
+        float cell = tol * 1.01f;
+        auto key = [&](int x, int y, int z) { return (int64_t(x) * 73856093) ^ (int64_t(y) * 19349663) ^ (int64_t(z) * 83492791); };
+        std::vector<std::pair<int64_t, int>> grid;
+        grid.reserve(P.size());
+        for (size_t i = 0; i < P.size(); i++)
+            if (alive[i]) grid.push_back({key(int(std::floor(P[i][0].x / cell)), int(std::floor(P[i][0].y / cell)), int(std::floor(P[i][0].z / cell))), (int)i});
+        std::sort(grid.begin(), grid.end());
+        for (auto& r : roots) {
+            V3 q{r[0].get<float>(), r[1].get<float>(), r[2].get<float>()};
+            int cx = int(std::floor(q.x / cell)), cy = int(std::floor(q.y / cell)), cz = int(std::floor(q.z / cell));
+            int best = -1;
+            float bd = 1e9f;
+            for (int a = -1; a <= 1; a++)
+                for (int b = -1; b <= 1; b++)
+                    for (int c = -1; c <= 1; c++) {
+                        int64_t kk = key(cx + a, cy + b, cz + c);
+                        auto lo = std::lower_bound(grid.begin(), grid.end(), std::pair<int64_t, int>{kk, INT_MIN});
+                        for (auto it = lo; it != grid.end() && it->first == kk; ++it) {
+                            int i = it->second;
+                            if (i < 0 || int(std::floor(P[i][0].x / cell)) != cx + a || int(std::floor(P[i][0].y / cell)) != cy + b ||
+                                int(std::floor(P[i][0].z / cell)) != cz + c) continue;   // hash collision
+                            float d = len(P[i][0] - q);
+                            if (d < bd || (d == bd && i < best)) { bd = d; best = i; }
+                        }
+                    }
+            if (best >= 0 && bd <= tol) {
+                if (std::find(out.begin(), out.end(), best) == out.end()) out.push_back(best);
+            } else {
+                unmatched++;
+            }
+        }
+        return out;
+    }
     for (auto& r : roots) {
         V3 q{r[0].get<float>(), r[1].get<float>(), r[2].get<float>()};
         int best = -1;
@@ -399,7 +441,7 @@ static std::array<float, 3> closestBary(V3 p, V3 a, V3 b, V3 c, float& dist) {
 }
 
 // a duplicated guide splits the growth face its root lands on into three, so HairWorks interpolates around it
-void Groom::insertGuide(int ni, bool edgeFace, bool srcUv, const float* fixUv) {
+void Groom::insertGuide(int ni, bool edgeFace, bool srcUv, const float* fixUv, const float* newUv) {
     V3 r = P[ni][0];
     int best = -1;
     float bd = 1e9f;
@@ -461,6 +503,9 @@ void Groom::insertGuide(int ni, bool edgeFace, bool srcUv, const float* fixUv) {
             Face n;
             float u = 0.5f * (F.uv[2 * c.q] + F.uv[2 * ((c.q + 1) % 3)]), v = 0.5f * (F.uv[2 * c.q + 1] + F.uv[2 * ((c.q + 1) % 3) + 1]);
             if (haveSrcUv) { u = su; v = sv; }
+            // 2026-10-15 opt-in (duplicate "new_uv", Studio fade_hairline extend_mm): only the NEW root's corner takes this
+            // uv (a sparse texel); the old edge keeps its own, so the density ramps from the old edge out to the new root
+            if (newUv) { u = newUv[0]; v = newUv[1]; }
             n.g = {b, a, ni};   // reversed edge = same winding as the neighbour
             n.uv = {F.uv[2 * ((c.q + 1) % 3)], F.uv[2 * ((c.q + 1) % 3) + 1], F.uv[2 * c.q], F.uv[2 * c.q + 1], u, v};
             if (fixUv) n.uv = {su, sv, su, sv, su, sv};
@@ -474,6 +519,7 @@ void Groom::insertGuide(int ni, bool edgeFace, bool srcUv, const float* fixUv) {
     Face F = faces[best];
     float u = bw[0] * F.uv[0] + bw[1] * F.uv[2] + bw[2] * F.uv[4];
     float v = bw[0] * F.uv[1] + bw[1] * F.uv[3] + bw[2] * F.uv[5];
+    if (newUv) { u = newUv[0]; v = newUv[1]; }
     faces.erase(faces.begin() + best);
     for (int e = 0; e < 3; e++) {
         Face n;
@@ -731,11 +777,36 @@ void Groom::applyOp(const json& op) {
         const json eu = op.contains("edge_uv") ? op["edge_uv"] : json();
         bool fix = eu.is_array() && eu.size() == 2;
         if (fix) { fuv[0] = eu[0].get<float>(); fuv[1] = eu[1].get<float>(); }
-        insertGuide(ni, op.value("edge_face", false), eu.is_string() && eu.get<std::string>() == "src", fix ? fuv : nullptr);
+        float nuv[2];
+        const json nu = op.contains("new_uv") ? op["new_uv"] : json();
+        bool hasNu = nu.is_array() && nu.size() == 2;
+        if (hasNu) { nuv[0] = nu[0].get<float>(); nuv[1] = nu[1].get<float>(); }
+        insertGuide(ni, op.value("edge_face", false), eu.is_string() && eu.get<std::string>() == "src", fix ? fuv : nullptr, hasNu ? nuv : nullptr);
         return;
     }
     json roots = op.contains("roots") ? op["roots"] : (op.contains("root") ? json::array({op["root"]}) : json::array());
     if (roots.empty()) return;
+    if (kind == "face_uv") {
+        // 2026-10-15 opt-in (Studio face_texel): the growth-face corners of these guides take uv [u, v], i.e. another
+        // texel of the fur's maps (root / tip colour, density, width, clump) = per-area colour / density control.
+        // corners "guide" (default): only the corners at these guides (the hair interpolated toward neighbours blends
+        // smoothly); "face": all 3 corners of every face touching them. Studio exports write the faces as shown; the
+        // HairLab pipeline ignores this op.
+        if (!op.contains("uv") || !op["uv"].is_array() || op["uv"].size() != 2) return;
+        auto g = match(roots);
+        if (g.empty()) return;
+        std::set<int> sel(g.begin(), g.end());
+        float u = op["uv"][0].get<float>(), v = op["uv"][1].get<float>();
+        bool whole = op.value("corners", std::string("guide")) == "face";
+        for (auto& F : faces) {
+            bool any = false;
+            for (int q = 0; q < 3; q++) any = any || sel.count(F.g[q]);
+            if (!any) continue;
+            for (int q = 0; q < 3; q++)
+                if (whole || sel.count(F.g[q])) { F.uv[2 * q] = u; F.uv[2 * q + 1] = v; }
+        }
+        return;
+    }
     if (kind == "delete_face") {
         // 2026-10-12 opt-in (Studio trim_growth): remove the growth face of these 3 guide roots (no hair is interpolated
         // there any more). Studio exports write the faces as shown; the HairLab pipeline ignores this op.
@@ -768,6 +839,16 @@ void Groom::applyOp(const json& op) {
     }
     if (kind == "reshape") {
         int i = g[0];
+        // 2026-10-17 opt-in "dup": k (> 0) = the k-th alive guide (index order) whose root is the SAME point as guide i
+        // (stacked copies share one root, so a root-addressed reshape always hit the first; push_out fix_spans)
+        if (op.contains("dup") && op["dup"].get<int>() > 0) {
+            std::vector<int> same;
+            for (size_t j = 0; j < P.size(); j++)
+                if (alive[j] && len(P[j][0] - P[i][0]) < 2e-4f) same.push_back((int)j);
+            int k = op["dup"].get<int>();
+            if (k >= (int)same.size()) return;
+            i = same[k];
+        }
         auto& pts = op["points"];
         if ((int)pts.size() == K)
             for (int k = 0; k < K; k++) P[i][k] = {pts[k][0].get<float>(), pts[k][1].get<float>(), pts[k][2].get<float>()};
@@ -796,6 +877,7 @@ void Groom::applyOp(const json& op) {
 }
 
 void Groom::replay() {
+    ck.valid = false;
     P = pack->guidesEdit;
     K = pack->K;
     alive.assign(P.size(), 1);
@@ -817,6 +899,35 @@ void Groom::replay() {
         if (k != "curl") baked.push_back(o);
         applyOp(o);
     }
+    stOps = ops.size();
+    stLast = ops.empty() ? json() : ops.back();
+}
+
+void Groom::checkpoint() {
+    if (!(stOps == ops.size() && (ops.empty() || ops.back() == stLast))) replay();
+    ck.valid = true;
+    ck.nOps = ops.size();
+    ck.P = P; ck.alive = alive; ck.src = src; ck.edited = edited; ck.faces = faces; ck.nBaked = baked.size(); ck.unmatched = unmatched;
+}
+
+void Groom::replayTail(size_t from) {
+    if (!ck.valid || from != ck.nOps || ops.size() < from || baked.size() < ck.nBaked) { replay(); return; }
+    P = ck.P; alive = ck.alive; src = ck.src; edited = ck.edited; faces = ck.faces; unmatched = ck.unmatched;
+    baked.resize(std::min(baked.size(), ck.nBaked));   // tail ops only append to baked: drop the previous tail's entries
+    for (size_t n = from; n < ops.size(); n++) {
+        auto& o = ops[n];
+        std::string k = o.contains("type") ? o["type"].get<std::string>() : o.value("op", "");
+        if (k == "mirror" && (!o.contains("source") || !o["source"].is_string() || !o.contains("source_roots"))) {
+            json r = resolveMirror(o);
+            baked.push_back(r);
+            applyOp(r);
+            continue;
+        }
+        if (k != "curl") baked.push_back(o);
+        applyOp(o);
+    }
+    stOps = ops.size();
+    stLast = ops.empty() ? json() : ops.back();
 }
 
 void Groom::push(json op) {

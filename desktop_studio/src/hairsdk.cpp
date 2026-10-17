@@ -3,10 +3,13 @@
 #include "hairsdk.h"
 
 #include <windows.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
+#include <map>
 
 #include <Nv/Common/Platform/Dx11/NvCoDx11Handle.h>
 #include <Nv/HairWorks/NvHairSdk.h>
@@ -63,12 +66,60 @@ public:
     nvidia::Bool isClosed() override { return closed; }
 };
 
+// ------------------------------------------------------------------------------------------------ game hair settings
+// The values the game's path-traced hair uses come from the user's dx12user.settings: Graphics Control keeps its own
+// copies in [GC_Store] / [GC_PTHair] and pushes them at game start (HAIRWORK.md L249 / L251), so those win over the
+// engine sections. Missing file or keys = the exe defaults (mode 1, falloff 0.06, 32 hairs per face).
+void HairRuntime::loadGameHairSettings() {
+    if (const char* e = getenv("HW_GAME_ACCURATE")) gameAccurate = atoi(e) != 0;
+    if (const char* e = getenv("HW_PT_WIDTH_SCALE")) ptWidthScale = std::clamp(float(atof(e)), 0.05f, 10.0f);
+    std::vector<std::string> cands;
+    if (const char* e = getenv("HW_DX12_SETTINGS")) cands.push_back(e);
+    PWSTR docs = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) && docs) {
+        char buf[MAX_PATH * 2] = {};
+        WideCharToMultiByte(CP_UTF8, 0, docs, -1, buf, sizeof buf, nullptr, nullptr);
+        cands.push_back(std::string(buf) + "/The Witcher 3/dx12user.settings");
+        CoTaskMemFree(docs);
+    }
+    if (const char* up = getenv("USERPROFILE")) {
+        cands.push_back(std::string(up) + "/Documents/The Witcher 3/dx12user.settings");
+        cands.push_back(std::string(up) + "/OneDrive/Documents/The Witcher 3/dx12user.settings");
+    }
+    ptSettingsSource = "defaults";
+    for (auto& path : cands) {
+        std::ifstream f(path);
+        if (!f) continue;
+        std::map<std::string, std::string> kv;   // "section|key" -> value (last wins)
+        std::string line, sec;
+        while (std::getline(f, line)) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (line.size() > 1 && line[0] == '[') { sec = line.substr(1, line.find(']') - 1); continue; }
+            size_t eq = line.find('=');
+            if (eq != std::string::npos) kv[sec + "|" + line.substr(0, eq)] = line.substr(eq + 1);
+        }
+        auto get = [&](std::initializer_list<const char*> keys, std::string& v) {
+            for (auto k : keys) { auto it = kv.find(k); if (it != kv.end()) { v = it->second; return true; } }
+            return false;
+        };
+        std::string v;
+        if (get({"GC_Store|PTHairRootAlphaMode", "Rendering/RT/PathTracer|PTHairRootAlphaMode"}, v)) ptRootAlphaMode = std::clamp(atoi(v.c_str()), 0, 2);
+        if (get({"GC_PTHair|GCP_PTHairRootAlphaFalloffOverride", "GC_Store|PTHairRootAlphaFalloffOverride",
+                 "Rendering/RT/PathTracer|PTHairRootAlphaFalloffOverride"}, v)) ptRootAlphaFalloff = float(atof(v.c_str()));
+        if (get({"GC_Store|RTNHairsPerPatch", "Rendering/HairWorks|RTNHairsPerPatch"}, v)) { ptHairsPerFace = std::clamp(atoi(v.c_str()), 1, 64); ptHairsPerFaceGame = ptHairsPerFace; }
+        if (get({"GC_PTHair|GCP_PTHairAlphaTestMipLevel"}, v)) ptDensityMipGame = std::clamp(atoi(v.c_str()), 0, 15);
+        ptSettingsSource = path;
+        break;
+    }
+}
+
 // ------------------------------------------------------------------------------------------------ loading
 bool HairRuntime::load(const std::string& dll, ID3D11Device* d, ID3D11DeviceContext* c) {
     dev = d;
     ctx = c;
     dllPath = dll;
     if (const char* e = getenv("HW_BONE_STIFF_EMU")) boneStiffEmu = std::clamp(float(atof(e)), 0.0f, 1.0f);
+    loadGameHairSettings();
     // LOAD_WITH_ALTERED_SEARCH_PATH: the DLL's own folder is searched for its dependencies (d3dcompiler_47.dll)
     HMODULE h = LoadLibraryExA(dll.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!h) { lastError = "cannot load " + dll + " (error " + std::to_string(GetLastError()) + ")"; return false; }
@@ -247,6 +298,7 @@ bool HairRuntime::build(const DeskPack& pk, const Groom& gr, std::vector<int>& g
     if (NV_FAILED(sdk->createInstance(aid, iid))) { lastError = "createInstance failed"; return false; }
     instId = iid;
     if (densitySrv) sdk->setTexture(iid, NvHair::TextureType::DENSITY, NvCo::Dx11Type::wrap(densitySrv));
+    densityBound = densitySrv;
     if (colorSrv) {
         sdk->setTexture(iid, NvHair::TextureType::ROOT_COLOR, NvCo::Dx11Type::wrap(colorSrv));
         sdk->setTexture(iid, NvHair::TextureType::TIP_COLOR, NvCo::Dx11Type::wrap(colorSrv));
@@ -277,14 +329,24 @@ void HairRuntime::setColorTexture(ID3D11ShaderResourceView* srv) {
 
 void HairRuntime::setDensityTexture(ID3D11ShaderResourceView* srv) {
     densitySrv = srv;
-    if (sdk && instId != NvHair::INSTANCE_ID_NULL)
+    if (sdk && instId != NvHair::INSTANCE_ID_NULL) {
         sdk->setTexture(NvHair::InstanceId(instId), NvHair::TextureType::DENSITY, NvCo::Dx11Type::wrap(srv));
+        densityBound = srv;
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ descriptor
 static float s2l(float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); }
 
 static gfsdk_float4 color(const json& c, gfsdk_float4 def) {
+    if (c.is_array() && c.size() >= 3 && c[0].is_number()) {
+        // 2026-10-17 (L593): a look colour stored as [r, g, b(, a)] (agent look_set, exported look files) rendered as the
+        // default (white) while the game used it: accept the list, 0-255 (or 0..1 when every value is <= 1)
+        float m = 1.0f;
+        for (size_t i = 0; i < 3; i++) if (c[i].get<float>() > 1.0f) m = 255.0f;
+        return {s2l(c[0].get<float>() / m), s2l(c[1].get<float>() / m), s2l(c[2].get<float>() / m),
+                c.size() > 3 && c[3].is_number() ? c[3].get<float>() / m : 1.0f};
+    }
     if (!c.is_object()) return def;
     return {s2l(c.value("Red", 255) / 255.0f), s2l(c.value("Green", 255) / 255.0f), s2l(c.value("Blue", 255) / 255.0f),
             c.value("Alpha", 255) / 255.0f};
@@ -327,8 +389,10 @@ void HairRuntime::updateDescriptor(const Look& L, const XMFLOAT3& wind, bool sim
     d.m_waveFreq = F("physicalMaterials.waveness.waveFreq", 3.0f);
     d.m_waveFreqNoise = F("physicalMaterials.waveness.waveFreqNoise", 0.5f);
     d.m_waveRootStraighten = F("physicalMaterials.waveness.waveRootStraighten", 0.0f);
-    d.m_waveScaleStrand = F("physicalMaterials.waveness.waveStrand", 1.0f);
-    d.m_waveScaleClump = F("physicalMaterials.waveness.waveClump", 0.0f);
+    // 2026-10-16 (FINDINGS 10.4, user OK): the engine always sends waveStrand 1 / waveClump 0 whatever the fur says
+    // (L530), so the DEFAULT preview draws them that way too; the fur's values are still exported, never read here
+    d.m_waveScaleStrand = 1.0f;
+    d.m_waveScaleClump = 0.0f;
     // simulation
     d.m_simulate = simulate;
     d.m_massScale = F("physicalMaterials.simulation.massScale", 10.0f);
@@ -365,6 +429,8 @@ void HairRuntime::updateDescriptor(const Look& L, const XMFLOAT3& wind, bool sim
     boneStiffInFur = F("physicalMaterials.stiffness.stiffnessBoneEnable", 0.0f) > 0.5f;
     if (boneStiffInFur && boneStiffEmu > 0.0f) {
         float k = std::clamp(boneStiffEmu, 0.0f, 1.0f);
+        // L480: the game still lets low-stiffness hair fall under the bone block (stiffness 0 -> crown bald): scale the pull
+        if (gameAccurate && ptStiffByFur) k *= std::clamp(0.5f * (d.m_stiffness + d.m_rootStiffness), 0.0f, 1.0f);
         gfsdk_float4 bc = curve(L.get("physicalMaterials.stiffness.stiffnessBoneCurve"));
         auto up = [&](gfsdk_float4& c) {
             c.x += (1.0f - c.x) * k * bc.x; c.y += (1.0f - c.y) * k * bc.y;
@@ -422,12 +488,110 @@ void HairRuntime::updateDescriptor(const Look& L, const XMFLOAT3& wind, bool sim
     d.m_detailLodDensity = F("levelOfDetail.detailLOD.detailLODDensity", 1.0f);
     d.m_detailLodWidth = F("levelOfDetail.detailLOD.detailLODWidth", 1.0f);
     if (forceCloseLod) { d.m_detailLodStart = 1000.0f; d.m_detailLodEnd = 999.0f; }
+    if (gameAccurate) {
+        // what the game's path-traced strand generation does (see hairsdk.h): fixed hairs per growth face, no LOD,
+        // per-hair density texture, width as stored (x calibration), root transparency from the game's settings
+        d.m_density = float(ptHairsPerFace) / 64.0f;
+        d.m_enableDetailLod = false;
+        d.m_enableDistanceLod = false;
+        // detail-LOD emulation (hairsdk.h ptLodEmu): the game's close-up LOD blends the width to detailLODWidth and the hair
+        // count by detailLODDensity at the head-shot distance (L480); enableLOD off = the fur's density scalar (Anna: 0)
+        ptLodTUsed = 0.0f; ptLodWidthEff = d.m_width; ptLodKeep = 1.0f;
+        if (ptLodEmu) {
+            bool furLod = F("levelOfDetail.enableLOD", 1.0f) > 0.5f;
+            bool det = F("levelOfDetail.detailLOD.enableDetailLOD", 1.0f) > 0.5f;
+            // a beard pack keeps its `lod` empty for the default preview; its own block (lodBeard) feeds this emulation
+            const json& lb = L.pack ? L.pack->lodBeard : json();
+            if (lb.is_object() && !lb.empty()) {
+                furLod = lb.value("enableLOD", 1) > 0;
+                const json dl = lb.value("detailLOD", json::object());
+                det = dl.value("enableDetailLOD", 1) > 0;
+                d.m_detailLodStart = dl.value("detailLODStart", d.m_detailLodStart); d.m_detailLodEnd = dl.value("detailLODEnd", d.m_detailLodEnd);
+                d.m_detailLodWidth = dl.value("detailLODWidth", d.m_detailLodWidth); d.m_detailLodDensity = dl.value("detailLODDensity", d.m_detailLodDensity);
+            }
+            float t = 0.0f;
+            if (furLod && det) {
+                float s0 = d.m_detailLodStart, s1 = d.m_detailLodEnd;
+                float dl = std::max(ptCamDistSdk, 0.0f) * ptLodDistScale;
+                t = s0 > s1 ? std::clamp((s0 - dl) / (s0 - s1), 0.0f, 1.0f) : (dl <= s0 ? 1.0f : 0.0f);
+            }
+            if (ptLodT >= 0.0f) t = std::min(ptLodT, 1.0f);
+            ptLodTUsed = t;
+            d.m_width = d.m_width + (d.m_detailLodWidth - d.m_width) * t;
+            ptLodWidthEff = d.m_width;
+            float keep = furLod ? std::clamp(1.0f + (d.m_detailLodDensity - 1.0f) * t, 0.0f, 1.0f) : std::clamp(F("physicalMaterials.volume.density", 1.0f), 0.0f, 1.0f);
+            ptLodKeep = keep;
+            d.m_density *= keep;
+            if (ptCountExp > 0.0f) d.m_width *= std::pow(std::max(keep * float(ptHairsPerFace) / 32.0f, 0.02f), -ptCountExp);
+        }
+        if (ptNeutralise) {
+            // the game ignores these (L480): the preview takes the calibration constants, not the fur's knobs
+            d.m_specularPrimary = 0.0945f; d.m_specularSecondary = 0.05f;
+            d.m_hairNormalWeight = 0.65f;
+            d.m_shadowSigma = 1.56f; d.m_shadowDensityScale = 0.5f;
+        }
+        // L390 ablation (Anna, mode 0): the path tracer ignores the fur's width (0.296 / 0.592 / 1.184 look the same in
+        // game, as the hook's descriptor width force did in L384) but follows widthRootScale / widthTipScale. ptWidthConst > 0
+        // replaces the width by that constant (the root / tip scales still shape it)
+        // L391: not ignored but compressed: the in-game thickness follows ~ width^0.1 (ptWidthExp)
+        if (ptWidthConst > 0.0f) d.m_width = ptWidthConst * std::pow(std::max(d.m_width, 1e-4f), ptWidthExp);
+        // width floor (2026-10-16, Olgierd beard): in game a very small fur width does not thin the strands linearly
+        // (L391: Anna at width 0.059 covers like a Studio width ~0.195; fit 0.221 x width^0.1). Below the crossover
+        // (~0.187) the floor wins; every fur at or above it is untouched. The old (non game-accurate) preview hid tiny widths
+        // behind the 1.2.1 detail LOD, whose detailLODWidth REPLACES the width (absolute, default 1.0)
+        else if (ptWidthFloor && !ptLodEmu) d.m_width = std::max(d.m_width, 0.221f * std::pow(std::max(d.m_width, 1e-4f), 0.1f));
+        if (ptTipScale >= 0.0f) d.m_widthTipScale = ptTipScale;   // calibration: tip width scale override (L393)
+        d.m_width *= ptWidthScale;
+        if (ptWidthConst > 0.0f && ptScaleExp != 1.0f) {
+            d.m_widthRootScale = std::pow(std::max(d.m_widthRootScale, 0.0f), ptScaleExp);
+            d.m_widthTipScale = std::pow(std::max(d.m_widthTipScale, 0.0f), ptScaleExp);
+        }
+        ptEffWidth = d.m_width * 0.5f * (d.m_widthRootScale + d.m_widthTipScale);
+        if (ptRootAlphaMode == 0) d.m_rootAlphaFalloff = 0.0f;
+        else if (ptRootAlphaFalloff >= 0.0f) d.m_rootAlphaFalloff = ptRootAlphaFalloff;
+        // the game never takes the fur's waveClump / waveStrand: every in-game descriptor dump (hook logs, 2301 distinct
+        // descriptors incl. Guillaume's waveClump 1 / waveStrand .1) holds the defaults 0 / 1 (HAIRWORK.md "Studio game-accurate preview")
+        d.m_waveScaleClump = 0.0f;
+        d.m_waveScaleStrand = 1.0f;
+        d.m_waveScale *= ptWaveScale;
+    }
     d.m_useViewfrustrumCulling = true;
     d.m_useBackfaceCulling = false;
     d.m_splineMultiplier = std::max(1, L.pack->splineMultiplier);
+    if (gameAccurate && ptSpline > 0) d.m_splineMultiplier = ptSpline;
     splineMul = d.m_splineMultiplier;
     d.m_textureChannels[NvHair::TextureType::DENSITY] = channel(L.get("physicalMaterials.volume.densityTexChannel"));
     if (!densitySrv) d.m_usePixelDensity = false;
+    {
+        // ptDensityMip >= 0: a view of the density map that starts at that mip, so the SDK's per-hair sample reads the
+        // averaged map as the game does at GCP_PTHairAlphaTestMipLevel (opt-in, L394/L395)
+        ID3D11ShaderResourceView* want = (densityGameOnly && !gameAccurate) ? nullptr : densitySrv;
+        if (gameAccurate && ptDensityMip >= 0 && densitySrv) {
+            if (densityMipFor != densitySrv || densityMipFor_ != ptDensityMip) {
+                if (densityMipSrv) { densityMipSrv->Release(); densityMipSrv = nullptr; }
+                ID3D11Resource* res = nullptr; densitySrv->GetResource(&res);
+                ID3D11Texture2D* t2 = nullptr;
+                if (res && SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t2))) {
+                    D3D11_TEXTURE2D_DESC td; t2->GetDesc(&td);
+                    D3D11_SHADER_RESOURCE_VIEW_DESC sd; densitySrv->GetDesc(&sd);
+                    if (sd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D) {
+                        sd.Texture2D.MostDetailedMip = std::min<UINT>(UINT(ptDensityMip), td.MipLevels - 1);
+                        sd.Texture2D.MipLevels = UINT(-1);
+                        ID3D11Device* dev = nullptr; t2->GetDevice(&dev);
+                        if (dev) { dev->CreateShaderResourceView(t2, &sd, &densityMipSrv); dev->Release(); }
+                    }
+                    t2->Release();
+                }
+                if (res) res->Release();
+                densityMipFor = densitySrv; densityMipFor_ = ptDensityMip;
+            }
+            if (densityMipSrv) want = densityMipSrv;
+        }
+        if (want != densityBound) {
+            sdk->setTexture(NvHair::InstanceId(instId), NvHair::TextureType::DENSITY, NvCo::Dx11Type::wrap(want));
+            densityBound = want;
+        }
+    }
     // painted stiffness map: the redfur fields stiffnessTex / rootStiffnessTex (+ ...TexChannel) map 1:1 to these
     d.m_textureChannels[NvHair::TextureType::STIFFNESS] = NvHair::TextureChannel::RED;
     d.m_textureChannels[NvHair::TextureType::ROOT_STIFFNESS] = NvHair::TextureChannel::GREEN;
@@ -494,7 +658,7 @@ void HairRuntime::settle(int frames, float dt) {
     for (int i = 0; i < frames; i++) step(dt);
 }
 
-void HairRuntime::render(const XMFLOAT4X4& view, const XMFLOAT4X4& proj, float fovDeg, float w, float h, ID3D11Buffer* lightCb) {
+void HairRuntime::render(const XMFLOAT4X4& view, const XMFLOAT4X4& proj, float fovDeg, float w, float h, ID3D11Buffer* lightCb, bool depthOnly) {
     if (!sdk || instId == NvHair::INSTANCE_ID_NULL || !ps) return;
     NvHair::InstanceId iid = NvHair::InstanceId(instId);
     sdk->setCurrentContext(NvCo::Dx11Type::wrap(ctx));
@@ -503,6 +667,11 @@ void HairRuntime::render(const XMFLOAT4X4& view, const XMFLOAT4X4& proj, float f
     sdk->setViewProjection(vp, (const gfsdk_float4x4&)view, (const gfsdk_float4x4&)proj, NvHair::HandednessHint::RIGHT, fovDeg);
     if (!stepped) step(1.0f / 60.0f);
     sdk->preRenderInstance(iid, 1.0f);
+    if (depthOnly) {
+        ctx->PSSetShader(nullptr, nullptr, 0);
+        sdk->renderHairs(iid);
+        return;
+    }
     ctx->PSSetShader(ps, nullptr, 0);
     ctx->PSSetSamplers(0, 1, &samp);
     ctx->PSSetConstantBuffers(1, 1, &lightCb);

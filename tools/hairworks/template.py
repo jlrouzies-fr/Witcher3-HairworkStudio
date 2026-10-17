@@ -136,13 +136,32 @@ def _add_mesh_component(doc, src_comp_name, new_name, mesh_path, gp=(120, 420)):
     return comp_i
 
 
+# 2026-10-15 opt-in (config key template_outer_only, Geralt Ard Headband / modNewHairstylesAndBeards): that mod's coif
+# templates carry a STALE flatCompiledData (vanilla c_04 names) while the outer table holds the real component; patch the
+# outer table only and leave the flat data as shipped. Default False = unchanged.
+OUTER_ONLY = False
+FLAT_COMP = None      # 2026-10-15 opt-in (config template_flat_comp): with OUTER_ONLY, ALSO patch the stale flat data, whose
+#   hair component has this (old) name (Geralt Ard headband: c_04_mg__long_fur). The game instantiates items from the flat data.
+FLAT_NULL_FURS = ()
+DROP_FLAT = False     # 2026-10-15 opt-in (config template_drop_flat): validate accepts the missing flat data
+
+
+def drop_flat(data):
+    """2026-10-15 opt-in (config template_drop_flat): the root CEntityTemplate without flatCompiledData."""
+    doc = CR2WDoc.parse(data)
+    root = Chunk(doc, 0)
+    root.remove('flatCompiledData')
+    root.commit()
+    return doc.to_bytes()
+
+
 def _edit_both(data, fn):
     doc = CR2WDoc.parse(data)
     # 2026-10-05: third-party mods ship v162 templates (Triss lore hair); cr2w_edit handles 162-164 and keeps the version
     assert doc.version in (162, 163, 164), doc.version
     root = Chunk(doc, 0)
     fl = root.get('flatCompiledData')
-    if fl is not None:
+    if fl is not None and not OUTER_ONLY:
         cnt, = struct.unpack_from('<I', fl.value, 0)
         flat = CR2WDoc.parse(fl.value[4:4 + cnt])
         fn(flat)
@@ -175,10 +194,62 @@ def add_script_component(data, cls, name):
     return _edit_both(data, lambda d: _add_script_component(d, cls, name))
 
 
+def clear_meshes(data, meshes):
+    """2026-10-15 opt-in (config key clear_component_meshes): every CMeshComponent drawing one of meshes loses its
+    mesh handle (outer table + flatCompiledData); the component stays (no export / attachment change), it draws nothing.
+    Used for Triss's i_01 hair clips, which show through the HairWorks."""
+    want = {m.lower() for m in meshes}
+    hits = []
+
+    def fn(doc):
+        for i, e in enumerate(doc.exports):
+            if e.cls != 'CMeshComponent':
+                continue
+            c = Chunk(doc, i)
+            m = c.get('mesh')
+            if m is None or len(m.value) < 4:
+                continue
+            h, = struct.unpack_from('<i', m.value, 0)
+            if h < 0 and doc.imports[-h - 1][0].lower() in want:
+                c.remove('mesh')
+                c.commit()
+                hits.append(doc.imports[-h - 1][0])
+    data = _edit_both(data, fn)
+    assert hits, 'clear_component_meshes: none of %s found' % sorted(want)
+    return data
+
+
 def patch(data, comp, fur_path, extra=(), fallback_mesh=None):
     for name, mesh in extra:
         data = _edit_both(data, lambda d, name=name, mesh=mesh: _add_mesh_component(d, comp, name, mesh))
     data = _edit_both(data, lambda d: _swap(d, comp, fur_path, fallback_mesh))
+    if OUTER_ONLY and FLAT_COMP:
+        doc = CR2WDoc.parse(data)
+        root = Chunk(doc, 0)
+        fl = root.get('flatCompiledData')
+        cnt, = struct.unpack_from('<I', fl.value, 0)
+        fb = fl.value[4:4 + cnt]
+        for name, mesh in extra:
+            fd = CR2WDoc.parse(fb); _add_mesh_component(fd, FLAT_COMP, name, mesh); fb = fd.to_bytes()
+        fd = CR2WDoc.parse(fb); _swap(fd, FLAT_COMP, fur_path, fallback_mesh); fb = fd.to_bytes()
+        if FLAT_NULL_FURS:
+            # opt-in (config template_flat_null_furs): stale extra fur components of the flat data (CDPR's bangs / gap
+            # furs) get a null furMesh, so only our fur renders
+            fd = CR2WDoc.parse(fb)
+            n = 0
+            for i in range(len(fd.exports)):
+                try:
+                    ch = Chunk(fd, i)
+                except Exception:
+                    continue
+                nm, fm = ch.get('name'), ch.get('furMesh')
+                if nm is not None and fm is not None and nm.value[1:].rstrip(b'\x00').decode('utf-8', 'replace') in FLAT_NULL_FURS:
+                    fm.value = struct.pack('<i', 0); ch.commit(); n += 1
+            assert n == len(FLAT_NULL_FURS), (n, FLAT_NULL_FURS)
+            fb = fd.to_bytes()
+        root.set('flatCompiledData', fl.type, struct.pack('<I', len(fb)) + fb)
+        root.commit()
+        data = doc.to_bytes()
     doc = CR2WDoc.parse(data)
     root = Chunk(doc, 0)
     sa = root.get('streamedAttachments')
@@ -207,8 +278,10 @@ def patch(data, comp, fur_path, extra=(), fallback_mesh=None):
     return data
 
 
-def subset_mesh(mesh_rel, keep_fn):
-    """keep_fn(chunk dict) -> bool vertex mask of what to KEEP (whole components are kept)."""
+def subset_mesh(mesh_rel, keep_fn, move_fn=None):
+    """keep_fn(chunk dict) -> bool vertex mask of what to KEEP (whole components are kept).
+    move_fn (2026-10-17 opt-in, card_offset): move_fn(chunk dict) -> new (nv, 3) positions or None; written back into the
+    quantised stream A positions of the chunk (None / no move_fn = vertex buffer untouched, byte-identical)."""
     d = bytearray(G.get(mesh_rel))
     buf = bytearray(G.get_buffer(mesh_rel + '.1.buffer'))
     m = G.load_mesh(mesh_rel)
@@ -231,6 +304,16 @@ def subset_mesh(mesh_rel, keep_fn):
         fi = t.get('firstIndex', 0)
         buf[ibo + fi * 2: ibo + (fi + len(ch['idx'])) * 2] = tri.astype('<u2').tobytes()
         stats.append((int(keep.sum()), int(live.sum()), len(tri)))
+        newp = move_fn(ch) if move_fn else None
+        if newp is not None:
+            cd = m['t']['cookedData']
+            sc = np.array([cd['quantizationScale'][k] for k in 'XYZ'])
+            of = np.array([cd['quantizationOffset'][k] for k in 'XYZ'])
+            q = np.round((np.asarray(newp, float) - of) / sc * 65535.0)
+            assert q.min() >= 0 and q.max() <= 65535, 'card_offset moves vertices outside the mesh quantisation box'
+            a0 = struct.unpack_from('<4I', ch['rec'], 1)[0]
+            for vi in np.nonzero(np.any(np.abs(np.asarray(newp, float) - ch['pos']) > 1e-9, axis=1))[0]:
+                struct.pack_into('<3H', buf, a0 + int(vi) * 16, *[int(x) for x in q[vi]])
     t5off, t5cnt, _ = struct.unpack_from('<III', d, 0x28 + 5 * 12)
     assert t5cnt == 1 and struct.unpack_from('<I', d, t5off + 16)[0] == len(buf)
     struct.pack_into('<I', d, t5off + 20, zlib.crc32(bytes(buf)))
@@ -242,7 +325,7 @@ def subset_mesh(mesh_rel, keep_fn):
     return out, bytes(buf), stats
 
 
-def validate(data, rel):
+def validate(data, rel, outer_only=()):
     import validate_ent
     pr, _f = validate_ent.validate(data, rel)
     if pr:
@@ -254,6 +337,28 @@ def validate(data, rel):
         except Exception:
             vpr = []
         pr = [x for x in pr if x not in vpr]
+        if pr and outer_only:
+            # 2026-10-15 opt-in (beard.outer_only, Baron): the vanilla head template has outer-only exports (CAnimMimicParam:
+            # in the outer export table, never in flatCompiledData). Patching appends components AFTER it, so the vanilla
+            # problem string changes; the class-order problem is ours only if the orders still differ without those classes.
+            # Only checked when the vanilla file has a class-order problem itself.
+            if any('outer/flat class order differs' in x for x in vpr):
+                from cr2w_reader import CR2WFile
+                f = CR2WFile(data)
+                flat = [x for _, x in f.nested_cr2w()]
+                if len(flat) == 1 and isinstance(flat[0], CR2WFile):
+                    oc = [e.cls for e in f.exports[1:] if e.cls not in outer_only]
+                    fc = [e.cls for e in flat[0].exports if e.cls not in outer_only]
+                    if oc == fc:
+                        pr = [x for x in pr if 'outer/flat class order differs' not in x]
+        if pr and OUTER_ONLY and any('outer/flat class order differs' in x for x in vpr):
+            # template_outer_only: the source's flat data is stale (class order already differs) and is left as shipped
+            pr = [x for x in pr if 'outer/flat class order differs' not in x]
+    if OUTER_ONLY and FLAT_COMP:
+        # the source's flat data is stale (its own component list never matched the outer one): not ours
+        pr = [x for x in pr if 'flat entity component list' not in x]
+    if DROP_FLAT:
+        pr = [x for x in pr if 'flatCompiledData missing' not in x]
     assert not pr, pr
     bad, ok = w3lib.CR2W(data).verify_crcs()
     assert bad == 0 and ok

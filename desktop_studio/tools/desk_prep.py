@@ -38,7 +38,7 @@ import hwpreview_pack as HP  # noqa: E402
 
 OUT_BASE = os.path.join(ROOT, 'build', 'desktop_studio')
 FUR_DIR = os.path.join(OUT_BASE, 'furs')
-PREP_VERSION = 8          # bump when desk.json changes; the Studio re-runs desk_prep for older packs (src/app.cpp kPrepVersion)
+PREP_VERSION = 9          # 9: headgear parts. bump when desk.json changes; the Studio re-runs desk_prep for older packs (src/app.cpp kPrepVersion)
 
 
 def _rel(p):
@@ -121,6 +121,7 @@ def canonical_fur(cfg, rebuild=False, log=print):
     edit_ok = os.path.exists(os.path.join(ROOT, 'build', 'hairbatch', 'edit', cfg + '.json')) or \
         glob.glob(os.path.join(ROOT, 'build', 'hairbatch', 'edit', cfg + '__*.json'))
     if furs and not rebuild and st.get('hash') == h and edit_ok and _has_mod_src(cfg):
+        _load_cm_textures(cfg)
         return furs[0]
     log('  %s: %s -> building it with the pipeline (hairpipe.build, nothing installed)' % (
         cfg, 'rebuild asked' if rebuild else 'no current build' if not furs or not st else
@@ -485,6 +486,14 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
             D['outfit_tex'] = outfit_textured(D, C, out, log)
             if (C.get('growth') or {}).get('back_items'):
                 D['outfit_tex'] += backitem_parts(C, out, log)
+            try:
+                hg = headgear_parts(C, out, log)
+                if hg:
+                    D['headgear'] = hg
+                    log('  headgear: %d parts, %d of %d appearances wear it%s' % (len(hg['parts']), sum(1 for v in hg['apps'].values() if v),
+                                                                              len(hg['apps']), ' (all: shown by default)' if hg['all'] else ''))
+            except Exception as e:   # never costs the outfit
+                log('  headgear skipped: %r' % (e,))
     except Exception as e:   # same fallback for the body / outfit meshes
         log('  outfit textures skipped: %r' % (e,))
     try:
@@ -499,9 +508,29 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
             rc, tc = col.get('rootColor') or {}, col.get('tipColor') or {}
             tint = [(rc.get(k, 128) + tc.get(k, 128)) / 2 for k in ('Red', 'Green', 'Blue')] if rc or tc else None
             D['hair_cards'] = beard_cards(C, out, log, kinds=('hair',), part='hair', tint=tint)
+            # 2026-10-14: a config with accessories (headband Ciri) has its band as a card of the hair component: the Studio
+            # hid it with the hair cards, so it is kept as an outfit mesh (part 'body', opaque), as the user sees it
+            if C.get('accessories') or C.get('studio_item_cards'):
+                keep = []
+                for hc in D['hair_cards']:
+                    if 'headband' in str(hc.get('file', '')).lower():
+                        hc = dict(hc, part='body')
+                        hc.pop('alpha', None); hc.pop('alpha_ref', None)
+                        D.setdefault('outfit_tex', []).append(hc)
+                        log('  headband card kept as outfit mesh: %s' % hc.get('file'))
+                    else:
+                        keep.append(hc)
+                D['hair_cards'] = keep
         except Exception as e:
             log('  hair cards: skipped (%s)' % e)
             D['hair_cards'] = []
+        # 2026-10-15 opt-in beard.studio_cards = "vanilla" (Baron, beard-only build: the beard fur IS the groom, so the
+        # Studio has no second beard instance and drew the vanilla beard cards over it in every view): the beard cards
+        # join the vanilla reference cards instead (hidden in the normal view, drawn in the Vanilla hair view / compare)
+        if isinstance(C.get('beard'), dict) and C['beard'].get('studio_cards') == 'vanilla' and D.get('beard_cards'):
+            D['hair_cards'] = list(D.get('hair_cards') or []) + list(D['beard_cards'])
+            D['beard_cards'] = []
+            log('  beard cards moved to the vanilla reference cards (beard.studio_cards = vanilla)')
     except Exception as e:   # never breaks a prep; the renderer does not draw these yet (HAIRWORK.md "Beards")
         log('  beard cards skipped: %r' % (e,))
     bf = [f for f in glob.glob(os.path.join(os.path.dirname(fur), cfg + '__*.redfur')) if is_beard_fur(f)]
@@ -511,7 +540,23 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
         D['beard_fur'] = dict(fur_path=_rel(bf[0]), guides=BP['guides'], F=BP['F'], uv=BP['uv'], bones=BP['bones'],
                               bone_idx=[[int(v[k]) for k in 'XYZW'] for v in Bt['boneIndices']],
                               bone_w=[[round(float(v[k]), 5) for k in 'XYZW'] for v in Bt['boneWeights']],
-                              physical=BP['physical'], graphical=BP['graphical'])
+                              physical=BP['physical'], graphical=BP['graphical'],
+                              lod=BP.get('lod') or {})   # 2026-10-16: the beard's own LOD block (the Studio used the defaults: close-up width 1.0 / density 1.0)
+        # 2026-10-16: the beard's density texture (beard.density_tex builds use the vanilla beard atlas alpha; the game keeps
+        # ~12-27 % of the hairs by it) -> PNG + per-face values, so the Studio's beard instance samples it like the game
+        bvol = (BP['physical'] or {}).get('volume') or {}
+        bpath = (bvol.get('densityTex') or {}).get('@import')
+        if bpath:
+            bimg = HP.game_texture(bpath)
+            if bimg is None:
+                log('  beard density texture %s not available' % bpath)
+            else:
+                bfn = 'tex_beard_density.png'
+                bimg.convert('RGBA').save(os.path.join(out, bfn))
+                bch = bvol.get('densityTexChannel', 'RED')
+                _, bface = HP.density_maps(np.array(BP['F'], int), np.array(BP['uv'], float).reshape(-1, 3, 2), bimg, bch)
+                D['beard_fur']['density'] = dict(tex=bpath, file=bfn, channel=bch, pixel=bool(bvol.get('usePixelDensity', 0)), face=bface)
+                log('  beard density texture: %s (%s, pixel %s)' % (bpath, bch, bool(bvol.get('usePixelDensity', 0))))
         log('  beard fur: %s (%d guides, %d faces)' % (_rel(bf[0]), len(BP['guides']), len(BP['F'])))
     D['materials'] = materials(log)
     D['budget_self'] = budget_of(D)
@@ -566,6 +611,16 @@ def head_textured(cfg, out, log=print):
     if not dif:
         return None
     img = load_xbm(dif).convert('RGB')
+    if C.get('scalp_recolour'):
+        # 2026-10-16 opt-in (tools/hairworks/scalp_recolour.py): the head shows the recoloured scalp the mod ships; the
+        # key is part of the config JSON, so src_hash changes and the pack re-preps (no PREP_VERSION bump)
+        try:
+            import scalp_recolour
+            rc = scalp_recolour.recoloured_image(C, dif, log=log)
+            if rc is not None:
+                img = rc
+        except Exception as e:
+            log('  scalp_recolour preview skipped: %r' % (e,))
     if max(img.size) > 1024:
         img = img.resize((1024, 1024))
     img.save(os.path.join(out, 'head_d.png'))
@@ -775,6 +830,15 @@ def appearance_components(C, log=print):
                 continue
             seen.add(mesh.lower())
             comps.append((name, mesh, DI.classify(mesh)))
+    if C.get('studio_item_cards'):
+        # 2026-10-15 opt-in (Geralt Ard Headband): the hair lives in an ITEM coif template (hair_item_templates), not in the
+        # NPC's appearance, so the Studio had no vanilla cards; its mesh components join as hair cards (source_mods first)
+        GF.use_mods(C.get('source_mods', []))
+        for t in C.get('hair_item_templates', []):
+            for name, _cls, mesh, _fur in DI.mesh_comps(t):
+                if mesh and mesh.lower() not in seen:
+                    seen.add(mesh.lower())
+                    comps.append((name, mesh, 'hair'))
     shifts = {}
     for e in (GF.tree(tpl)[0].get('coloringEntries') or []):
         if e.get('appearance') == app and e.get('componentName'):
@@ -782,18 +846,81 @@ def appearance_components(C, log=print):
     return comps, shifts
 
 
-def outfit_textured(D, C, out, log=print):
-    """every visible mesh of the character's appearance except the head (head_textured) and the hair / beard cards:
-    body, outfit, items and the eyes, LOD0, one textured part per material (see the block comment above)."""
+def headgear_apps(C, log=print):
+    """{appearance: [headgear mesh paths]} of the config's template (roster.analyse: a non-hair mesh above the top of the
+    head: helmet, hat, hood, crown), every appearance listed (empty list = no headgear)"""
+    import discover as DI
+    import roster
+    tpl = C.get('template')
+    if not tpl:
+        return {}
+    res = {}
+    for app in DI.appearances(tpl):
+        try:
+            res[app] = list(roster.analyse(tpl, app).get('headgear_meshes') or [])
+        except BaseException as e:   # analyse raises SystemExit on an odd appearance: only that one is dropped
+            log('  headgear of %s skipped: %r' % (app, e))
+    return res
+
+
+def headgear_parts(C, out, log=print):
+    """2026-10-16 Studio "Show headgear / outfit items": the helmet / hat / hood meshes of EVERY appearance of the
+    template as textured parts (each mesh once, 'apps' = the appearances that wear it), and which appearance to show.
+    The Studio draws them only when the view is on (default on only when every appearance has headgear)."""
+    import discover as DI
     import gamefiles as GF
-    comps, shifts = appearance_components(C, log)
-    if not comps:          # no template in the config: the EDIT export's outfit meshes
+    hats = headgear_apps(C, log)
+    with_hat = {a: m for a, m in hats.items() if m}
+    if not with_hat:
+        return None
+    tpl = C['template']
+    apps = DI.appearances(tpl)
+    cur = C.get('appearance') if C.get('appearance') in apps else next(iter(apps), '')
+    shifts = {}
+    for e in (GF.tree(tpl)[0].get('coloringEntries') or []):
+        if e.get('componentName'):
+            shifts[(e.get('appearance'), e['componentName'])] = dict(colorShift1=e.get('colorShift1'), colorShift2=e.get('colorShift2'))
+    parts, done = [], {}
+    for app, meshes in with_hat.items():
+        comp_of = {}
+        for t in apps.get(app, []):
+            for name, _cls, mesh, _fur in DI.mesh_comps(t):
+                comp_of.setdefault(mesh.lower(), name)
+        for rel in meshes:
+            if rel.lower() in done:
+                for pi in done[rel.lower()]:
+                    parts[pi]['apps'].append(app)
+                continue
+            comp = comp_of.get(rel.lower(), os.path.basename(rel)[:-7])
+            got = outfit_textured(None, C, out, log, comps=[(comp, rel, 'headgear')], shifts={comp: shifts[(app, comp)]} if (app, comp) in shifts else {})
+            done[rel.lower()] = list(range(len(parts), len(parts) + len(got)))
+            for g in got:
+                g['apps'] = [app]
+                parts.append(g)
+    return dict(apps=hats, current=cur, all=all(hats.values()), parts=parts,
+                default_app=cur if with_hat.get(cur) else next(iter(with_hat)))
+
+
+def outfit_textured(D, C, out, log=print, comps=None, shifts=None):
+    """every visible mesh of the character's appearance except the head (head_textured) and the hair / beard cards:
+    body, outfit, items and the eyes, LOD0, one textured part per material (see the block comment above).
+    comps / shifts given: only those components (headgear_parts). The appearance's own headgear is left out here: it is
+    a headgear part (Studio View > Show headgear)."""
+    import gamefiles as GF
+    hat = set()
+    if comps is None:
+        comps, shifts = appearance_components(C, log)
+        try:
+            hat = {m.lower() for m in headgear_apps(C, log).get(C.get('appearance') or '', [])}
+        except Exception as e:
+            log('  headgear check skipped: %r' % (e,))
+    if not comps and D is not None:          # no template in the config: the EDIT export's outfit meshes
         comps = [(os.path.basename(M['path'])[:-7], M['path'], 'body') for M in D.get('meshes', [])
                  if M.get('kind') == 'outfit' and M.get('path')]
-    head = (D.get('head_tex') or {}).get('mesh') or C.get('head_mesh')
+    head = ((D or {}).get('head_tex') or {}).get('mesh') or C.get('head_mesh')
     parts, cache = [], {}
     for comp, rel, kind in comps:
-        if kind in ('hair', 'beard', 'head') or rel == head or 'shadowmesh' in rel.lower():
+        if kind in ('hair', 'beard', 'head') or rel == head or 'shadowmesh' in rel.lower() or rel.lower() in hat:
             continue
         try:
             m = GF.load_mesh(rel)
@@ -905,11 +1032,25 @@ def beard_cards(C, out, log=print, kinds=('beard',), part='beard', tint=None):
             dif, _nrm = _mat_maps(prm)
             if not dif:
                 continue
-            if dif not in cache:
+            # 2026-10-15 card colour: the hair card diffuse is a shared GREY atlas (hair_medium_03_d01 mean 163); the
+            # in-game hue / darkness comes from the material's VarianceColor (Syanna 29, Eredin 61, Eskel 128; Anna
+            # 162,131,118 -> in game (108,66,51) ~ diffuse x VarianceColor). Hair cards bake that multiply. The old tint
+            # (groom root / tip colour) made the vanilla view show OUR colour (circular). Beards unchanged.
+            vc = prm.get('VarianceColor') if part == 'hair' else None
+            vc = [vc.get(k, 255) for k in ('Red', 'Green', 'Blue')] if isinstance(vc, dict) else None
+            key = (dif, tuple(vc) if vc else None)
+            if key not in cache:
                 img = load_xbm(dif).convert('RGBA')
                 if max(img.size) > 1024:
                     img = img.resize((1024, 1024))
-                if tint is not None:
+                fn = 'tex_%s_%s_rgba.png' % (os.path.splitext(os.path.basename(dif))[0], part)
+                if vc is not None:
+                    from PIL import Image as _I
+                    a = np.asarray(img, np.float32)
+                    a[..., :3] = np.clip(a[..., :3] * (np.asarray(vc, np.float32) / 255.0)[None, None, :], 0, 255)
+                    img = _I.fromarray(a.astype(np.uint8), 'RGBA')
+                    fn = 'tex_%s_%s_vc%02x%02x%02x_rgba.png' % ((os.path.splitext(os.path.basename(dif))[0], part) + tuple(vc))
+                elif tint is not None:
                     # vanilla hair textures are grey, tinted in game by the appearance; no colour shift for the hair
                     # component in the template, so use the groom's root / tip colour (normalised, keeps brightness)
                     from PIL import Image as _I
@@ -918,14 +1059,29 @@ def beard_cards(C, out, log=print, kinds=('beard',), part='beard', tint=None):
                     t = np.asarray(tint, np.float32)
                     a[..., :3] = np.clip(lum[..., None] * (t / max(t.max(), 1e-3))[None, None, :], 0, 255)
                     img = _I.fromarray(a.astype(np.uint8), 'RGBA')
-                cache[dif] = 'tex_%s_%s_rgba.png' % (os.path.splitext(os.path.basename(dif))[0], part)
-                img.save(os.path.join(out, cache[dif]))
+                cache[key] = fn
+                img.save(os.path.join(out, fn))
             ch = GF.merge_chunks(m, ids)
-            parts.append(dict(name=comp, path=rel, part=part, alpha=True, alpha_ref=0.3, file=cache[dif],
+            parts.append(dict(name=comp, path=rel, part=part, alpha=True, alpha_ref=0.3, file=cache[key], variance_rgb=vc,
                               v=np.round(ch['pos'], 5).tolist(), uv=np.round(ch['uv'], 5).tolist(),
                               t=np.asarray(ch['idx'], int).reshape(-1, 3).tolist()))
         log('  %s cards: %s (%d parts)' % (part, rel, len([p for p in parts if p['path'] == rel])))
     return parts
+
+
+CM_TEX = ('_cm_colour.xbm', '_cm_density.xbm')
+
+
+def _load_cm_textures(cfg):
+    """the beard.colour_map textures saved by build_fur for this config (<cfg>__xtex.json: game path -> png) ->
+    HP.EXTRA_TEXTURES."""
+    p = os.path.join(FUR_DIR, cfg + '__xtex.json')
+    if not os.path.exists(p):
+        return
+    from PIL import Image
+    for rel, fn in json.load(open(p)).items():
+        if os.path.exists(os.path.join(FUR_DIR, fn)):
+            HP.EXTRA_TEXTURES[rel] = Image.open(os.path.join(FUR_DIR, fn)).convert('RGBA')
 
 
 def build_fur(cfg, log=print):
@@ -944,6 +1100,18 @@ def build_fur(cfg, log=print):
             built.append(p)
     if not built:
         raise SystemExit('the build produced no redfur')
+    # 2026-10-15 (beard.colour_map, Baron): keep the build's own colour / density textures next to the fur, so a later
+    # prep that reuses this build (no rebuild) still shows them (they only exist in memory: HP.EXTRA_TEXTURES)
+    xt = {}
+    for rel, _d in files:
+        if rel.endswith(CM_TEX) and rel in HP.EXTRA_TEXTURES:
+            xt[rel] = '%s__xtex__%s.png' % (cfg, os.path.basename(rel)[:-4])
+            HP.EXTRA_TEXTURES[rel].save(os.path.join(FUR_DIR, xt[rel]))
+    xp = os.path.join(FUR_DIR, cfg + '__xtex.json')
+    if xt:
+        json.dump(xt, open(xp, 'w'), indent=1)
+    elif os.path.exists(xp):
+        os.remove(xp)
     # pack-local mod source for desk_export (redfur path + patched w2ent templates), used when mods/<mod> does not exist
     from w3lib import write_legacy_bundle
     keep = [(r, d) for r, d in files if r.endswith(('.redfur', '.w2ent'))]

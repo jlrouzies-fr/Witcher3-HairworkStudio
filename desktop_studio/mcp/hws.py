@@ -4,6 +4,9 @@
   <python> hws.py <tool> '<json arguments>'   # call a tool, e.g.  <python> hws.py studio_render '{"shot":15,"overlay":"scalp"}'
   <python> hws.py list                        # tool names + descriptions
   <python> hws.py stop
+  <python> hws.py freeport                    # print a random free port for HWS_PORT (the daemon refuses a port in use)
+                                              # one session = one HWS_PORT + one HWS_SESSION folder: the server also refuses
+                                              # an output folder another live daemon holds (<out>/.hws_lock.json)
 
 Text results are printed; images are saved as PNG under build/desktop_studio/mcp/img/ and their paths printed (open
 them with an image viewer / the Read tool).
@@ -30,12 +33,22 @@ def daemon():
         n[0] += 1
         p.stdin.write((json.dumps({"jsonrpc": "2.0", "id": n[0], "method": method, "params": params}) + "\n").encode())
         p.stdin.flush()
-        return json.loads(p.stdout.readline())
+        line = p.stdout.readline()
+        if not line.strip():   # the server refused to start (e.g. another daemon holds the output folder: its message is above)
+            sys.exit("hairwork_studio_mcp.py ended before answering (see its message above)")
+        return json.loads(line)
 
-    rpc("initialize", {"protocolVersion": "2025-06-18"})
+    # refuse a port another daemon already holds (SO_REUSEADDR let two sessions share one on Windows, 2026-10-16:
+    # another agent's calls landed in this Studio); bind exclusively before starting the Studio
     srv = socket.socket()
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("127.0.0.1", PORT))
+    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    try:
+        srv.bind(("127.0.0.1", PORT))
+    except OSError:
+        p.kill()
+        sys.exit(f"port {PORT} is in use (another hws daemon?): pick another HWS_PORT, e.g. `hws.py freeport`")
+    rpc("initialize", {"protocolVersion": "2025-06-18"})
     srv.listen(1)
     print("hws daemon ready on", PORT, flush=True)
     while True:
@@ -77,6 +90,15 @@ def main():
         return
     if a[0] == "daemon":
         return daemon()
+    if a[0] == "freeport":   # a random free port for HWS_PORT
+        import random
+        while True:
+            port = random.randint(49200, 59999)
+            t = socket.socket()
+            try:
+                t.bind(("127.0.0.1", port)); t.close(); print(port); return
+            except OSError:
+                t.close()
     if a[0] == "stop":
         print(send({"stop": True}))
         return

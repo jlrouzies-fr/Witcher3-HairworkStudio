@@ -79,6 +79,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
     <li><a href="#camera">Viewport, camera, edit pose</a></li>
     <li><a href="#tools">Selecting and editing guides</a></li>
     <li><a href="#curls">Curl tools and symmetry</a></li>
+    <li><a href="#colliders">Colliders: fit to the geometry, edit by hand</a></li>
     <li><a href="#look">Material, look and colour</a></li>
     <li><a href="#physics">Physics, stiffness and motion</a></li>
     <li><a href="#budget">Budget and LOD</a></li>
@@ -225,6 +226,24 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 <li><b>Mirror side</b> (also in the Edit menu): rebuilds one side from the other. Choose which side is the source, a <i>centre band</i> (guides near the middle stay as they are) and <i>keep the back</i> (leaves a tie or bun at the back untouched). The mid-plane is detected from the head mesh.</li>
 </ul>
 
+<h2 id="colliders">Colliders: fit to the geometry, edit by hand</h2>
+<p>The hair bounces off the <b>collision capsules</b> of the fur: spheres bound to a skeleton bone (head, neck, shoulders, torso) and joined in pairs. Hair only collides with capsules, so a sphere that stands alone is given a twin and a capsule. A fur holds at most 85 spheres and 75 capsules. The <b>Colliders</b> section of the inspector fits them to the meshes you see on the character (body, outfit, an outfit mod's hood, scabbard, sword) and lets you correct the result. Press <kbd>N</kbd> to see the capsules.</p>
+<h3>Fit to the geometry</h3>
+<ul>
+<li><b>Find the meshes</b> lists what can be fitted: outfit pieces (also those of an outfit mod named in the config), hood, scabbard, sword. Tick the ones you want.</li>
+<li><b>Pad</b> is added to every radius (2 mm like the pipeline). <b>Reach</b> limits the fit to the part of each mesh the hair can touch; "as the config" uses the config's own values, 0 means the whole mesh.</li>
+<li><b>Fit colliders</b> replaces the previous outfit and back-item colliders. Head, neck, ear and hand-made colliders stay. The spheres are bound to the bone that moves that part of the mesh. If the set would exceed 85 / 75 (twins count) the per-mesh sphere counts shrink. The first fit of a build also runs the pipeline once (about a minute) to learn which spheres were outfit ones. The report lists, per mesh, how many vertices are within 8 mm of a capsule before and after.</li>
+</ul>
+<h3>Edit by hand</h3>
+<ul>
+<li><b>Edit colliders</b> (<kbd>Y</kbd>) draws a circle per collider (blue = base, gold = fitted, green = hand-made) and holds the character in the bind pose. Click selects, drag moves the sphere in the screen plane (stored bone-local), <kbd>Ctrl</kbd>+click picks a second sphere, <kbd>Del</kbd> deletes, <kbd>Esc</kbd> deselects.</li>
+<li>The offset (bone-local, mm) and radius sliders give exact values. <b>Mirror L/R</b> adds the mirror image about the head's mid-plane (r_ and l_ bones swap). <b>Add a sphere</b> adds a 20 mm sphere with its twin. <b>Capsule between</b> joins two spheres. <b>Reset</b> goes back to the build's own colliders.</li>
+<li>A hand-edited sphere becomes "manual": a later fit keeps it. <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> undo and redo collider changes (the newer of a collider change and a guide edit first).</li>
+</ul>
+<h3>Clearance</h3>
+<p><b>Check at rest</b> counts guides whose lower third ends inside a collider and capsules that stick out of the skin or outfit; <b>Check moving</b> does the same on the simulation with the current motion preset. The poke test is indicative (nearest-vertex based).</p>
+<p>The collider set is saved in the project (key <code>colliders</code>) and written into the fur on export (the geo json carries <code>colliders</code>; the pipeline's <code>studio_geo</code> builds use it too). Projects without collider changes export exactly as before. The sphere bones must be bones of the fur: fitted bones that the fur lacks are moved to the nearest ancestor it has.</p>
+
 <h2 id="look">Material, look and colour</h2>
 <figure class="narrow"><img width="620" height="1512" src="img/material.png" alt="Material section" loading="lazy"><figcaption>Material presets.</figcaption></figure>
 <h3>Material presets</h3>
@@ -345,6 +364,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 60px;color:var(--muted);fon
 <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Characters (the picker)</td></tr>
 <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd></td><td>Hairstyle switcher</td></tr>
 <tr><td><kbd>X</kbd></td><td>Live symmetry</td></tr>
+<tr><td><kbd>Y</kbd></td><td>Collider edit mode (click, drag, <kbd>Del</kbd>; Colliders section)</td></tr>
 <tr><td><kbd>G</kbd> <kbd>H</kbd> <kbd>M</kbd> <kbd>N</kbd> <kbd>B</kbd> <kbd>Z</kbd> <kbd>V</kbd></td><td>Guides, hair, head and body mesh, colliders, bones, wireframe, symmetry plane</td></tr>
 <tr><td><kbd>Space</kbd> / <kbd>Esc</kbd> / <kbd>.</kbd></td><td>Play-pause / stop and reset to rest (clears the selection first) / step one frame</td></tr>
 <tr><td><kbd>R</kbd> / <kbd>J</kbd></td><td>Re-teleport the simulation / wind on-off</td></tr>

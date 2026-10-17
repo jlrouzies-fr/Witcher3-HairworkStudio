@@ -112,12 +112,14 @@ Export  ->  build\desktop_studio\<cfg>\export\: <char>_<tag>_edits.json, _look.j
   (Nexus) with PT hair > 'Hair root transparency mode' = 0 (path-traced hair shows see-through gaps in mode 1), in
   REQUIREMENTS.txt, hairworkforall_mod.json (`requires`), INSTALL_INSTRUCTIONS.txt and a note under the release button.
 
-## Performance budget (always enforced)
+## Performance budget (information only since 2026-10-15)
 
 Hair count estimate = 64 hairs x density x sum of the per-face density-map means (x detailLODDensity for close-ups); cost
 = close-up hairs x CVs per hair x width. The reference is the character's approved build (APPROVED.json), else the loaded
-build. Hard caps: density <= 1.2 x reference, close-up density <= min(1.2 x reference, 2), width <= 1.5 x reference, LOD
-forced on. Export is blocked above 120 % (UI button disabled, the exporter refuses too). The live SDK count
+build. The ratio is shown as information only (user 2026-10-15): nothing refuses, drops or thins guides because of it, and
+export never blocks on it (no "Export blocked" dialog, no perf_accepted gate; desk_export.py / studio_to_config.py log
+the perf check as warnings). GPU cost is judged from in-game measurements. Remaining caps: width <= 1.5 x reference, LOD
+forced on (density / close-up density are no longer capped). The live SDK count
 (`computeStats`) is shown next to it.
 
 ## Tools (UI)
@@ -125,9 +127,9 @@ forced on. Export is blocked above 120 % (UI button disabled, the exporter refus
 Look: "Direction 1, Refined Ink & Iron" (`design/ui_direction1`, implemented 2026-10-11: tokens / fonts in `src/theme.h`,
 widgets in `src/ui_widgets.cpp`). Title bar (brand, File / Edit / View / Help, centred breadcrumb = character + build +
 status + unsaved edits, click = picker; Characters `Ctrl O`, Save, amber **Export mod** which opens the Export section and
-is disabled above the budget limit), 60 px tool rail, floating top / bottom viewport bars, top-left HUD (Edit-pose chip with
+is never disabled by the budget), 60 px tool rail, floating top / bottom viewport bars, top-left HUD (Edit-pose chip with
 Resume, selection chip, stats), axis gizmo, tool hint card, inspector (character card with a build menu, budget card with
-the 100 % reference tick and the 120 % limit zone, collapsible sections with summaries, material preset tiles, switches,
+the 100 % reference tick and the 120 % mark (information only), collapsible sections with summaries, material preset tiles, switches,
 slider rows with a build-value tick: double-click / Ctrl+click the value to type, right-click to reset; curve editor for
 the four stiffness curves), status bar cells (Log opens a bottom drawer). Light moved to a floating "Light" window (time
 of day popup > Advanced..., or View > Light settings), Settings to a modal (gear at the bottom of the rail).
@@ -328,6 +330,34 @@ Debug views (Light > hair view, F6, agent `"debug": n`): 1 diffuse term, 2 specu
 
 The earlier calibration (`tools/calib.py`, 2026-10-10) fitted gains on the old front-lit rig (colour gain 1.6, spec gain
 3.5, power scale 0.12); `calib.py` is unchanged and still does the shape (silhouette) comparison below.
+
+### Game-accurate hair (default since 2026-10-15)
+
+Before 2026-10-15 the preview drew more and thinner hairs than the game. The HairWorks 1.2.1 LOD distance is normalised by the field of view (a
+shot from 1.3 m at fovy 19.7 reads 0.35 m), so every head-size view ran in close-up detail LOD: the hair count followed
+`detailLODDensity` (the density value was ignored) and the width was `detailLODWidth` (the width slider did nothing). The game
+(W3 5.0, path traced) has no LOD: its generation shader builds `RTNHairsPerPatch` = 32 hairs per growth face, drops a
+hair where noise + 0.005 > density texture, and uses the fur's width (capsule radius = width x root/tip scale). The
+measured counts were Vesemir 25.4k (old preview) against 9.2k (the game's count), Geralt headband 81k against 29k, and
+Anna about 15k against 9.5k.
+
+**Game-accurate hair** (Physics & motion > "Game-accurate hair", on by default; agent / serve `{"do": "game_accurate", ...}`;
+MCP `studio_game_accurate`) draws the game's hair:
+- density = 32/64 (hairs per face, `hairs_per_face`), detail and distance LOD off, and the fur's width (x `width_scale`, 1).
+- the per-clump / per-strand wave weights are forced to 0 / 1: every in-game descriptor dump has these values, whatever
+  the fur says.
+- root transparency comes from the user's `dx12user.settings` (Documents\The Witcher 3; `[GC_Store]` /
+  `[GC_PTHair]` win over `[Rendering/RT/PathTracer]`, as Graphics Control pushes them): mode 1 (stochastic, default) with falloff 0.06.
+  The game keeps only the closest hair hit of a pixel and drops it with probability 1 - saturate(t / falloff). The temporal filter
+  averages that over frames, so a root zone in front shows the skin, not the hair behind it. The Studio does the same: a hair
+  depth prepass, then one shading pass on the closest hair, alpha-blended over the meshes. Mode 2 is an alpha test at 0.5, and
+  mode 0 is opaque.
+- `hair_scatter` 0.5: the share of the light the hair blocks that still reaches the meshes under it. The game's path tracer
+  scatters light through the strands onto the scalp, but a depth map treats hair as opaque. Mesh-only copies of the sun and
+  sky-occlusion maps (t10 / t11) give the hair-blocked share. 0.5 is an estimate: it moves the dark end of the hair region
+  toward the in-game values (Anna, Vesemir and Geralt shots 0/2/4), but it does not reach them.
+
+Off = the old raster preview, unchanged, with the "Close-up LOD" switch.
 
 ### Simulation vs game (2026-10-11, round L237)
 

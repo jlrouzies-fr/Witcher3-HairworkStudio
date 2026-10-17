@@ -76,6 +76,8 @@ bool Gfx::init(HWND hw, std::string& err) {
     dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
     dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
     dev->CreateDepthStencilState(&dd, &dsOn);
+    dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    dev->CreateDepthStencilState(&dd, &dsTestNoWrite);
     dd.DepthEnable = FALSE;
     dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
     dev->CreateDepthStencilState(&dd, &dsOff);
@@ -90,6 +92,16 @@ bool Gfx::init(HWND hw, std::string& err) {
     bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
     bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
     dev->CreateBlendState(&bd, &bsAlpha);
+    {   // path-traced look: hair over (RT0) + strand layer count added up (RT1)
+        D3D11_BLEND_DESC pb = bd;
+        pb.IndependentBlendEnable = TRUE;
+        pb.RenderTarget[1].BlendEnable = TRUE;
+        pb.RenderTarget[1].SrcBlend = pb.RenderTarget[1].DestBlend = D3D11_BLEND_ONE;
+        pb.RenderTarget[1].SrcBlendAlpha = pb.RenderTarget[1].DestBlendAlpha = D3D11_BLEND_ONE;
+        pb.RenderTarget[1].BlendOp = pb.RenderTarget[1].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        pb.RenderTarget[1].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED;
+        dev->CreateBlendState(&pb, &bsPt);
+    }
     D3D11_BLEND_DESC ac = {};
     ac.AlphaToCoverageEnable = TRUE;
     ac.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
@@ -121,6 +133,11 @@ bool Gfx::init(HWND hw, std::string& err) {
         sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
         sv.Texture2D.MipLevels = 1;
         dev->CreateShaderResourceView(shadowTex, &sv, &shadowSrv);
+        {
+            D3D11_TEXTURE2D_DESC mt = st;
+            mt.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (SUCCEEDED(dev->CreateTexture2D(&mt, nullptr, &shadowMeshTex))) dev->CreateShaderResourceView(shadowMeshTex, &sv, &shadowMeshSrv);
+        }
         D3D11_SAMPLER_DESC sd = {};
         sd.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
         sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
@@ -161,6 +178,9 @@ bool Gfx::init(HWND hw, std::string& err) {
             asv.Texture2DArray.MipLevels = 1;
             asv.Texture2DArray.ArraySize = kMaxAoDirs;
             dev->CreateShaderResourceView(aoTex, &asv, &aoSrv);
+            D3D11_TEXTURE2D_DESC mt = st;
+            mt.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (SUCCEEDED(dev->CreateTexture2D(&mt, nullptr, &aoMeshTex))) dev->CreateShaderResourceView(aoMeshTex, &asv, &aoMeshSrv);
         }
     }
     return true;
@@ -172,8 +192,18 @@ bool Gfx::loadShaders(const std::string& dir, std::string& err) {
     dev->CreateVertexShader(vsb.data(), vsb.size(), nullptr, &vs);
     dev->CreatePixelShader(pm.data(), pm.size(), nullptr, &psMesh);
     dev->CreatePixelShader(pl.data(), pl.size(), nullptr, &psLine);
-    auto pda = readFile(dir + "\basic_ps_depth_alpha.cso");   // optional: without it beard cards cast no shadow
+    auto pda = readFile(dir + "\\basic_ps_depth_alpha.cso");   // optional: without it beard cards cast no shadow
     if (!pda.empty()) dev->CreatePixelShader(pda.data(), pda.size(), nullptr, &psDepthAlpha);
+    {   // optional: "Path-traced look" composite of the game-accurate preview
+        auto pv = readFile(dir + "\\pt_look_vs.cso"), pp = readFile(dir + "\\pt_look_ps.cso");
+        if (!pv.empty() && !pp.empty()) {
+            dev->CreateVertexShader(pv.data(), pv.size(), nullptr, &vsFull);
+            dev->CreatePixelShader(pp.data(), pp.size(), nullptr, &psPtLook);
+            D3D11_BUFFER_DESC b = {};
+            b.ByteWidth = 32; b.Usage = D3D11_USAGE_DYNAMIC; b.BindFlags = D3D11_BIND_CONSTANT_BUFFER; b.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            dev->CreateBuffer(&b, nullptr, &ptCb);
+        }
+    }
     D3D11_INPUT_ELEMENT_DESC el[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -315,8 +345,8 @@ void Gfx::drawTrisDepthAlpha(const std::vector<GVertex>& v, ID3D11ShaderResource
 }
 
 void Gfx::beginShadowPass() {
-    ID3D11ShaderResourceView* nul[2] = {};
-    ctx->PSSetShaderResources(8, 2, nul);
+    ID3D11ShaderResourceView* nul[4] = {};
+    ctx->PSSetShaderResources(8, 4, nul);
     ctx->OMSetRenderTargets(0, nullptr, shadowDsv);
     ctx->ClearDepthStencilView(shadowDsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
     D3D11_VIEWPORT vp = {0, 0, float(shadowSize), float(shadowSize), 0, 1};
@@ -324,12 +354,20 @@ void Gfx::beginShadowPass() {
 }
 
 void Gfx::beginAoPass(int k) {
-    ID3D11ShaderResourceView* nul[2] = {};
-    ctx->PSSetShaderResources(8, 2, nul);
+    ID3D11ShaderResourceView* nul[4] = {};
+    ctx->PSSetShaderResources(8, 4, nul);
     ctx->OMSetRenderTargets(0, nullptr, aoDsv[k]);
     ctx->ClearDepthStencilView(aoDsv[k], D3D11_CLEAR_DEPTH, 1.0f, 0);
     D3D11_VIEWPORT vp = {0, 0, float(aoSize), float(aoSize), 0, 1};
     ctx->RSSetViewports(1, &vp);
+}
+
+void Gfx::snapshotShadowMeshes() {
+    if (shadowMeshTex && shadowTex) ctx->CopyResource(shadowMeshTex, shadowTex);
+}
+
+void Gfx::snapshotAoMeshes(int k) {
+    if (aoMeshTex && aoTex) ctx->CopySubresourceRegion(aoMeshTex, D3D11CalcSubresource(0, k, 1), 0, 0, 0, aoTex, D3D11CalcSubresource(0, k, 1), nullptr);
 }
 
 void Gfx::drawTrisDepth(const std::vector<GVertex>& v) { drawTrisDepthWith(v, nullptr, nullptr); }
@@ -358,8 +396,8 @@ void Gfx::drawTrisDepthWith(const std::vector<GVertex>& v, ID3D11PixelShader* ps
 }
 
 void Gfx::bindShadow(bool on, bool ao) {
-    ID3D11ShaderResourceView* s[2] = {on ? shadowSrv : nullptr, ao ? aoSrv : nullptr};
-    ctx->PSSetShaderResources(8, 2, s);
+    ID3D11ShaderResourceView* s[4] = {on ? shadowSrv : nullptr, ao ? aoSrv : nullptr, on ? shadowMeshSrv : nullptr, ao ? aoMeshSrv : nullptr};
+    ctx->PSSetShaderResources(8, 4, s);
     ID3D11SamplerState* ss[2] = {shadowCmp, shadowPoint};
     ctx->PSSetSamplers(2, 2, ss);
 }
@@ -427,6 +465,73 @@ bool Gfx::endOffscreen(const std::string& png, std::vector<unsigned char>* rgba)
     msaaTex = saved.m; depthTex = saved.d; resolveTex = saved.r; msaaRtv = saved.mr; dsv = saved.ds; w = saved.w; h = saved.h;
     offscreen = false;
     return ok;
+}
+
+void Gfx::ptRelease() {
+    safeRelease(ptHairRtv); safeRelease(ptHairSrv); safeRelease(ptSceneSrv);
+    safeRelease(ptCountRtv); safeRelease(ptCountSrv); safeRelease(ptCountMs); safeRelease(ptCountRes);
+    safeRelease(ptHairMs); safeRelease(ptHairRes); safeRelease(ptScene);
+    ptW = ptH = 0;
+}
+
+bool Gfx::ptBegin() {
+    if (!ptReady() || !msaaTex) return false;
+    if (ptW != w || ptH != h || ptS != samples) {
+        ptRelease();
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; td.SampleDesc.Count = samples; td.BindFlags = D3D11_BIND_RENDER_TARGET;
+        dev->CreateTexture2D(&td, nullptr, &ptHairMs);
+        td.SampleDesc.Count = 1; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        dev->CreateTexture2D(&td, nullptr, &ptHairRes);
+        td.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+        dev->CreateTexture2D(&td, nullptr, &ptScene);
+        td.Format = DXGI_FORMAT_R16_FLOAT; td.SampleDesc.Count = samples; td.BindFlags = D3D11_BIND_RENDER_TARGET;
+        dev->CreateTexture2D(&td, nullptr, &ptCountMs);
+        td.SampleDesc.Count = 1; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        dev->CreateTexture2D(&td, nullptr, &ptCountRes);
+        if (!ptHairMs || !ptHairRes || !ptScene || !ptCountMs || !ptCountRes) { ptRelease(); return false; }
+        dev->CreateRenderTargetView(ptCountMs, nullptr, &ptCountRtv);
+        dev->CreateShaderResourceView(ptCountRes, nullptr, &ptCountSrv);
+        dev->CreateRenderTargetView(ptHairMs, nullptr, &ptHairRtv);
+        dev->CreateShaderResourceView(ptHairRes, nullptr, &ptHairSrv);
+        D3D11_SHADER_RESOURCE_VIEW_DESC sv = {};
+        sv.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1;
+        dev->CreateShaderResourceView(ptScene, &sv, &ptSceneSrv);
+        if (!ptHairRtv || !ptHairSrv || !ptSceneSrv) { ptRelease(); return false; }
+        ptW = w; ptH = h; ptS = samples;
+    }
+    ctx->ResolveSubresource(ptScene, 0, msaaTex, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
+    const float z[4] = {0, 0, 0, 0};
+    ctx->ClearRenderTargetView(ptHairRtv, z);
+    if (ptCountRtv) ctx->ClearRenderTargetView(ptCountRtv, z);
+    ID3D11RenderTargetView* rt[2] = {ptHairRtv, ptCountRtv};
+    ctx->OMSetRenderTargets(ptCountRtv ? 2 : 1, rt, dsv);
+    return true;
+}
+
+void Gfx::ptComposite(const float p[8]) {
+    ctx->ResolveSubresource(ptHairRes, 0, ptHairMs, 0, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    if (ptCountMs) ctx->ResolveSubresource(ptCountRes, 0, ptCountMs, 0, DXGI_FORMAT_R16_FLOAT);
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (SUCCEEDED(ctx->Map(ptCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { memcpy(m.pData, p, 32); ctx->Unmap(ptCb, 0); }
+    ctx->OMSetRenderTargets(1, &msaaRtv, nullptr);
+    ID3D11ShaderResourceView* srv[3] = {ptSceneSrv, ptHairSrv, ptCountSrv};
+    ctx->IASetInputLayout(nullptr);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(vsFull, nullptr, 0);
+    ctx->GSSetShader(nullptr, nullptr, 0); ctx->HSSetShader(nullptr, nullptr, 0); ctx->DSSetShader(nullptr, nullptr, 0);
+    ctx->PSSetShader(psPtLook, nullptr, 0);
+    ctx->PSSetShaderResources(0, 3, srv);
+    ctx->PSSetConstantBuffers(0, 1, &ptCb);
+    ctx->OMSetBlendState(bsOpaque, nullptr, 0xffffffff);
+    ctx->OMSetDepthStencilState(dsOff, 0);
+    ctx->RSSetState(rsSolid);
+    ctx->Draw(3, 0);
+    ID3D11ShaderResourceView* none[3] = {nullptr, nullptr, nullptr};
+    ctx->PSSetShaderResources(0, 3, none);
+    ctx->OMSetRenderTargets(1, &msaaRtv, dsv);
+    resetPipeline();
 }
 
 void Gfx::endScene() {
@@ -545,6 +650,7 @@ ID3D11ShaderResourceView* Gfx::loadTexture(const std::string& path, bool srgb, i
 
 void Gfx::shutdown() {
     releaseTargets();
+    ptRelease(); safeRelease(vsFull); safeRelease(psPtLook); safeRelease(ptCb);
     safeRelease(vs); safeRelease(psMesh); safeRelease(psLine); safeRelease(psDepthAlpha); safeRelease(bsA2C); safeRelease(layout);
     safeRelease(frameCb); safeRelease(lightCb); safeRelease(rsSolid); safeRelease(rsLine);
     safeRelease(samp);
@@ -552,6 +658,7 @@ void Gfx::shutdown() {
     safeRelease(rsShadow); safeRelease(rsWire);
     for (auto& d : aoDsv) safeRelease(d);
     safeRelease(aoSrv); safeRelease(aoTex);
-    safeRelease(dsOn); safeRelease(dsOff); safeRelease(bsOpaque); safeRelease(bsAlpha); safeRelease(dynVb);
+    safeRelease(shadowMeshSrv); safeRelease(shadowMeshTex); safeRelease(aoMeshSrv); safeRelease(aoMeshTex);
+    safeRelease(dsOn); safeRelease(dsOff); safeRelease(dsTestNoWrite); safeRelease(bsOpaque); safeRelease(bsAlpha); safeRelease(bsPt); safeRelease(dynVb);
     safeRelease(swap); safeRelease(ctx); safeRelease(dev);
 }

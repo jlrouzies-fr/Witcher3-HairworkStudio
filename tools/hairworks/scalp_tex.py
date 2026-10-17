@@ -96,6 +96,16 @@ CHARS = {
         mod='modCiriScalp', build='scalp_ciri', prev='ciri_scalp',
         root=(190, 182, 165), tip=(190, 182, 165), lum_to=True, gate='grey', regions='ciri',
         config='ciri_l257_cr6'),
+    # Margarita (2026-10-15, user: "replace that texture part with skin"): her d01 (1024, 11 mips, 5 streamed) paints a
+    # dark brown hair patch on the forehead at the centre parting; under HairWorks it reads as a brown stain. mode
+    # 'skin' = repaint that patch with the surrounding skin (inpainted skin colour + the patch's own luminance detail),
+    # feathered, limited to the front hairline zone ('skin_box', UV). Studio project margarita_mcp_12.
+    'margarita': dict(
+        mode='skin',
+        rel=r'characters\models\secondary_npc\margaritta\h_01_ma__margaritta\h_01_wa__margaritta_d01.xbm',
+        mesh=r'characters\models\secondary_npc\margaritta\h_01_ma__margaritta\h_01_wa__margaritta.w2mesh',
+        mod='modMargaritaScalp', build='scalp_margarita', prev='margarita_scalp',
+        w=1024, nmip=11, nstream=5, root=(98, 86, 62), tip=(132, 118, 86)),
 }
 import tempfile
 _SCRATCH = os.path.join(tempfile.gettempdir(), 'hairwork_scratch')
@@ -857,12 +867,115 @@ def cmd_hairline(a):
     return rec0
 
 
+# ---------------------------------------------------------------------------------------------- skin repaint (Margarita)
+
+SK = dict(cx=510.0, cy=62.0,   # patch centre (px at 1024)
+          rx=76.0, ry=88.0,    # zone half-axes (px)
+          top=52.0,            # zone fades out above this row (parting hairline z 1.765 = v .055)
+          sigma=22.0,          # px: skin-colour field blur (normalized convolution of the skin pixels)
+          detail_dy=78,        # skin detail (luminance high-pass) borrowed from this many px below (clean forehead)
+          # parting band (2026-10-15 user): mid-plane head line hairline [0,.092,1.765] -> crown [0,-.012,1.799] maps to
+          # the face island top (u .498, v 0 .. .055) and the bottom edge of both skull half-islands (v ~.994,
+          # u .30 .. .43 / .57 .. .70; mesh mid-plane vertices). ~3.5 px/mm -> 12 mm band = 21 px half width
+          # on the face island; the skull islands each hold one half of it along their seam edge.
+          part_half=17.0, part_v1=56.0, part_seam=22.0, part_u=(0.300, 0.440),
+          part_rgb=(98, 86, 62),  # chars\margarita.json look root_color (card texture is grey, tinted to blonde)
+          detail_sigma=3.0, feather=5.0)
+
+
+def skin_repaint(rgb0, p=SK):
+    """-> (rec0 float RGB, weight): dark hair paint inside the zone -> inpainted skin colour x borrowed skin detail"""
+    from scipy.ndimage import gaussian_filter
+    f = W / 1024.0
+    img = rgb0.astype(np.float64)
+    L = img.mean(2)
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
+    e = ((xx - p['cx'] * f) / (p['rx'] * f)) ** 2 + ((yy - p['cy'] * f) / (p['ry'] * f)) ** 2
+    zone = (1 - smooth(e, 0.55, 1.0)) * smooth(yy, (p['top'] - 14) * f, (p['top'] + 10) * f)
+    # skin reference: bright pixels around the zone (not the dark paint)
+    big = (1 - smooth(e, 2.5, 4.0))
+    sk = (L > 115).astype(np.float64) * big * (1 - (1 - smooth(e, 0.9, 1.3))) * smooth(yy, 40 * f, 60 * f)
+    s = p['sigma'] * f
+    den = gaussian_filter(sk, s) + 1e-6
+    field = np.stack([gaussian_filter(img[..., c] * sk, s) / den for c in range(3)], -1)
+    for _ in range(3):                                   # fill far from any skin: re-blur wider
+        den2 = gaussian_filter(sk, s * 3) + 1e-6
+        far = np.stack([gaussian_filter(img[..., c] * sk, s * 3) / den2 for c in range(3)], -1)
+        wnear = np.clip(den / 0.15, 0, 1)[..., None]
+        field = field * wnear + far * (1 - wnear)
+    # darkness gate vs. the skin field (paint = darker than skin), soft
+    dark = smooth(field.mean(2) - L, 2, 14)
+    wt = gaussian_filter(zone * dark, p['feather'] * f)
+    wt = np.clip(wt * 1.15, 0, 1) * zone ** 0.5
+    # borrowed skin detail: relative luminance high-pass of a clean skin patch at an offset
+    hpall = L / np.maximum(gaussian_filter(L, p['detail_sigma'] * f * 2), 1)
+    hp = np.clip(np.roll(hpall, -int(p['detail_dy'] * f), 0), 0.9, 1.1)
+    skin = field * hp[..., None]
+    rec = img * (1 - wt[..., None]) + skin * wt[..., None]
+    # parting band -> hair-root colour, strand variation from the paint's own high-pass
+    u = (xx + .5) / W
+    fr = 8.0 * f
+    face = (1 - smooth(np.abs(xx - 0.498 * W), (p['part_half'] - fr) , p['part_half'] + fr))         * (1 - smooth(yy, (p['part_v1'] - 8) * f, (p['part_v1'] + 4) * f))
+    ua, ub = p['part_u']
+    side = smooth(u, ua - .01, ua + .01) * (1 - smooth(u, ub - .01, ub + .01))
+    side = np.maximum(side, side[:, ::-1])
+    skull = side * smooth(yy, H - (p['part_seam'] + 2 * fr / f) * f, H - (p['part_seam'] - 2 * fr / f) * f)
+    pw = gaussian_filter(np.maximum(face, skull), 4.0 * f)
+    hp2 = np.clip(hpall, 0.85, 1.15)
+    hair = np.array(p['part_rgb'], np.float64) * hp2[..., None]
+    rec = rec * (1 - pw[..., None]) + hair * pw[..., None]
+    return rec, np.maximum(wt, pw)
+
+
+def cmd_skin(a):
+    """previews for mode 'skin': full before/after, forehead crop before/after (4x), weight mask"""
+    ensure_dirs()
+    o = get_orig()
+    rgb0 = decode_mip(o['mips'][0], 0)
+    rec0, wt = skin_repaint(rgb0)
+    previews_skin(rgb0, rec0, wt)
+    return o, rgb0, wt, rec0
+
+
+def previews_skin(rgb0, rec0, wt):
+    ensure_dirs()
+    a = Image.fromarray(rgb0)
+    b = Image.fromarray(np.clip(rec0 + 0.5, 0, 255).astype(np.uint8))
+    full = Image.new('RGB', (2 * W, H))
+    full.paste(a, (0, 0))
+    full.paste(b, (W, 0))
+    full.save(os.path.join(PREV, 'skin_before_after_full.png'))
+    f = W / 1024.0
+    box = tuple(int(c * f) for c in (380, 0, 640, 190))
+    cw, chh = box[2] - box[0], box[3] - box[1]
+    k = max(1, int(round(1200 / cw)))
+    pair = Image.new('RGB', (cw * k, 2 * chh * k + 8), (255, 255, 255))
+    pair.paste(a.crop(box).resize((cw * k, chh * k), Image.LANCZOS), (0, 0))
+    pair.paste(b.crop(box).resize((cw * k, chh * k), Image.LANCZOS), (0, chh * k + 8))
+    pair.save(os.path.join(PREV, 'skin_before_after_forehead.png'))
+    for nm, bx in (('skull_left', (280, 940, 470, 1024)), ('skull_right', (554, 940, 744, 1024))):
+        bx = tuple(int(c * f) for c in bx)
+        bw, bh = bx[2] - bx[0], bx[3] - bx[1]
+        pr = Image.new('RGB', (bw * 6, 2 * bh * 6 + 8), (255, 255, 255))
+        pr.paste(a.crop(bx).resize((bw * 6, bh * 6), Image.LANCZOS), (0, 0))
+        pr.paste(b.crop(bx).resize((bw * 6, bh * 6), Image.LANCZOS), (0, bh * 6 + 8))
+        pr.save(os.path.join(PREV, 'skin_before_after_parting_%s.png' % nm))
+    Image.fromarray((wt * 255).astype(np.uint8)).save(os.path.join(PREV, 'skin_weight.png'))
+    Image.fromarray((wt[box[1]:box[3], box[0]:box[2]] * 255).astype(np.uint8)).resize((cw * k, chh * k)).save(
+        os.path.join(PREV, 'skin_weight_forehead.png'))
+    print('previews ->', PREV, ' weight>0.01: %d px' % int((wt > 0.01).sum()))
+
+
 def cmd_build(a):
     p = params(a)
     o = get_orig()
     if a.identity:
         mips, stats = list(o['mips']), []
         print('IDENTITY build (unchanged d01)')
+    elif CHAR['mode'] == 'skin':
+        o, rgb0, wt, rec0 = cmd_skin(a)
+        mips, stats = encode_chain(o, rgb0, rec0)
+        print('re-encoded blocks per mip:', stats)
     elif CHAR['mode'] == 'hairline':
         o, rgb0, wt, rec0, (col, box, span) = build_hairline(p)
         previews_hairline(rgb0, rec0, wt, box)
@@ -923,8 +1036,8 @@ def cmd_verify(a):
 
 
 def running():
-    out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq witcher3.exe'], capture_output=True, text=True).stdout
-    return 'witcher3.exe' in out
+    import gamecheck   # 2026-10-16: Win32_Process (gamecheck.py)
+    return gamecheck.running()
 
 
 def cmd_install(a):
@@ -949,7 +1062,7 @@ def cmd_uninstall(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('cmd', choices=['extract', 'mask', 'recolour', 'hairline', 'build', 'verify', 'install', 'uninstall'])
+    ap.add_argument('cmd', choices=['extract', 'mask', 'recolour', 'hairline', 'skin', 'build', 'verify', 'install', 'uninstall'])
     ap.add_argument('dir', nargs='?')
     ap.add_argument('--char', default='triss', choices=sorted(CHARS))
     ap.add_argument('--identity', action='store_true')

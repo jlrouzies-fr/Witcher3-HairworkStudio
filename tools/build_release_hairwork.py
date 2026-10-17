@@ -111,7 +111,7 @@ def scan(folder):
                         hits.append('%s: contains %r' % (rel, h.decode('latin1')))
             if fn.lower().endswith('.exe'):
                 data = open(p, 'rb').read()
-                if ('rouzies.' + 'jeanlaurent').encode() in data:
+                if ('rouzies.' + 'jeanlaurent').encode() in data:   # split: the address itself never appears in the public repo
                     hits.append('%s: contains the user e-mail' % rel)
     return hits
 

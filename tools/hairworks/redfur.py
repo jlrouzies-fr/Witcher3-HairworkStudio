@@ -91,7 +91,7 @@ def copy_struct(sd, v, dd, drop_textures=True):
             if drop_textures:
                 continue
             path = sd.imports[-struct.unpack('<i', val)[0] - 1]
-            imp = dd.add_import(path['path'] if isinstance(path, dict) else path.path, 'CBitmapTexture')
+            imp = dd.add_import(path['path'] if isinstance(path, dict) else (path[0] if isinstance(path, (list, tuple)) else path.path), 'CBitmapTexture')
             val = v_import(imp)
         nn, nt = dd.name(sd.names[ni]), dd.name(tn)
         if len(val) == 2 and tn not in ('Int16', 'Uint16'):          # enum value = name index

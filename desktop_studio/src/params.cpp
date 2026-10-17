@@ -144,10 +144,11 @@ float Look::cap(const std::string& path) const {
     if (!pack) return std::numeric_limits<float>::infinity();
     const json& R = pack->budgetRef;
     const float inf = std::numeric_limits<float>::infinity();
-    if (path == "physicalMaterials.volume.density") return float(R.value("density", 1.0) * limit);
-    if (path == "levelOfDetail.detailLOD.detailLODDensity") return float(std::min(std::max(R.value("detailLODDensity", 1.0), 1.0) * limit, 2.0));
+    // density / close-up density are no longer capped at limit x reference: the budget is information only (2026-10-15)
     if (path == "physicalMaterials.strandWidth.width") return float(R.value("width", 1.0) * 1.5);
-    if (path == "levelOfDetail.detailLOD.detailLODWidth") return float(std::max(R.value("width", 1.0), 0.5) * 1.5);
+    // 2026-10-17 (FINDINGS 13.1): the game follows detailLODWidth over the whole 0-3 range (L608: .3 fine strands, 1 thick, 3 a block)
+    // and the Studio preview replaces the width by it at head distance: no cap below the game's range (was 1.5 x max(ref width, .5))
+    if (path == "levelOfDetail.detailLOD.detailLODWidth") return 3.0f;
     if (path == "levelOfDetail.distanceLOD.distanceLODEnd") return std::max(base(path).is_number() ? base(path).get<float>() : 100.0f, 100.0f);
     return inf;
 }
@@ -201,8 +202,8 @@ Budget Look::budget(int numFaces, double sumFaceDensity, int K) const {
     b.overLimit = b.ratio > limit + 1e-6;
     std::ostringstream m;
     if (b.overLimit)
-        m << "Over budget: " << int(std::round(b.ratio * 100)) << "% of " << b.refName << " (limit " << int(limit * 100)
-          << "%). Lower density / close-up density / width, or delete guides, before export.";
+        m << int(std::round(b.ratio * 100)) << "% of " << b.refName << " (above the " << int(limit * 100)
+          << "% reference mark; information only, never blocks)";
     else
         m << int(std::round(b.ratio * 100)) << "% of " << b.refName;
     b.msg = m.str();

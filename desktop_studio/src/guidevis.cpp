@@ -368,14 +368,47 @@ void App::computeGuideVis(const XMFLOAT4X4& Vm, const XMFLOAT4X4& Pm, int w, int
 }
 
 bool App::guideShown(int i) const {
+    if (!focusShown(i)) return false;
     if (!guideVisOn() || !gvis.valid || gvis.N != (int)groom.P.size() || i < 0 || i >= gvis.N) return true;
     return gvis.shown[i] != 0;
 }
 
 bool App::guidePointShown(int i, int k) const {
+    if (!focusShown(i)) return false;
     if (!guideVisOn() || !gvis.valid || gvis.N != (int)groom.P.size() || i < 0 || i >= gvis.N || k < 0 || k >= gvis.K) return true;
     return gvis.shown[i] && gvis.pt[size_t(i) * gvis.K + k];
 }
 
-bool App::pickVisible(int i) const { return !visFilter() || guideShown(i); }
-bool App::pickPointVisible(int i, int k) const { return !visFilter() || guidePointShown(i, k); }
+bool App::pickVisible(int i) const { return focusShown(i) && (!visFilter() || guideShown(i)); }
+bool App::pickPointVisible(int i, int k) const { return focusShown(i) && (!visFilter() || guidePointShown(i, k)); }
+
+void App::focusUpdate() {
+    if (!focusActive() || dragging) return;
+    size_t n = groom.P.size();
+    size_t key = n * 1000003u + groom.ops.size();
+    if (focusN.size() != n || focusNKey != key) {   // scalp normals: once per groom change, not per frame
+        focusN.assign(n, V3{0, 0, 1});
+        for (size_t i = 0; i < n; i++) {
+            if (!groom.alive[i]) continue;
+            V3 nr{0, 0, 1};
+            groom.headSigned(groom.P[i][0], &nr);
+            focusN[i] = nr;
+        }
+        focusNKey = key;
+    }
+    DirectX::XMFLOAT2 c = project({focusW.x, focusW.y, focusW.z});
+    DirectX::XMFLOAT3 e3 = cam.eye();
+    V3 eye{e3.x, e3.y, e3.z};
+    float r2 = focusPx * focusPx;
+    focusIn.assign(n, 0);
+    for (size_t i = 0; i < n; i++) {   // one projection per root: linear, ~0.2 ms for 4600 guides
+        if (!groom.alive[i]) continue;
+        V3 p = posedPoint((int)i, 0);
+        DirectX::XMFLOAT2 s = project(p);
+        if ((s.x - c.x) * (s.x - c.x) + (s.y - c.y) * (s.y - c.y) > r2) continue;
+        V3 v = restDelta((int)i, eye - p);   // view direction in the guide's rest space (normal is rest-space)
+        if (focusN[i].x * v.x + focusN[i].y * v.y + focusN[i].z * v.z <= 0) continue;   // root faces away: hidden by the head
+        focusIn[i] = 1;
+    }
+    for (auto it = sel.begin(); it != sel.end();) it = focusShown(*it) ? std::next(it) : sel.erase(it);   // act on shown guides only
+}

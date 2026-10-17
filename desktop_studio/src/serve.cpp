@@ -260,6 +260,82 @@ static float spanDip(const HeadRadial& h, const Guide& G) {
     return worst;
 }
 
+// spanDip with the root's own depth discounted: a root ON the skin can sit under the radial-median surface (temple /
+// ear ridges); the first span then "dips" near the root whatever its CVs do. That depth fades out along the first span.
+static float spanDipRc(const HeadRadial& h, const Guide& G) {
+    if (!h.ok || G.size() < 2) return 0;
+    float rd = 0;
+    { V3 d = G[0] - h.c; float r = len(d); if (r > 1e-5f) { float s = h.surface(d * (1.0f / r)); if (s > 0) rd = std::max(0.0f, s - r); } }
+    float worst = 0;
+    for (size_t k = 1; k < G.size(); k++) {
+        V3 a = G[k - 1], b = G[k];
+        int n = std::max(1, (int)(len(b - a) / 0.002f));
+        for (int j = 1; j < n; j++) {
+            float t = (float)j / n;
+            V3 p = a + (b - a) * t, d = p - h.c;
+            float r = len(d);
+            if (r < 1e-5f || p.z < h.c.z - 0.01f) continue;
+            float s = h.surface(d * (1.0f / r));
+            float dd = s - r - (k == 1 ? rd * (1 - t) : 0.0f);
+            if (s > 0 && dd > worst) worst = dd;
+        }
+    }
+    return worst;
+}
+// 2026-10-17 opt-in (push_out fix_spans): fix the SPANS between CVs that dip under the skin, against the same head
+// surface spanDip uses (the rendered head mesh as a radial map, not the desk.json head proxy). Each span is sampled
+// every 1 mm; a span whose deepest sample is under surface + standoff lifts its two CVs along the head radial (split by
+// where the dip is, the root never moves; the first span lifts CV 1 only), the lifts are smoothed over the neighbour
+// CVs, then the strand is rebuilt from the root with its ORIGINAL segment lengths (follow-the-leader: same CV count,
+// same length, no kinks). Repeated until no span dips > spanMin. Returns the iterations used (0 = untouched).
+static int fixSpans(const HeadRadial& h, Guide& G, float standoff, float spanMin, int maxIt = 8) {
+    if (!h.ok || G.size() < 2 || spanDipRc(h, G) <= spanMin) return 0;
+    const size_t K = G.size();
+    std::vector<float> seg(K, 0.0f);
+    for (size_t k = 1; k < K; k++) seg[k] = len(G[k] - G[k - 1]);
+    int it = 0;
+    float rd = 0;
+    { V3 d = G[0] - h.c; float r = len(d); if (r > 1e-5f) { float s0 = h.surface(d * (1.0f / r)); if (s0 > 0) rd = std::max(0.0f, s0 - r); } }
+    for (; it < maxIt && spanDipRc(h, G) > spanMin; it++) {
+        std::vector<float> off(K, 0.0f);
+        for (size_t k = 1; k < K; k++) {
+            V3 a = G[k - 1], b = G[k];
+            int n = std::max(1, (int)std::ceil(len(b - a) / 0.001f));
+            float worst = 0, wt = 0;
+            for (int j = 1; j < n; j++) {
+                float t = (float)j / n;
+                V3 p = a + (b - a) * t, d = p - h.c;
+                float r = len(d);
+                if (r < 1e-5f || p.z < h.c.z - 0.01f) continue;
+                float sf = h.surface(d * (1.0f / r));
+                float rc = k == 1 ? rd * (1 - t) : 0.0f;   // root depth discounted (see spanDipRc)
+                if (sf > 0 && sf - r - rc > spanMin * 0.5f && sf + standoff - r - rc > worst) { worst = sf + standoff - r - rc; wt = t; }
+            }
+            if (worst <= 0) continue;
+            if (k == 1) off[1] = std::max(off[1], worst / std::max(wt, 0.25f));
+            else {
+                float w = wt * wt + (1 - wt) * (1 - wt);
+                off[k - 1] = std::max(off[k - 1], worst * (1 - wt) / w);
+                off[k] = std::max(off[k], worst * wt / w);
+            }
+        }
+        for (int sm = 0; sm < 2; sm++) {   // neighbours rise a little too: a smooth bump, not a spike
+            std::vector<float> o2 = off;
+            for (size_t k = 1; k < K; k++) {
+                float nb = std::max(off[k - 1], k + 1 < K ? off[k + 1] : 0.0f);
+                o2[k] = std::max(off[k], 0.5f * nb);
+            }
+            off = o2;
+        }
+        Guide L = G;
+        for (size_t k = 1; k < K; k++) if (off[k] > 0) L[k] = G[k] + nrmz(G[k] - h.c) * off[k];
+        Guide N = G;
+        for (size_t k = 1; k < K; k++) N[k] = N[k - 1] + nrmz(L[k] - N[k - 1]) * seg[k];
+        G = N;
+    }
+    return std::max(it, 1);
+}
+
 // how much the root part (first span_m) points away from the scalp: degrees above the tangent plane (frizz = high)
 static float liftDeg(const App& a, int g, float spanM) {
     auto& G = a.groom.P[g];
@@ -447,7 +523,7 @@ static json rebuildFromCards(App& a, const json& c, int& grpId, const rebuild::H
     float dedupe = c.value("dedupe_mm", 3.0f) / 1000;
     float spacing = c.value("spacing_mm", 9.0f) / 1000;
     bool replace = c.value("replace", true), balanced = c.value("pick", std::string("balanced")) == "balanced";
-    bool keepFace = c.value("allow_face", false), ignoreBudget = c.value("ignore_budget", false);
+    bool keepFace = c.value("allow_face", false), ignoreBudget = true /* budget = information only (2026-10-15) */;
     int count = c.value("count", 0);
     float rootBias = c.value("root_bias_mm", 40.0f) / 1000;   // prefer lanes that START near the root (inner layers) over lanes passing over it
     // layer "inner" (2026-10-12): raised / stacked cards (1-4 cm off the scalp, Fringilla). Card hair counts up to raise_mm
@@ -1096,7 +1172,7 @@ static json rebuildFromCards(App& a, const json& c, int& grpId, const rebuild::H
             tot += ar; acc.push_back(tot);
         }
         std::mt19937 rs(1);
-        for (int s = 0; s < 80000 && tot > 0; s++) {
+        for (int s = 0; s < c.value("cand_samples", 80000) && tot > 0; s++) {
             double x = std::uniform_real_distribution<double>(0, tot)(rs);
             size_t ti = std::min(head->t.size() - 1, size_t(std::lower_bound(acc.begin(), acc.end(), x) - acc.begin()));
             auto& t = head->t[ti];
@@ -1130,6 +1206,49 @@ static json rebuildFromCards(App& a, const json& c, int& grpId, const rebuild::H
             }
             if (ok) { cand.push_back(X); if (alphaDensity) candAlpha.push_back(alphaKeep); }
         }
+    }
+    // trace "shell" gap fill (2026-10-15): painted-scalp points with no candidate within 3 mm but candidates on at least
+    // 3 of 4 sides within shell_fill_mm (a parting / patch inside the hair, never the forehead or neck edge) become
+    // candidates too: no bald hole at the parting
+    int nGapFill = 0;
+    if (c.value("trace", std::string("lane")) == "shell" && c.value("shell_fill_mm", 14.0f) > 0) {
+        const float fr = c.value("shell_fill_mm", 14.0f) / 1000;
+        Grid cgr(0.005f);
+        for (size_t i = 0; i < cand.size(); i += 2) cgr.add(cand[i], (int)i);
+        std::vector<double> acc; double tot = 0;
+        for (auto& t : head->t) {
+            V3 ctr = (head->v[t[0]] + head->v[t[1]] + head->v[t[2]]) * (1.0f / 3);
+            tot += ctr.z > pk.headTop - zminRel - 0.02f ? 0.5 * len(cross(head->v[t[1]] - head->v[t[0]], head->v[t[2]] - head->v[t[0]])) : 0; acc.push_back(tot);
+        }
+        std::mt19937 rs(5);
+        std::vector<V3> add;
+        for (int s = 0; s < 60000 && tot > 0; s++) {
+            double x = std::uniform_real_distribution<double>(0, tot)(rs);
+            size_t ti = std::min(head->t.size() - 1, size_t(std::lower_bound(acc.begin(), acc.end(), x) - acc.begin()));
+            auto& t = head->t[ti];
+            float uu = std::uniform_real_distribution<float>(0, 1)(rs), vv = std::uniform_real_distribution<float>(0, 1)(rs);
+            if (uu + vv > 1) { uu = 1 - uu; vv = 1 - vv; }
+            V3 X = head->v[t[0]] + (head->v[t[1]] - head->v[t[0]]) * uu + (head->v[t[2]] - head->v[t[0]]) * vv;
+            if (X.z < pk.headTop - zminRel || !inRegion(X) || !onScalpE(X)) continue;
+            bool near_ = false;
+            cgr.around(X, 0.003f, [&](int j) { if (!near_ && len(cand[j] - X) < 0.003f) near_ = true; });
+            if (near_) continue;
+            V3 n; headSD(X, &n);
+            V3 e1 = nrmz(cross(n, V3{0, 0, 1})); if (len(e1) < 0.5f) e1 = V3{1, 0, 0};
+            V3 e2 = cross(n, e1);
+            int sides = 0;
+            for (int q = 0; q < 4; q++) {
+                V3 dir = (q == 0 ? e1 : q == 1 ? e2 : q == 2 ? e1 * -1.0f : e2 * -1.0f);
+                bool hit = false;
+                cgr.around(X, fr, [&](int j) { if (hit) return; V3 d = cand[j] - X; float l = len(d); if (l < fr && l > 0.002f && dot(d, dir) > 0.7f * l) hit = true; });
+                if (hit) sides++;
+            }
+            if (sides >= 3) add.push_back(X);
+        }
+        for (auto& X : add) cand.push_back(X);
+        if (alphaDensity) candAlpha.resize(cand.size(), 1.0f);
+        if (coverage) candCov.resize(cand.size(), covRef);
+        nGapFill = (int)add.size();
     }
     if (cand.empty()) { r["error"] = "no scalp point under visible card hair in this region"; return r; }
     // old guides: which go (replace) and which stay
@@ -1303,6 +1422,229 @@ static json rebuildFromCards(App& a, const json& c, int& grpId, const rebuild::H
         u -= std::floor(u);
         return flowLayerMin + (flowLayerMax - flowLayerMin) * u;
     };
+    // ---- trace "shell" (2026-10-15 opt-in, studio_rebuild_rounded): rounded short cuts (Ves). Each strand walks a
+    // foot point over the scalp along the card flow field (root->tip texture direction of the card lanes, projected
+    // on the scalp tangent plane, Gaussian-smoothed over shell_flow_mm, same-way clustering) and sits at a height
+    // above it that rises smoothly from the root to the vanilla card shell (column percentile shell_pct of the
+    // visible card hair over the foot, smoothed) + offset_mm; the tip ends just inside the shell (shell_tip_in_mm)
+    // where the card outline ends or at the card hair length there + offset. Around a crown swirl (crown [x,y,z] or
+    // "auto" = where the card flow diverges most on the back top) the flow radiates out of it with swirl_spiral twist,
+    // and the rise is steeper near its centre (no pit).
+    const bool shellMode = c.value("trace", std::string("lane")) == "shell";
+    const float shOff = c.value("offset_mm", 3.0f) / 1000, shFlowR = c.value("shell_flow_mm", 18.0f) / 1000;
+    const float shColR = c.value("shell_col_mm", 28.0f) / 1000, shPct = std::clamp(c.value("shell_pct", 0.45f), 0.0f, 1.0f);
+    const float shRise = c.value("rise_mm", 28.0f) / 1000, shTipIn = c.value("shell_tip_in_mm", 5.0f) / 1000;
+    const float shStep = c.value("shell_step_mm", 2.5f) / 1000, shInertia = std::clamp(c.value("shell_inertia", 0.6f), 0.0f, 0.95f);
+    const float shLenScale = c.value("length_scale", 1.0f), shMinH = c.value("shell_min_mm", 2.5f) / 1000;
+    const float swR = c.value("swirl_radius_mm", 45.0f) / 1000, swSpiral = c.value("swirl_spiral", 0.5f);
+    const float swRise = c.value("swirl_rise_mm", 3.0f) / 1000, shMinLen = c.value("shell_min_len_mm", 15.0f) / 1000;
+    const float shSmooth = std::clamp(c.value("shell_smooth", 0.9f), 0.0f, 0.95f);
+    const bool shEase = c.value("shell_root", std::string("tangent")) == "tangent";   // tangent: roots lie along the scalp, curve up (no radial stubs); steep = old
+    const float shLenPct = c.value("shell_len_pct", 0.9f);   // strand length = this percentile of the card hair remaining over the root (< 0 = weighted mean)
+    const float swOut = c.value("swirl_outward_mm", 80.0f) / 1000, swMinOut = c.value("swirl_min_out", 0.15f);
+    std::vector<V3> shT;
+    V3 crown{0, 0, 0}; bool haveCrown = false; float crownAgree = -1; json shellInfo = json::object();
+    if (shellMode) {
+        for (size_t q = 0; q < dense.size(); q++) { const Lane& ln = lanes[sid[q]]; int j = jj[q]; shT.push_back(nrmz(ln.p[std::min(j + 1, 47)] - ln.p[std::max(j - 1, 0)])); }
+        if (c.contains("crown") && c["crown"].is_array() && c["crown"].size() == 3) {
+            crown = V3{c["crown"][0].get<float>(), c["crown"][1].get<float>(), c["crown"][2].get<float>()}; haveCrown = true;
+        } else if (!c.contains("crown") || (c["crown"].is_string() && c["crown"].get<std::string>() == "auto")) {
+            float bestA = 1e9f;
+            for (size_t i = 0; i < cand.size(); i += 7) {
+                V3 X = cand[i];
+                // crown = the strongest SOURCE of the card flow on the back top (flow leaving the point on all sides:
+                // mean of dot(flow, direction away from it) over the lanes 5..25 mm around); a part line only diverges sideways
+                if (X.z < pk.headTop - 0.10f || X.z > pk.headTop - 0.01f || fwd3 * (X.y - C.y) > -0.01f) continue;
+                V3 n; headSD(X, &n);
+                float s = 0; int cnt = 0;
+                dg.around(X, 0.025f, [&](int q) {
+                    V3 d = dense[q] - X; float h = dot(d, n);
+                    if (h < -0.006f || h > 0.04f) return;
+                    V3 lat = d - n * h; float l = len(lat);
+                    if (l < 0.005f || l > 0.025f) return;
+                    V3 t = shT[q] - n * dot(shT[q], n); if (len(t) < 1e-6f) return;
+                    s += dot(nrmz(t), lat * (1.0f / l)); cnt++;
+                });
+                if (cnt < 30) continue;
+                float ag = -s / cnt;
+                if (ag < bestA) { bestA = ag; crown = X; haveCrown = true; crownAgree = -ag; }
+            }
+        }
+        if (haveCrown) { shellInfo["crown"] = {r4(crown.x), r4(crown.y), r4(crown.z)}; if (crownAgree >= 0) shellInfo["crown_divergence"] = r4(crownAgree); }
+    }
+    auto shellH = [&](V3 F, V3 n) -> float {   // card shell height above the skin point F (-1 = no card hair here)
+        std::vector<float> hs;
+        vg.around(F, shColR + 0.04f, [&](int i) {
+            V3 d = vis[i] - F; float h = dot(d, n);
+            if (h < -0.004f || h > 0.04f || len(d - n * h) > shColR) return;
+            hs.push_back(h);
+        });
+        if (hs.size() < 3) return -1.0f;
+        std::sort(hs.begin(), hs.end());
+        return std::max(shMinH, hs[std::min(hs.size() - 1, size_t(shPct * hs.size()))]);
+    };
+    // shell_mode "hull" (2026-10-15, opt-in): the shell is the support function of the visible card hair seen from the
+    // head centre (max over card points within shell_cone_deg of the direction of dot(point - C, dir)): a convex,
+    // evenly rounded envelope that bridges sags / dents of the cards (Ves's upper back, front-top)
+    const bool shHull = c.value("shell_mode", std::string("uniform")) == "hull";
+    const float shCone = std::cos(c.value("shell_cone_deg", 20.0f) * 3.14159265f / 180);
+    const float shHullMix = std::clamp(c.value("shell_hull_mix", 1.0f), 0.0f, 1.0f);
+    std::vector<V3> hullDir; std::vector<float> hullSup;
+    if (shellMode && shHull) {
+        const int ND = 3000;
+        for (int i = 0; i < ND; i++) {
+            float zz = 1 - 2 * (i + 0.5f) / ND, rr = std::sqrt(std::max(0.0f, 1 - zz * zz)), ph = i * 2.39996323f;
+            V3 u{rr * std::cos(ph), rr * std::sin(ph), zz};
+            float best = -1;
+            for (auto& v : vis) { V3 d = v - C; float l = len(d); if (l < 1e-5f) continue; if (dot(d, u) / l < shCone) continue; best = std::max(best, dot(d, u)); }
+            hullDir.push_back(u); hullSup.push_back(best);
+        }
+    }
+    // shell_mode "uniform" (2026-10-15, opt-in): the shell is the scalp offset by ONE thickness everywhere (the round
+    // skull gives the round shape; even thickness, no sags): shell_thick_mm, default = shell_thick_pct (0.75) percentile
+    // of the card shell heights over the candidate roots. Card hair still decides where hair is (outline).
+    const bool shUni = c.value("shell_mode", std::string("uniform")) == "uniform";
+    float shThick = c.value("shell_thick_mm", -1.0f) / 1000;
+    if (shellMode && shUni && shThick <= 0) {
+        std::vector<float> hv;
+        for (size_t i = 0; i < cand.size(); i += 23) { V3 n; headSD(cand[i], &n); float h = shellH(cand[i], n); if (h > 0) hv.push_back(h); }
+        std::sort(hv.begin(), hv.end());
+        shThick = hv.empty() ? 0.01f : hv[std::min(hv.size() - 1, size_t(c.value("shell_thick_pct", 0.5f) * hv.size()))];
+    }
+    if (shellMode && shUni) shellInfo["thick_mm"] = std::round(shThick * 10000) / 10;
+    // shell_taper_mm (2026-10-15): the uniform shell thins to shell_min_mm toward the edge of the hair (hairline, temples,
+    // nape): distance to the boundary of the candidate-root area, smoothstep over shell_taper_mm. No bowl / mushroom rim.
+    const float shTaper = c.value("shell_taper_mm", 30.0f) / 1000;
+    const float shGap = c.value("shell_gap_mm", 20.0f) / 1000;
+    std::vector<V3> edgeP; Grid eg(0.008f);
+    if (shellMode && shUni && shTaper > 0) {
+        std::vector<V3> cs; for (size_t i = 0; i < cand.size(); i += 3) cs.push_back(cand[i]);
+        Grid cg(0.006f); for (size_t i = 0; i < cs.size(); i++) cg.add(cs[i], (int)i);
+        for (size_t i = 0; i < cs.size(); i += 2) {
+            V3 m{0, 0, 0}; int k = 0;
+            cg.around(cs[i], 0.006f, [&](int j) { if (len(cs[j] - cs[i]) < 0.006f) { m = m + cs[j]; k++; } });
+            if (k > 3 && len(m * (1.0f / k) - cs[i]) > 0.0016f) {
+                // a narrow gap inside the hair (parting, a patch with no card hair) is not the hair's edge: hair again
+                // within shell_gap_mm on the farHit side -> no taper there
+                V3 out = nrmz(cs[i] - m * (1.0f / k)); bool farHit = false;
+                for (float t = 0.006f; t <= shGap && !farHit; t += 0.003f) {
+                    V3 q = cs[i] + out * t;
+                    cg.around(q, 0.003f, [&](int j) { if (!farHit && len(cs[j] - q) < 0.003f) farHit = true; });
+                }
+                if (!farHit) { edgeP.push_back(cs[i]); eg.add(cs[i], (int)edgeP.size() - 1); }
+            }
+        }
+        shellInfo["edge_points"] = edgeP.size();
+    }
+    auto edgeTaper = [&](V3 F) -> float {
+        if (edgeP.empty()) return 1.0f;
+        float bd = shTaper;
+        eg.around(F, shTaper, [&](int i) { bd = std::min(bd, len(edgeP[i] - F)); });
+        float t = bd / shTaper; return t * t * (3 - 2 * t);
+    };
+    auto shellHH = [&](V3 F, V3 n) -> float {
+        float hc = shellH(F, n);
+        if (shUni) return hc < 0 ? hc : shMinH + (shThick - shMinH) * edgeTaper(F);
+        if (!shHull || hc < 0) return hc;
+        V3 d = F - C; float l = len(d); if (l < 1e-5f) return hc;
+        V3 u = d * (1.0f / l);
+        // inverse-distance blend of the 6 nearest sample directions
+        float bw[6] = {-2, -2, -2, -2, -2, -2}; int bi[6] = {-1, -1, -1, -1, -1, -1};
+        for (size_t i = 0; i < hullDir.size(); i++) {
+            float s = dot(hullDir[i], u);
+            for (int k = 0; k < 6; k++) if (s > bw[k]) { for (int m = 5; m > k; m--) { bw[m] = bw[m - 1]; bi[m] = bi[m - 1]; } bw[k] = s; bi[k] = (int)i; break; }
+        }
+        float sw = 0, sv = 0;
+        for (int k = 0; k < 6; k++) if (bi[k] >= 0 && hullSup[bi[k]] > 0) { float w = 1.0f / (1.0001f - bw[k]); sw += w; sv += w * hullSup[bi[k]]; }
+        if (sw <= 0) return hc;
+        float hh = (sv / sw - dot(d, u)) * std::max(0.3f, dot(u, n));
+        return std::max(shMinH, hc * (1 - shHullMix) + std::max(hh, hc) * shHullMix);
+    };
+    auto shellFlow = [&](V3 F, V3 n, V3 Dref, bool first, float* remOut) -> V3 {
+        std::vector<std::pair<int, float>> nb;
+        dg.around(F, shFlowR + 0.03f, [&](int q) {
+            V3 d = dense[q] - F; float h = dot(d, n);
+            if (h < -0.006f || h > 0.035f) return;
+            float lat = len(d - n * h);
+            if (lat > shFlowR) return;
+            nb.push_back({q, std::exp(-lat * lat / (0.5f * shFlowR * shFlowR))});
+        });
+        V3 acc{0, 0, 0}; float ws = 0, rs = 0;
+        V3 ref = Dref;
+        for (int it = 0; it < (first ? 3 : 1); it++) {
+            acc = V3{0, 0, 0}; ws = 0; rs = 0;
+            bool useRef = len(ref) > 1e-6f;
+            for (auto& [q, w] : nb) {
+                V3 t = shT[q] - n * dot(shT[q], n);
+                float ww = w;
+                if (useRef) { float al = dot(nrmz(t), ref); if (al <= 0) continue; ww *= al * al; }
+                acc = acc + t * ww; ws += ww; rs += rem[q] * ww;
+            }
+            if (len(acc) > 1e-9f) ref = nrmz(acc);
+        }
+        if (remOut) { std::vector<float> rv; for (auto& [q, w] : nb) rv.push_back(rem[q]); if (shLenPct >= 0 && !rv.empty()) { std::sort(rv.begin(), rv.end()); *remOut = rv[std::min(rv.size() - 1, size_t(std::clamp(shLenPct, 0.0f, 1.0f) * rv.size()))]; } else *remOut = ws > 1e-9f ? rs / ws : -1.0f; }
+        V3 D = len(acc) > 1e-9f ? nrmz(acc) : Dref;
+        if (haveCrown) {   // radiate out of the crown swirl, slight spiral
+            V3 rd = F - crown; rd = rd - n * dot(rd, n);
+            float r0 = len(rd);
+            if (r0 < swR) {
+                V3 outd = r0 > 1e-5f ? rd * (1.0f / r0) : (len(D) > 1e-6f ? D : V3{0, -1, 0});
+                V3 sp = nrmz(outd + cross(n, outd) * swSpiral);
+                float w = 1.0f - r0 / swR; w = w * w * (3 - 2 * w);
+                D = len(D) > 1e-6f ? nrmz(sp * w + D * (1 - w)) : sp;
+            }
+            // swirl_outward_mm: within it nothing flows back toward the crown (converging flows ended in a ledge)
+            if (r0 > 1e-5f && r0 < swOut && len(D) > 1e-6f) { V3 outd = rd * (1.0f / r0); float ci = dot(D, outd); if (ci < swMinOut) D = nrmz(D + outd * (swMinOut - ci)); }
+        }
+        if (len(D) < 1e-6f) return D;
+        return nrmz(D - n * dot(D, n));
+    };
+    std::vector<std::pair<V3, V3>> shRootD;   // smoothed start direction per root (filled per attempt)
+    auto traceShell = [&](V3 R, Guide& out) -> bool {
+        V3 n; headSD(R, &n);
+        float remR = -1;
+        V3 D = shellFlow(R, n, V3{0, 0, 0}, true, &remR);
+        for (auto& rd : shRootD) if (len(rd.first - R) < 1e-6f) { if (len(rd.second) > 1e-6f) D = rd.second; break; }
+        if (len(D) < 1e-6f || remR < 0) return false;
+        float H0 = shellHH(R, n);
+        if (H0 < 0) return false;
+        float Lt = std::max(shMinLen, remR * shLenScale + shOff);
+        float rise = shRise;
+        if (haveCrown) { float rc = len(R - crown); if (rc < swR) { float w = 1.0f - rc / swR; rise = shRise * (1 - w) + swRise * w; } }
+        std::vector<V3> pts{R};
+        V3 F = R, P = R; float s = 0, foot = 0, Hs = H0 + shOff;
+        int miss = 0;
+        for (int it = 0; it < 400 && s < Lt; it++) {
+            V3 Fn = F + D * shStep;
+            V3 nn; float sd = headSD(Fn, &nn);
+            Fn = Fn - nn * sd;
+            foot += shStep;
+            float Hc = shellHH(Fn, nn);
+            if (Hc < 0) { if (++miss * shStep > 0.008f) break; Hc = Hs - shOff; } else miss = 0;
+            Hs = Hs * shSmooth + (Hc + shOff) * (1 - shSmooth);   // smoothed shell height
+            float u = std::min(1.0f, foot / std::max(rise, 1e-4f)); float ramp = shEase ? u * u * (3 - 2 * u) : 1 - (1 - u) * (1 - u) * (1 - u);   // ease: leaves the scalp almost tangent
+            float tipT = s / Lt; float hh = Hs * ramp - shTipIn * tipT * tipT;
+            hh = std::max(hh, 0.002f);
+            V3 Pn = Fn + nn * hh;
+            s += len(Pn - P);
+            pts.push_back(Pn); P = Pn; F = Fn; n = nn;
+            V3 Dn = shellFlow(F, n, D, false, nullptr);
+            if (len(Dn) > 1e-6f) D = nrmz(D * shInertia + Dn * (1 - shInertia));
+            D = nrmz(D - n * dot(D, n));
+        }
+        if (pts.size() < 4 || s < 0.01f) return false;
+        if (s > Lt) {   // trim to Lt
+            std::vector<V3> q{pts[0]}; float acc = 0;
+            for (size_t k = 1; k < pts.size(); k++) {
+                float l = len(pts[k] - pts[k - 1]);
+                if (acc + l >= Lt) { q.push_back(pts[k - 1] + (pts[k] - pts[k - 1]) * ((Lt - acc) / std::max(l, 1e-9f))); break; }
+                q.push_back(pts[k]); acc += l;
+            }
+            pts.swap(q);
+        }
+        out = resampleN(pts, K);
+        return true;
+    };
         int eyeCutN = 0, earRouted = 0, earDropped = 0, flowFail = 0, earFaces = 0;
     // eye_mode cut: the strand is cut before the first point within eye_mm of an eyeball (rejected when < 4 points stay)
     auto eyeCutG = [&](Guide& G) -> bool {
@@ -1345,7 +1687,40 @@ static json rebuildFromCards(App& a, const json& c, int& grpId, const rebuild::H
         std::vector<Guide> NG;
         std::vector<V3> orphanRoots;
         int noLane = 0, throughHead = 0, onFace = 0, copied = 0;
+        // trace "shell" root directions smoothed over neighbouring roots (shell_dir_mm, shell_dir_iter; 2026-10-15):
+        // opposite flows at a parting blend so one side combs over it (no bare split); the crown swirl stays radial
+        shRootD.clear();
+        if (shellMode && c.value("shell_dir_iter", 0) > 0) {
+            const float dr = c.value("shell_dir_mm", 12.0f) / 1000;
+            std::vector<V3> D0(roots.size()), Nr(roots.size());
+            for (size_t i = 0; i < roots.size(); i++) { V3 n; headSD(roots[i], &n); Nr[i] = n; D0[i] = shellFlow(roots[i], n, V3{0, 0, 0}, true, nullptr); }
+            Grid rg2(dr); for (size_t i = 0; i < roots.size(); i++) rg2.add(roots[i], (int)i);
+            for (int it = 0; it < c.value("shell_dir_iter", 0); it++) {
+                std::vector<V3> D1 = D0;
+                for (size_t i = 0; i < roots.size(); i++) {
+                    if (haveCrown && len(roots[i] - crown) < swR) continue;
+                    V3 s{0, 0, 0};
+                    rg2.around(roots[i], dr, [&](int j) { float d = len(roots[j] - roots[i]); if (d < dr) s = s + D0[j] * (1 - d / dr); });
+                    s = s - Nr[i] * dot(s, Nr[i]);
+                    if (len(s) > 1e-6f) D1[i] = nrmz(s);
+                }
+                D0.swap(D1);
+            }
+            for (size_t i = 0; i < roots.size(); i++) shRootD.push_back({roots[i], D0[i]});
+        }
         for (V3 R : roots) {
+            if (shellMode) {   // trace "shell" (studio_rebuild_rounded): own grower, no lane pick / hug
+                Guide G;
+                if (!traceShell(R, G)) { orphanRoots.push_back(R); continue; }
+                Guide T = G;
+                int inside = pushOut(hr, T, 0.003f);
+                if (inside > K / 3) { throughHead++; continue; }
+                if (inside) G = T;
+                if (!keepFace && eyeCut && !eyeCutG(G)) { onFace++; continue; }
+                if (!keepFace && overFaceG(G)) { onFace++; continue; }
+                NG.push_back(G);
+                continue;
+            }
             V3 awayP{0, 0, 0}; const bool isPart = partDetect && partAway(R, awayP);
             Guide G; bool fringeG = false;
             // fringe: a front root near a fringe lane copies it (from the hairline, forward / side-swept over the brow)
@@ -1452,6 +1827,27 @@ static json rebuildFromCards(App& a, const json& c, int& grpId, const rebuild::H
             if (!keepFace && overFaceG(G)) { onFace++; continue; }
             if (hk && hk->post) { int pr = hk->post(G); if (pr < 0) { earDropped++; continue; } if (pr > 0) earRouted++; }
             NG.push_back(G);
+        }
+        // trace "shell" surface smoothing (2026-10-15): the outer part of every strand (past shell_lap_from of its length)
+        // takes the mean height above the skin of all strand points within shell_lap_mm, shell_lap_iter times: one
+        // continuous cap, no terraces where tips end
+        if (shellMode && c.value("shell_lap_iter", 3) > 0 && !NG.empty()) {
+            const float lr = c.value("shell_lap_mm", 8.0f) / 1000, from = c.value("shell_lap_from", 0.35f);
+            const int iters = c.value("shell_lap_iter", 3);
+            for (int it = 0; it < iters; it++) {
+                std::vector<V3> P; std::vector<float> H; std::vector<V3> Nn;
+                for (auto& G : NG) for (int k = 1; k < K; k++) { V3 n; float h = headSD(G[k], &n); P.push_back(G[k]); H.push_back(h); Nn.push_back(n); }
+                Grid lg(lr); for (size_t i = 0; i < P.size(); i++) lg.add(P[i], (int)i);
+                size_t idx = 0;
+                for (auto& G : NG) for (int k = 1; k < K; k++, idx++) {
+                    if (float(k) / (K - 1) < from) continue;
+                    float s = 0, w = 0;
+                    lg.around(P[idx], lr, [&](int j) { V3 d = P[j] - P[idx]; float lat = len(d - Nn[idx] * dot(d, Nn[idx])); if (lat < lr) { float ww = 1 - lat / lr; s += H[j] * ww; w += ww; } });
+                    if (w <= 0) continue;
+                    float tw = std::min(1.0f, (float(k) / (K - 1) - from) / std::max(0.15f, 1 - from) * 2);
+                    G[k] = G[k] + Nn[idx] * ((s / w - H[idx]) * tw);
+                }
+            }
         }
         // roots with no card lane near them (partings, hairline gaps between cards): copy of the nearest traced guide,
         // so the scalp there is not left without hair
@@ -1669,6 +2065,8 @@ static json rebuildFromCards(App& a, const json& c, int& grpId, const rebuild::H
     json uvInfo = r.is_object() && r.contains("uv") ? r["uv"] : json();
     r = stats;
     if (!uvInfo.is_null()) r["uv"] = uvInfo;
+    if (shellMode) shellInfo["gap_fill_candidates"] = nGapFill;
+    if (shellMode) r["shell"] = shellInfo;
     r["lanes"] = lanes.size(); r["chained_segments"] = nChained; r["stacked_lanes_dropped"] = nDup; r["card_parts"] = nCards; r["islands"] = nIslands;
     r["visible_points"] = vis.size(); r["scalp_candidates"] = cand.size(); r["candidates_off_painted_scalp"] = offScalp;
     r["painted_scalp"] = sm != nullptr;
@@ -1806,8 +2204,18 @@ struct Zones {
                 p.z > earLo[sd].z - pad && p.z < earHi[sd].z + pad) return true;
         return false;
     }
+    // 2026-10-17 opt-in face-zone exceptions (plant_flow / fill_below_hairline): "allow_temple" lets the temple skin pass
+    // (lateral of the outer eye corners + temple_inset_mm, above the eye centre + temple_min_z_mm); "face_ok_box"
+    // [x0,x1,y0,y1,z0,z1] (edit frame, the given box only, not mirrored) passes too. Eyes / brows stay rejected.
+    bool allowTemple = false, hasOk = false;
+    float templeInset = 0.008f, templeMinZ = 0.0f;
+    V3 okLo{}, okHi{};
     bool overFace(V3 p) const {   // in front of the face below the brows
-        return haveEye && fwd * (p.y - eyeY) > -0.03f && p.z < browZ && std::fabs(p.x - C.x) < (eHi.x - eLo.x) / 2 + 0.035f;
+        bool f = haveEye && fwd * (p.y - eyeY) > -0.03f && p.z < browZ && std::fabs(p.x - C.x) < (eHi.x - eLo.x) / 2 + 0.035f;
+        if (!f) return false;
+        if (hasOk && p.x >= okLo.x && p.x <= okHi.x && p.y >= okLo.y && p.y <= okHi.y && p.z >= okLo.z && p.z <= okHi.z) return false;
+        if (allowTemple && std::fabs(p.x - C.x) > (eHi.x - eLo.x) / 2 + templeInset && p.z > eyeZ + templeMinZ) return false;
+        return true;
     }
 };
 static Zones zonesOf(const App& a, const json& c) {
@@ -1821,6 +2229,15 @@ static Zones zonesOf(const App& a, const json& c) {
     z.fwd = z.eyeY >= z.C.y ? 1.0f : -1.0f;
     z.browZ = z.haveEye ? z.eHi.z + c.value("brow_clear_mm", 12.0f) / 1000 : z.C.z;
     z.Ca = {z.C.x, z.eyeY - z.fwd * 0.075f, z.eyeZ};
+    z.allowTemple = c.value("allow_temple", false);
+    z.templeInset = c.value("temple_inset_mm", 8.0f) / 1000;
+    z.templeMinZ = c.value("temple_min_z_mm", 0.0f) / 1000;
+    if (c.contains("face_ok_box") && c["face_ok_box"].is_array() && c["face_ok_box"].size() == 6) {
+        auto& b = c["face_ok_box"];
+        z.hasOk = true;
+        z.okLo = {b[0].get<float>(), b[2].get<float>(), b[4].get<float>()};
+        z.okHi = {b[1].get<float>(), b[3].get<float>(), b[5].get<float>()};
+    }
     for (int sd = 0; sd < 2; sd++) {
         float best = 0;
         auto lat = [&](V3 v) { return sd == 0 ? v.x - z.C.x : z.C.x - v.x; };
@@ -2122,7 +2539,7 @@ static json fillBelowHairline(App& a, const json& c, int& grpId, const std::stri
     float lenScale = c.value("length_scale", 1.0f), maxLen = c.value("max_length", 0.0f), maxRatio = c.value("max_ratio", 1.2f);
     float earPad = c.value("ear_pad_mm", 5.0f) / 1000, tuftM = c.value("tuft_mm", 12.0f) / 1000;
     int maxNew = c.value("max_new", 120);
-    bool dry = c.value("list_only", false), ignore = c.value("ignore_budget", false);
+    bool dry = c.value("list_only", false), ignore = true /* budget = information only (2026-10-15) */;
     std::string side = c.value("side", std::string("both"));
     json where = c.value("where", json::object());
     a.computeBudget();
@@ -2318,6 +2735,929 @@ static json fillBelowHairline(App& a, const json& c, int& grpId, const std::stri
     if (dropped) r["dropped_for_budget"] = dropped;
     r["planted"] = n; r["new_faces"] = (long)gr.faces.size() - (long)f0; r["planned"] = planned; r["edge_uv"] = euv;
     r["planted_without_growth_face"] = faceless(gr, g0);
+    return r;
+}
+
+// ------------------------------------------------------------------------------------------------ 2026-10-15 opt-in
+// plant_flow (Studio-only): NEW guides on bare skin with a GIVEN flow, not copies of neighbours (hairline_fill /
+// fill_below_hairline copy the nearest guide: on Geralt's headband hair that copied the hanging front locks over the
+// face). Seeds = explicit "points", or the bare skin SEEN by cameras ("shots": scalp-overlay pixels that are skin, grey
+// or green, ray-cast to the skin), or area samples of the head skin with no strand over them; limited to "box"
+// [x0,x1,y0,y1,z0,z1] (edit frame) / "near"+"radius" / side. Poisson at spacing_mm, planted nearest the existing roots
+// first (new growth faces chain outward). Each strand: root on the skin, then WALKS along the skin (step 3 mm, lift
+// ramping base_mm -> lift_mm) in "direction" [x,y,z] (x mirrored on the other side; or the mean root direction of the
+// nearest guides) for walk_mm, then JOINS the nearest existing guide that runs the same way (within join_mm): its
+// remaining shape, offset by the gap, the offset fading over fade_mm to fade_keep (0.5) of it, so the new hair merges
+// into the groom's flow without stacking on the joined guide;
+// "length" caps the total. Points inside the head are pushed out (standoff_mm); strands over the face / eyes or on the
+// ears are rejected. Budget: information only (2026-10-15), never refuses. "uv" [u,v] = growth-face texel of the new faces
+// (default: the build's typical texel). over_ear (opt-in): roots in front of / below the ear top route up, over the ear
+// and behind it before the walk in "direction"; new faces over an ear box are dropped (drop_ear_faces, face_max_mm).
+static json plantFlow(App& a, const json& c, int& grpId, const std::string& out) {
+    using namespace t6;
+    json r;
+    Groom& gr = a.groom;
+    const V3 C = a.pack.headC;
+    HeadSkin hs = headSkin(a);
+    if (!hs.m) { r["error"] = "pack has no head mesh"; return r; }
+    Zones z = zonesOf(a, c);
+    // 2026-10-15 opt-in "ear_box" [x0,x1,y0,y1,z0,z1] (edit frame, the +x ear; mirrored for the other one): replaces the
+    // automatic ear boxes (on Geralt they reached 4 cm in front of the ear, over the whole temple / sideburn)
+    if (c.contains("ear_box") && c["ear_box"].is_array() && c["ear_box"].size() == 6) {
+        float e[6];
+        for (int i = 0; i < 6; i++) e[i] = c["ear_box"][i].get<float>();
+        float cx = a.pack.headC.x;
+        for (int k = 0; k < 2; k++) {
+            bool plus = k == 0;
+            float x0 = plus ? e[0] : 2 * cx - e[1], x1 = plus ? e[1] : 2 * cx - e[0];
+            z.earLo[k] = {x0, e[2], e[4]}; z.earHi[k] = {x1, e[3], e[5]}; z.hasEar[k] = true;
+        }
+    }
+    HeadRadial hr = headRadial(a);
+    const float spacing = c.value("spacing_mm", 5.0f) / 1000;
+    const float clearM = std::max(c.value("clear_mm", spacing * 800.0f) / 1000, 0.0045f);
+    const float walkM = c.value("walk_mm", 40.0f) / 1000, stepM = std::max(c.value("step_mm", 3.0f) / 1000, 0.001f);
+    const float baseM = c.value("base_mm", 1.0f) / 1000, liftM = c.value("lift_mm", 2.0f) / 1000;
+    const float joinM = c.value("join_mm", 30.0f) / 1000, fadeM = c.value("fade_mm", 40.0f) / 1000, maxLen = c.value("length", 0.0f);
+    const float minLen = c.value("min_length", 0.03f), standoff = c.value("standoff_mm", 2.0f) / 1000, earPad = c.value("ear_pad_mm", 5.0f) / 1000;
+    const float flowM = c.value("flow_mm", 30.0f) / 1000, maxRatio = c.value("max_ratio", 1.2f);
+    const float fadeKeep = std::clamp(c.value("fade_keep", 0.5f), 0.0f, 1.0f);
+    const int maxNew = c.value("max_new", 150);
+    const bool dry = c.value("list_only", false), ignore = true /* budget = information only (2026-10-15) */, join = c.value("join", true);
+    const std::string side = c.value("side", std::string("both"));
+    // 2026-10-15 opt-in "over_ear": a root in front of / below the top of the ear walks UP and back to a point
+    // over_ear_clear_mm above the ear top, over the ear to over_ear_behind_mm behind it, then on in "direction" and joins
+    // (Geralt: vanilla sweeps the temple / sideburn hair back over and behind the ear; walked straight back it hit the ear)
+    const bool overEar = c.value("over_ear", false);
+    const float earClear = c.value("over_ear_clear_mm", 9.0f) / 1000, earBehind = c.value("over_ear_behind_mm", 10.0f) / 1000;
+    const float earSpread = c.value("over_ear_spread_mm", 14.0f) / 1000;
+    const float earFront = c.value("over_ear_front_mm", 4.0f) / 1000;
+    const float earKeep = c.value("over_ear_keep", 0.0f), earBase = c.value("over_ear_base_mm", 20.0f) / 1000;
+    const float stopEar = c.value("stop_at_ear_mm", -1.0f) / 1000;   // >= 0: the walk ends that far before the ear (short swept-back hair)
+    const bool earAll = c.value("over_ear_all", false);
+    const float maxTurn = c.value("max_turn_deg", 0.0f);
+    int rejLoop = 0;   // also route roots above the clearance line (straight back at their height)
+    // 2026-10-15 opt-in "drop_ear_faces" (default on with over_ear): new growth faces whose triangle crosses an ear box
+    // are deleted (their interpolated hair grew out of / over the ear)
+    const bool dropEarFaces = c.value("drop_ear_faces", overEar);
+    const float faceMaxM = c.value("face_max_mm", 0.0f) / 1000;
+    bool hasDir = c.contains("direction") && c["direction"].is_array() && c["direction"].size() == 3;
+    V3 dirG = hasDir ? nrmz(V3{c["direction"][0].get<float>(), c["direction"][1].get<float>(), c["direction"][2].get<float>()}) : V3{0, 0, 0};
+    bool hasBox = c.contains("box") && c["box"].is_array() && c["box"].size() == 6;
+    float bx[6] = {0, 0, 0, 0, 0, 0};
+    if (hasBox) for (int i = 0; i < 6; i++) bx[i] = c["box"][i].get<float>();
+    bool hasNear = c.contains("near") && c["near"].is_array() && c["near"].size() == 3;
+    V3 nearP = hasNear ? V3{c["near"][0].get<float>(), c["near"][1].get<float>(), c["near"][2].get<float>()} : V3{0, 0, 0};
+    float nearR = c.value("radius", 0.03f);
+    auto inRegion = [&](V3 p) {
+        if (side == "left" && p.x < C.x + 0.005f) return false;
+        if (side == "right" && p.x > C.x - 0.005f) return false;
+        if (hasBox && (p.x < bx[0] || p.x > bx[1] || p.y < bx[2] || p.y > bx[3] || p.z < bx[4] || p.z > bx[5])) return false;
+        if (hasNear && len(p - nearP) > nearR) return false;
+        return true;
+    };
+    a.computeBudget();
+    if (a.bud.ratio > maxRatio && !ignore && !dry) { r["error"] = "hair budget ratio above max_ratio (pass ignore_budget: true to plant anyway)"; return r; }
+    std::vector<int> alive0;
+    for (size_t g = 0; g < gr.P.size(); g++) if (gr.alive[g]) alive0.push_back((int)g);
+    if (alive0.empty()) { r["error"] = "no guides"; return r; }
+    auto onSkin = [&](V3 X) { V3 n; float sd = hs.sd(X, &n); return X - n * sd; };
+    // ---- seeds
+    std::vector<V3> seeds;
+    const bool pointsExact = c.value("points_exact", false) && c.contains("points");
+    int nPix = 0, nOut = 0, nFace = 0;
+    if (c.contains("points") && c["points"].is_array()) {
+        // points_exact (2026-10-17 opt-in): each point is projected onto the skin surface (3 plane steps, not a vertex) and
+        // kept as its own seed: no clear_mm / spacing_mm thinning against the existing roots or the other points
+        for (auto& p : c["points"]) {
+            V3 X{p[0].get<float>(), p[1].get<float>(), p[2].get<float>()};
+            if (pointsExact) for (int it = 0; it < 3; it++) X = onSkin(X);
+            else X = onSkin(X);
+            seeds.push_back(X);
+        }
+    } else if (c.contains("shots") && c["shots"].is_array()) {
+        int stepPx = std::max(2, c.value("sample_px", 4)), size = c.value("size", 900);
+        for (auto& s : c["shots"]) {
+            json cam;
+            if (!cameraOf(a, s.is_object() ? s : json{{"shot", s}}, cam)) { r["error"] = "no such camera"; return r; }
+            std::string png = out + "\\_plantflow.png";
+            bool so = a.scalpOverlay;
+            a.scalpOverlay = true;
+            bool ok = a.renderShot(cam, png, size);
+            a.scalpOverlay = so;
+            int w = 0, h = 0;
+            unsigned char* im = ok ? loadImage(png, &w, &h) : nullptr;
+            if (!im) { r["error"] = "render failed"; return r; }
+            XMFLOAT3 eye{cam["eye"][0], cam["eye"][1], cam["eye"][2]}, tg{cam["target"][0], cam["target"][1], cam["target"][2]};
+            XMMATRIX V = XMMatrixLookAtRH(XMLoadFloat3(&eye), XMLoadFloat3(&tg), XMVectorSet(0, 0, 1, 0));
+            XMMATRIX P = XMMatrixPerspectiveFovRH(XMConvertToRadians(cam.value("fovy", 11.16f)), 1.0f, 0.05f, 100.0f);
+            XMMATRIX IVP = XMMatrixInverse(nullptr, V * P);
+            for (int y = 0; y < h; y += stepPx)
+                for (int x = 0; x < w; x += stepPx) {
+                    const unsigned char* q = &im[(size_t(y) * w + x) * 4];
+                    bool grey = std::abs(q[0] - 97) <= 1 && std::abs(q[1] - 97) <= 1 && std::abs(q[2] - 97) <= 1;
+                    bool green = q[1] > 120 && q[0] < 90 && q[2] < 90;
+                    if (!grey && !green) continue;
+                    float nx = (x + 0.5f) / w * 2 - 1, ny = 1 - (y + 0.5f) / h * 2;
+                    XMVECTOR ra = XMVector3TransformCoord(XMVectorSet(nx, ny, 0, 1), IVP), rb = XMVector3TransformCoord(XMVectorSet(nx, ny, 1, 1), IVP);
+                    XMFLOAT3 o, dir, hit;
+                    XMStoreFloat3(&o, ra);
+                    XMStoreFloat3(&dir, XMVector3Normalize(XMVectorSubtract(rb, ra)));
+                    int mi;
+                    if (!a.skinRay(o, dir, hit, mi)) continue;
+                    V3 H{hit.x, hit.y, hit.z};
+                    int g0 = -1; float bd = 1e30f;
+                    for (int g : alive0) { float dd = len(a.posedPoint(g, 0) - H); if (dd < bd) { bd = dd; g0 = g; } }
+                    if (g0 < 0) continue;
+                    V3 X = onSkin(H + (gr.P[g0][0] - a.posedPoint(g0, 0)));
+                    nPix++;
+                    if (!inRegion(X)) { nOut++; continue; }
+                    if (z.overFace(X) || z.inEar(X, earPad)) { nFace++; continue; }
+                    bool dup = false;
+                    for (auto& s2 : seeds) if (len(s2 - X) < spacing * 0.5f) { dup = true; break; }
+                    if (!dup) seeds.push_back(X);
+                }
+            freeImage(im);
+            std::error_code ec;
+            fs::remove(png, ec);
+        }
+    } else {
+        if (!hasBox && !hasNear) { r["error"] = "give points, shots, or a region (box / near + radius)"; return r; }
+        std::vector<V3> cloud = strandCloud(a, true);
+        Grid clg(0.01f);
+        for (size_t i = 0; i < cloud.size(); i++) clg.add(cloud[i], (int)i);
+        const float cover = c.value("cover_mm", 3.0f) / 1000, coverH = c.value("cover_height_mm", 12.0f) / 1000;
+        const Mesh& m = *hs.m;
+        std::vector<double> acc; double tot = 0;
+        for (auto& t : m.t) {
+            V3 ctr = (m.v[t[0]] + m.v[t[1]] + m.v[t[2]]) * (1.0f / 3);
+            tot += inRegion(ctr) ? 0.5 * len(cross(m.v[t[1]] - m.v[t[0]], m.v[t[2]] - m.v[t[0]])) : 0.0;
+            acc.push_back(tot);
+        }
+        std::mt19937 rs(11);
+        std::uniform_real_distribution<float> U(0.0f, 1.0f);
+        for (int s = 0; s < 40000 && tot > 0; s++) {
+            size_t ti = std::min(m.t.size() - 1, size_t(std::lower_bound(acc.begin(), acc.end(), U(rs) * tot) - acc.begin()));
+            auto& t = m.t[ti];
+            float uu = U(rs), vv = U(rs);
+            if (uu + vv > 1) { uu = 1 - uu; vv = 1 - vv; }
+            V3 X = m.v[t[0]] + (m.v[t[1]] - m.v[t[0]]) * uu + (m.v[t[2]] - m.v[t[0]]) * vv;
+            if (!inRegion(X)) continue;
+            if (z.overFace(X) || z.inEar(X, earPad)) { nFace++; continue; }
+            int vi = hs.nearest(X);
+            if (vi < 0) continue;
+            if (c.value("uncovered_only", true) && hairGap(cloud, clg, X, hs.n[vi], coverH, cover + coverH) < cover) continue;
+            bool dup = false;
+            for (auto& s2 : seeds) if (len(s2 - X) < spacing * 0.5f) { dup = true; break; }
+            if (!dup) seeds.push_back(X);
+        }
+    }
+    // ---- Poisson + order: nearest the existing roots first, each new root counts for the next ones
+    std::vector<V3> roots;
+    for (int g : alive0) roots.push_back(gr.P[g][0]);
+    std::vector<char> used(seeds.size(), 0);
+    std::vector<V3> order;
+    if (pointsExact) for (auto& X : seeds) { if ((int)order.size() < maxNew) order.push_back(X); }
+    while (!pointsExact && (int)order.size() < maxNew) {
+        int bi = -1; float bd = 1e30f;
+        for (size_t i = 0; i < seeds.size(); i++) {
+            if (used[i]) continue;
+            float d = 1e30f;
+            for (auto& q : roots) d = std::min(d, len(q - seeds[i]));
+            if (d < clearM) { used[i] = 1; continue; }
+            if (d < bd) { bd = d; bi = (int)i; }
+        }
+        if (bi < 0) break;
+        used[bi] = 1;
+        bool tooClose = false;
+        for (auto& q : order) if (len(q - seeds[bi]) < spacing) { tooClose = true; break; }
+        if (tooClose) continue;
+        order.push_back(seeds[bi]);
+        roots.push_back(seeds[bi]);
+    }
+    // ---- strands
+    auto localFlow = [&](V3 X, V3 n) {
+        V3 acc{0, 0, 0};
+        int k = 0;
+        for (int g : alive0) {
+            float d = len(gr.P[g][0] - X);
+            if (d > flowM) continue;
+            const Guide& G = gr.P[g];
+            auto sl = arcLen(G);
+            size_t j = 1;
+            while (j + 1 < G.size() && sl[j] < 0.015f) j++;
+            acc = acc + nrmz(G[j] - G[0]) * (1.0f / (d + 0.005f));
+            k++;
+        }
+        V3 t = acc - n * dot(acc, n);
+        return k ? nrmz(t) : V3{0, 0, 0};
+    };
+    // join targets: never a guide that hangs over the face (front locks), nor one in join_exclude
+    std::vector<char> joinBad(gr.P.size(), 0);
+    for (int g : alive0) for (size_t k = 1; k < gr.P[g].size(); k++) if (z.overFace(gr.P[g][k])) { joinBad[g] = 1; break; }
+    if (c.contains("join_exclude")) for (int g : a.selectGuides(c["join_exclude"])) if (g >= 0 && g < (int)joinBad.size()) joinBad[g] = 1;
+    const float joinSpread = c.value("join_spread_mm", 0.0f) / 1000;
+    std::vector<int> joinUse(gr.P.size(), 0);
+    json euv = c.contains("uv") && c["uv"].is_array() ? c["uv"] : typicalUv(a);
+    if (euv.is_null()) euv = "src";
+    int id = maxOpId(gr), grp = 1000 + (++grpId), n = 0, rejFace = 0, rejEar = 0, rejShort = 0, rejDir = 0, joined = 0;
+    std::vector<json> ops;
+    json planned = json::array(), rejSample = json::array();
+    for (auto& X : order) {
+        V3 nX;
+        hs.sd(X, &nX);
+        V3 d = hasDir ? dirG : localFlow(X, nX);
+        if (hasDir && c.value("mirror_x", true) && (X.x - C.x) < 0) d.x = -d.x;   // direction is given for the +x side
+        if (len(d) < 0.5f) { rejDir++; continue; }
+        std::vector<V3> poly{X};
+        V3 p = X;
+        float s = 0;
+        int guard = 0;
+        if (overEar) {
+            int es = -1;
+            for (int k = 0; k < 2; k++)
+                if (z.hasEar[k] && ((z.earLo[k].x + z.earHi[k].x) * 0.5f - C.x) * (X.x - C.x) > 0) es = k;
+            if (es >= 0) {
+                const V3 lo = z.earLo[es], hi = z.earHi[es];
+                float front = z.fwd > 0 ? hi.y : lo.y, back = z.fwd > 0 ? lo.y : hi.y;
+                float topZ = hi.z + earClear;
+                if (z.fwd * (X.y - back) > 0 && (X.z < topZ || earAll)) {   // in front of the ear's back edge and below the clearance line
+                    std::vector<std::pair<float, float>> wp;   // (y, z) waypoints, x follows the skin
+                    // keep the strands layered, not bundled: a higher / farther-forward root passes higher over the ear
+                    float tz = std::clamp((X.z - lo.z) / std::max(topZ - lo.z, 1e-3f), 0.0f, 1.0f);
+                    float ty = std::clamp(z.fwd * (X.y - back) / std::max(z.fwd * (front - back) + 0.04f, 1e-3f), 0.0f, 1.0f);
+                    // over_ear_keep: share of the root's height above (ear top - 2 cm) kept over the ear (strands stay
+                    // roughly parallel instead of fanning into one point); over_ear_spread_mm adds a little by depth
+                    float wz = topZ + earKeep * std::max(0.0f, X.z - (hi.z - earBase)) + earSpread * (0.3f * tz + 0.3f * ty);
+                    if (z.fwd * (X.y - front) > earFront) wp.push_back({front + z.fwd * earFront, wz});
+                    wp.push_back({back - z.fwd * (earBehind + earSpread * 0.5f * (1.0f - tz)), wz});
+                    size_t wi = 0;
+                    while (wi < wp.size() && guard++ < 600) {
+                        V3 T{p.x, wp[wi].first, wp[wi].second};
+                        V3 dw = T - p; dw.x = 0;
+                        if (len(dw) < stepM * 1.5f) { wi++; continue; }
+                        V3 nn;
+                        hs.sd(p, &nn);
+                        V3 dd = nrmz(dw), t = dd - nn * dot(dd, nn);
+                        if (len(t) < 1e-3f) break;
+                        V3 q = p + nrmz(t) * stepM;
+                        V3 n2;
+                        float sdq = hs.sd(q, &n2);
+                        // over the ear: never snap down onto the ear itself, only keep clear of it
+                        if (z.inEar(q - n2 * sdq, 0.003f)) { if (sdq < liftM) q = q + n2 * (liftM - sdq); }
+                        else q = q - n2 * (sdq - liftM);
+                        s += len(q - p);
+                        poly.push_back(q);
+                        p = q;
+                    }
+                    s = 0;   // the walk in "direction" starts behind the ear
+                }
+            }
+        }
+        while (s < walkM && guard++ < 1000) {
+            V3 nn;
+            hs.sd(p, &nn);
+            V3 t = d - nn * dot(d, nn);
+            if (len(t) < 1e-3f) break;
+            V3 q = p + nrmz(t) * stepM;
+            V3 n2;
+            float sd = hs.sd(q, &n2);
+            float want = baseM + (liftM - baseM) * std::min(1.0f, (s + stepM) / std::max(walkM, 1e-4f));
+            q = q - n2 * (sd - want);
+            if (stopEar >= 0 && z.inEar(q, earPad + stopEar)) break;
+            s += len(q - p);
+            poly.push_back(q);
+            p = q;
+        }
+        V3 tEnd = nrmz(poly.back() - poly[poly.size() >= 3 ? poly.size() - 3 : 0]);
+        if (join) {
+            int bg = -1; size_t bk = 0; float bdist = joinM;
+            for (int g : alive0) {
+                if (joinBad[g]) continue;
+                const Guide& G = gr.P[g];
+                auto sl = arcLen(G);
+                // join_spread_mm: each earlier join onto a guide counts as that much extra distance, so a row of
+                // new strands spreads over several targets instead of bundling into one tail
+                const float pen = joinSpread * (g < (int)joinUse.size() ? joinUse[g] : 0);
+                for (size_t k = 1; k + 1 < G.size(); k++) {
+                    if (sl[k] < 0.01f) continue;
+                    float dd = len(G[k] - p) + pen;
+                    if (dd >= bdist) continue;
+                    if (dot(nrmz(G[k + 1] - G[k]), tEnd) < 0.2f) continue;
+                    bdist = dd; bg = g; bk = k;
+                }
+            }
+            if (bg >= 0) {
+                const Guide& G = gr.P[bg];
+                auto sl = arcLen(G);
+                V3 delta = p - G[bk];
+                for (size_t k = bk + 1; k < G.size(); k++) {
+                    float f = std::max(0.0f, 1.0f - (sl[k] - sl[bk]) / std::max(fadeM, 1e-4f));
+                    poly.push_back(G[k] + delta * (fadeKeep + (1.0f - fadeKeep) * f));   // keep part of the gap: no copies stacked on one guide
+                }
+                if (bg < (int)joinUse.size()) joinUse[bg]++;
+                joined++;
+            }
+        }
+        if (maxLen > 0) {
+            std::vector<V3> cut{poly[0]};
+            float L = 0;
+            for (size_t k = 1; k < poly.size(); k++) {
+                float e = len(poly[k] - poly[k - 1]);
+                if (L + e >= maxLen) { cut.push_back(poly[k - 1] + (poly[k] - poly[k - 1]) * ((maxLen - L) / std::max(e, 1e-6f))); break; }
+                L += e; cut.push_back(poly[k]);
+            }
+            poly = cut;
+        }
+        Guide P0(poly.begin(), poly.end());
+        if (P0.size() < 2 || guideLen(P0) < minLen) { rejShort++; continue; }
+        Guide G = resampleSmooth(P0, std::max(gr.K, 3));
+        G[0] = X;
+        pushOut(hr, G, standoff);
+        bool fc = false, er = false;
+        for (size_t k = 1; k < G.size(); k++) { if (z.overFace(G[k])) fc = true; if (z.inEar(G[k], earPad)) er = true; }
+        if (fc) { rejFace++; continue; }
+        if (maxTurn > 0) {   // max_turn_deg: drop strands that kink / loop (short walks squeezed by the push-out)
+            float tt = 0;
+            for (size_t k = 1; k + 1 < G.size(); k++) {
+                V3 u = G[k] - G[k - 1], v = G[k + 1] - G[k];
+                if (len(u) > 1e-6f && len(v) > 1e-6f) tt += std::acos(std::clamp(dot(nrmz(u), nrmz(v)), -1.0f, 1.0f));
+            }
+            if (tt * 57.2958f > maxTurn) { rejLoop++; continue; }
+        }
+        if (er) { rejEar++; if (rejSample.size() < 4) rejSample.push_back({{"root", v3j(X)}, {"points", ptsJson(G)}}); continue; }
+        int src = alive0[0]; float bd = 1e30f;
+        for (int g : alive0) { float dd = len(gr.P[g][0] - X); if (dd < bd) { bd = dd; src = g; } }
+        V3 rs = gr.P[src][0], dd = X - rs;
+        ops.push_back({{"op", "duplicate"}, {"root", rootJ(rs)}, {"d", rootJ(dd)}, {"edge_face", true}, {"edge_uv", euv}, {"id", ++id}, {"grp", grp}});
+        ops.push_back({{"op", "reshape"}, {"root", rootJ(G[0])}, {"points", ptsJson(G)}, {"id", ++id}, {"grp", grp}});
+        if (planned.size() < 300) planned.push_back({{"root", v3j(X)}, {"length", std::round(guideLen(G) * 1e4f) / 1e4f}, {"tip", v3j(G.back())}});
+        n++;
+    }
+    r["seeds"] = seeds.size(); r["ordered"] = order.size();
+    if (nPix) r["skin_pixels_seen"] = nPix;
+    r["skipped"] = {{"outside_region", nOut}, {"face_or_ear_seed", nFace}};
+    r["rejected"] = {{"over_face", rejFace}, {"on_ear", rejEar}, {"too_short", rejShort}, {"no_flow", rejDir}, {"loops", rejLoop}};
+    r["joined"] = joined;
+    if (rejEar) r["ear_rejected_sample"] = rejSample;
+    for (int k = 0; k < 2; k++) if (z.hasEar[k]) r["ear_boxes"].push_back({v3j(z.earLo[k]), v3j(z.earHi[k])});
+    if (dry) { r["would_plant"] = n; r["planned"] = planned; return r; }
+    size_t f0 = gr.faces.size(), g0 = gr.P.size();
+    for (auto& o : ops) gr.ops.push_back(o);
+    gr.redo.clear(); gr.replay(); a.smap.ensure(gr.P.size()); a.editsChanged();
+    if (dropEarFaces || faceMaxM > 0) {
+        int nd = 0;
+        for (size_t f = f0; f < gr.faces.size(); f++) {
+            const auto& F = gr.faces[f];
+            V3 A = gr.P[F.g[0]][0], B = gr.P[F.g[1]][0], D = gr.P[F.g[2]][0];
+            bool bad = faceMaxM > 0 && (len(A - B) > faceMaxM || len(B - D) > faceMaxM || len(D - A) > faceMaxM);
+            for (int i = 0; i <= 6 && !bad && dropEarFaces; i++)
+                for (int j = 0; i + j <= 6 && !bad; j++) {
+                    V3 Q = A + (B - A) * (i / 6.0f) + (D - A) * (j / 6.0f);
+                    if (z.inEar(Q, 0.0f)) bad = true;
+                }
+            if (!bad) continue;
+            gr.ops.push_back({{"op", "delete_face"}, {"roots", {rootJ(A), rootJ(B), rootJ(D)}}, {"id", ++id}, {"grp", grp}});
+            nd++;
+        }
+        if (nd) { gr.replay(); a.editsChanged(); }
+        r["faces_dropped"] = nd;
+    }
+    int dropped = dropForBudget(a, n, 2, maxRatio, ignore);
+    if (dropped) r["dropped_for_budget"] = dropped;
+    r["planted"] = n; r["new_faces"] = (long)gr.faces.size() - (long)f0; r["planned"] = planned; r["edge_uv"] = euv;
+    r["planted_without_growth_face"] = faceless(gr, g0);
+    r["new_first_index"] = (long)g0;
+    return r;
+}
+
+// face_texel (2026-10-15, opt-in, Studio-only): per-area look through the growth-face uv. Every texture-driven fur
+// parameter (root / tip colour, density, root / tip width, clump, wave) is read at the face uv, so moving the corners of
+// the selected guides to another texel changes their colour / density without touching the rest of the groom. Targets
+// are factors on the texel values the selected corners have now: root_brightness / tip_brightness (colour maps, mean
+// RGB), density (density map), width (root width map); every other map is held at its current value. The search
+// prefers flat areas (the GPU filters bilinearly). Emits one face_uv op (corners "guide": only the selected guides'
+// corners, so the interpolated hair blends into the neighbours; "face": whole faces).
+static json faceTexel(App& a, const json& c, int& grpId) {
+    using namespace t6;
+    json r;
+    Groom& gr = a.groom;
+    const DeskPack& pk = a.pack;
+    std::vector<int> sel = a.selectGuides(c.value("where", json::object()));
+    if (sel.empty()) { r["error"] = "no guides selected"; return r; }
+    std::set<int> S(sel.begin(), sel.end());
+    double su = 0, sv = 0; int nc = 0;
+    for (auto& F : gr.faces) for (int q = 0; q < 3; q++) if (S.count(F.g[q])) { su += F.uv[2 * q] - std::floor(F.uv[2 * q]); sv += F.uv[2 * q + 1] - std::floor(F.uv[2 * q + 1]); nc++; }
+    if (!nc) { r["error"] = "the selected guides have no growth face"; return r; }
+    float u0 = float(su / nc), v0 = float(sv / nc);
+    struct Map { std::string key, file; unsigned char* im = nullptr; int w = 0, h = 0; bool colour = false; int chn = 0; float target = -1, weight = 1; };
+    std::vector<Map> maps;
+    auto addMap = [&](const json& grpJ, const std::string& section, const std::string& field, const std::string& key, bool colour) {
+        if (!grpJ.is_object() || !grpJ.contains(section) || !grpJ[section].is_object()) return;
+        json t = grpJ[section].value(field, json());
+        if (!t.is_object() || !t.contains("@import")) return;
+        std::string imp = t["@import"].get<std::string>();
+        if (!pk.textures.contains(imp)) return;
+        Map m; m.key = key; m.file = pk.textures[imp].value("file", ""); m.colour = colour;
+        if (key == "density") m.chn = pk.densityChannel == "GREEN" ? 1 : pk.densityChannel == "BLUE" ? 2 : pk.densityChannel == "ALPHA" ? 3 : 0;
+        if (m.file.empty()) return;
+        m.im = loadImage(pk.dir + "\\" + m.file, &m.w, &m.h);
+        if (m.im) maps.push_back(m);
+    };
+    addMap(pk.graphical, "color", "rootColorTex", "root_colour", true);
+    addMap(pk.graphical, "color", "tipColorTex", "tip_colour", true);
+    addMap(pk.physical, "volume", "densityTex", "density", false);
+    addMap(pk.physical, "strandWidth", "rootWidthTex", "root_width", false);
+    addMap(pk.physical, "strandWidth", "tipWidthTex", "tip_width", false);
+    addMap(pk.physical, "clumping", "clumpScaleTex", "clump_scale", false);
+    addMap(pk.physical, "clumping", "clumpNoiseTex", "clump_noise", false);
+    addMap(pk.physical, "waveness", "waveFreqTex", "wave_freq", false);
+    addMap(pk.physical, "length", "lengthTex", "length", false);
+    if (maps.empty()) { r["error"] = "this fur has no texture maps: nothing to pick per face"; return r; }
+    auto val = [](const Map& m, float u, float v) {
+        u -= std::floor(u); v -= std::floor(v);
+        int x = std::clamp(int(u * m.w), 0, m.w - 1), y = std::clamp(int(v * m.h), 0, m.h - 1);
+        const unsigned char* p = &m.im[(size_t(y) * m.w + x) * 4];
+        return m.colour ? (p[0] + p[1] + p[2]) / 3.0f : float(p[m.chn]);
+    };
+    json now = json::object(), want = json::object();
+    for (auto& m : maps) {
+        float cur = val(m, u0, v0);
+        now[m.key] = std::round(cur * 10) / 10;
+        float f = 1;
+        if (m.key == "root_colour" && c.contains("root_brightness")) f = c["root_brightness"].get<float>();
+        else if (m.key == "tip_colour" && c.contains("tip_brightness")) f = c["tip_brightness"].get<float>();
+        else if (m.key == "density" && c.contains("density")) f = c["density"].get<float>();
+        else if (m.key == "root_width" && c.contains("width")) f = c["width"].get<float>();
+        m.target = std::clamp(cur * f, 0.0f, 255.0f);
+        m.weight = f != 1 ? 2.0f : (m.key == "density" ? 3.0f : 1.0f);
+        want[m.key] = std::round(m.target * 10) / 10;
+    }
+    int N = std::clamp(c.value("grid", 256), 16, 1024);
+    float best = 1e30f, bu = u0, bv = v0;
+    for (int y = 2; y < N - 2; y++)
+        for (int x = 2; x < N - 2; x++) {
+            float u = (x + 0.5f) / N, v = (y + 0.5f) / N, sc = 0;
+            for (auto& m : maps) {
+                float q = val(m, u, v), var = 0;
+                for (int dy = -2; dy <= 2; dy += 2)
+                    for (int dx = -2; dx <= 2; dx += 2) var = std::max(var, std::fabs(val(m, (x + dx + 0.5f) / N, (y + dy + 0.5f) / N) - q));
+                sc += m.weight * (std::fabs(q - m.target) + 0.5f * var) / 255.0f;
+            }
+            if (sc < best) { best = sc; bu = u; bv = v; }
+        }
+    json got = json::object();
+    for (auto& m : maps) { got[m.key] = std::round(val(m, bu, bv) * 10) / 10; freeImage(m.im); }
+    r["uv_before"] = {r4(u0), r4(v0)}; r["uv"] = {r4(bu), r4(bv)};
+    r["texel_before"] = now; r["texel_target"] = want; r["texel_chosen"] = got; r["cost"] = best;
+    r["guides"] = sel.size();
+    if (c.value("list_only", false)) return r;
+    json roots = json::array();
+    for (int g : sel) roots.push_back(rootJ(gr.P[g][0]));
+    int id = maxOpId(gr), grp = 1000 + (++grpId);
+    gr.ops.push_back({{"op", "face_uv"}, {"roots", roots}, {"uv", {r4(bu), r4(bv)}}, {"corners", c.value("corners", std::string("guide"))}, {"id", ++id}, {"grp", grp}});
+    gr.redo.clear(); gr.replay(); a.editsChanged();
+    return r;
+}
+
+// ------------------------------------------------------------------------------------------------ 2026-10-15 opt-in
+// soften_hairline (Studio-only): a planted hairline read as a square, blunt wall (Geralt: every edge root a full-density,
+// full-width hair, the roots in one straight row along the growth-mesh border). The guides on the OPEN EDGE of the growth
+// mesh inside "where" (row 1) and the guides sharing a face with them (row 2, rows: 2) get growth-face texels with
+// less density / thinner roots (density [0.35, 0.7], width [0.6, 0.85] of their current texel, as studio_face_texel,
+// corners "guide": the fade runs across the faces), and the row-1 roots are moved jitter_mm (3) back or forward along
+// their own flow (random per guide, seed), the shift fading out over 30 mm of the strand, so the line is irregular.
+// Guides and faces stay. list_only: rows only.
+static json softenHairline(App& a, const json& c, int& grpId) {
+    using namespace t6;
+    json r;
+    Groom& gr = a.groom;
+    HeadSkin hs = headSkin(a);
+    std::vector<int> sel = a.selectGuides(c.value("where", json{{"front", true}}));
+    std::set<int> S(sel.begin(), sel.end());
+    std::map<std::pair<int, int>, int> ec;
+    for (auto& F : gr.faces) {
+        if (!gr.alive[F.g[0]] || !gr.alive[F.g[1]] || !gr.alive[F.g[2]]) continue;
+        for (int q = 0; q < 3; q++) { int x = F.g[q], y = F.g[(q + 1) % 3]; ec[{std::min(x, y), std::max(x, y)}]++; }
+    }
+    std::set<int> row1, row2;
+    for (auto& [k, n] : ec) if (n == 1) { if (S.count(k.first)) row1.insert(k.first); if (S.count(k.second)) row1.insert(k.second); }
+    const int rows = std::clamp(c.value("rows", 2), 1, 2);
+    if (rows > 1)
+        for (auto& F : gr.faces) {
+            bool has1 = false;
+            for (int q = 0; q < 3; q++) has1 = has1 || row1.count(F.g[q]);
+            if (has1) for (int q = 0; q < 3; q++) if (!row1.count(F.g[q]) && S.count(F.g[q])) row2.insert(F.g[q]);
+        }
+    r["row1"] = row1.size(); r["row2"] = row2.size();
+    r["row1_guides"] = std::vector<int>(row1.begin(), row1.end());
+    if (c.value("list_only", false) || row1.empty()) return r;
+    json dens = c.value("density", json::array({0.35, 0.7})), wid = c.value("width", json::array({0.6, 0.85}));
+    std::vector<std::set<int>*> R{&row1, &row2};
+    json tex = json::array();
+    // one face_texel per row AND per current texel (guides on different uvs: their mean uv is a meaningless texel)
+    auto uvKey = [&](int g) {
+        for (auto& F : gr.faces) for (int q = 0; q < 3; q++) if (F.g[q] == g)
+            return std::make_pair(int(std::lround((F.uv[2 * q] - std::floor(F.uv[2 * q])) * 512)), int(std::lround((F.uv[2 * q + 1] - std::floor(F.uv[2 * q + 1])) * 512)));
+        return std::make_pair(-1, -1);
+    };
+    for (int k = 0; k < rows; k++) {
+        if (R[k]->empty()) continue;
+        std::map<std::pair<int, int>, std::vector<int>> groups;
+        for (int g : *R[k]) groups[uvKey(g)].push_back(g);
+        for (auto& [key, ids] : groups) {
+            if (key.first < 0) continue;
+            json cc{{"where", {{"indices", ids}}}, {"corners", "guide"},
+                    {"density", dens[k].get<float>()}, {"width", wid[k].get<float>()}, {"root_brightness", 1.0}, {"tip_brightness", 1.0}};
+            json t = faceTexel(a, cc, grpId);
+            tex.push_back({{"row", k + 1}, {"guides", ids.size()}, {"before", t.value("texel_before", json())}, {"chosen", t.value("texel_chosen", t)}});
+        }
+    }
+    r["texels"] = tex;
+    const float jit = c.value("jitter_mm", 3.0f) / 1000;
+    if (jit > 0 && hs.m) {
+        std::mt19937 rng(c.value("seed", 7));
+        std::uniform_real_distribution<float> U(-1.0f, 1.0f);
+        int id = maxOpId(gr), grp = 1000 + (++grpId), nj = 0;
+        for (int g : row1) {
+            const Guide& G = gr.P[g];
+            auto sl = arcLen(G);
+            size_t j = 1;
+            while (j + 1 < G.size() && sl[j] < 0.01f) j++;
+            V3 nn;
+            hs.sd(G[0], &nn);
+            V3 f = G[j] - G[0];
+            f = f - nn * dot(f, nn);
+            if (len(f) < 1e-5f) continue;
+            V3 off = nrmz(f) * (U(rng) * jit);
+            Guide Q = G;
+            for (size_t k = 0; k < Q.size(); k++) Q[k] = Q[k] + off * std::max(0.0f, 1.0f - sl[k] / 0.03f);
+            V3 n2;
+            float sd = hs.sd(Q[0], &n2);
+            Q[0] = Q[0] - n2 * sd;
+            gr.ops.push_back({{"op", "reshape"}, {"root", rootJ(G[0])}, {"points", ptsJson(Q)}, {"id", ++id}, {"grp", grp}});
+            nj++;
+        }
+        if (nj) { gr.redo.clear(); gr.replay(); a.editsChanged(); }
+        r["jittered"] = nj;
+    }
+    return r;
+}
+
+// ------------------------------------------------------------------------------------------------ 2026-10-15 opt-in
+// fade_hairline (Studio-only): a hairline that grows out of the skin instead of starting as a wall of cut-off strands.
+// HairWorks samples every fur map (density, root / tip colour, widths, clump, waves) per hair at the hair's own uv,
+// interpolated across the growth face from its 3 corner uvs. So when the corners of the edge rows sit on a DENSITY
+// RAMP of the fur's own density map (the vanilla hairline fade painted in it), the hair density fades in across those
+// faces hair by hair: the face outline (stair steps) disappears, edge strands are sparse, and the ramp's thinner root
+// width comes with it. Rows = growth-face rings from the open edge of the growth mesh (row 1 = on the edge). Each
+// edge guide inside "where" takes the uv of its nearest interior guide (deeper than rows) as the start P. The whole
+// density map is searched for a monotone ramp (at least min_ramp_px long, every stride_px) from 95 % of P's density
+// down to low (12) along which the other maps stay close to P's (colour_tol, width_tol, clump_tol, wave_tol: no colour
+// / wave stripes) and whose top is reached from P by a clean straight uv segment; row k gets the point of that ramp
+// where density = density[k] x P's (default rows 3: [0.06, 0.39, 0.72]). The fade corners then lie on one straight uv
+// segment, so the interpolated hairs never cross unrelated texels. Also lays the
+// root part of the edge guides on the skin (flat_mm 6, lift_mm 0.6 above the skin, flat_rows 2; 0 = off) so the first
+// hairs lie in the flow instead of standing out as stubs. Guides and faces stay. list_only: report only.
+static json fadeHairline(App& a, const json& c, int& grpId) {
+    using namespace t6;
+    json r;
+    Groom& gr = a.groom;
+    const DeskPack& pk = a.pack;
+    std::vector<int> sel = a.selectGuides(c.value("where", json{{"all", true}}));
+    std::set<int> S(sel.begin(), sel.end());
+    const int rows = std::clamp(c.value("rows", 3), 1, 6);
+    json dens = c.value("density", json());
+    std::vector<float> fr;
+    if (dens.is_array() && (int)dens.size() >= rows) for (int k = 0; k < rows; k++) fr.push_back(dens[k].get<float>());
+    else for (int k = 0; k < rows; k++) fr.push_back(rows == 1 ? 0.3f : 0.06f + (0.72f - 0.06f) * k / float(rows - 1));
+    // rings from the open edge
+    // only a visible hairline counts: an open edge whose outward side (probe_mm beyond the edge, away from the face)
+    // has neither other roots within probe_radius_mm nor hair lying over it (within cover_mm; guides in cover_exclude,
+    // e.g. front locks hanging over the forehead, ignored). Holes inside the hair and the nape under long hair are left alone
+    std::map<std::pair<int, int>, int> ec;
+    std::map<std::pair<int, int>, int> third;
+    std::map<int, std::set<int>> nb;
+    for (auto& F : gr.faces) {
+        if (!gr.alive[F.g[0]] || !gr.alive[F.g[1]] || !gr.alive[F.g[2]]) continue;
+        for (int q = 0; q < 3; q++) {
+            int x = F.g[q], y = F.g[(q + 1) % 3];
+            ec[{std::min(x, y), std::max(x, y)}]++;
+            third[{std::min(x, y), std::max(x, y)}] = F.g[(q + 2) % 3];
+            nb[x].insert(y); nb[y].insert(x);
+        }
+    }
+    const float probeM = c.value("probe_mm", 6.0f) / 1000, probeR = c.value("probe_radius_mm", 5.0f) / 1000, coverM = c.value("cover_mm", 5.0f) / 1000;
+    const int coverMin = std::max(1, c.value("cover_min", 2));
+    std::set<int> coverEx;
+    if (c.contains("cover_exclude")) for (int g : a.selectGuides(c["cover_exclude"])) coverEx.insert(g);
+    // facing: only edges whose outward direction (edit frame) is within facing_deg of one of these vectors count
+    // (e.g. [[0,1,0],[0,0,-1]] = the front and lower edges of a temple patch, not its back edge at the ear)
+    std::vector<V3> facing;
+    if (c.contains("facing") && c["facing"].is_array())
+        for (auto& f : c["facing"]) if (f.is_array() && f.size() == 3) facing.push_back(nrmz(V3{f[0].get<float>(), f[1].get<float>(), f[2].get<float>()}));
+    const float facingCos = std::cos(c.value("facing_deg", 70.0f) * 3.14159265f / 180);
+    std::map<int, int> depth;
+    std::vector<int> front;
+    int holeEdges = 0, borderEdges = 0, offFacing = 0;
+    std::map<int, V3> outward;   // row-1 guide -> sum of its border edges' outward directions
+    for (auto& [k, n] : ec) {
+        if (n != 1) continue;
+        V3 A = gr.P[k.first][0], B = gr.P[k.second][0], T = gr.P[third[k]][0], M = (A + B) * 0.5f;
+        V3 e = nrmz(B - A), o = M - T;
+        o = o - e * dot(o, e);
+        if (len(o) < 1e-6f) continue;
+        if (!facing.empty()) {
+            float best = -2;
+            for (auto& f : facing) best = std::max(best, dot(nrmz(o), f));
+            if (best < facingCos) { offFacing++; continue; }
+        }
+        V3 Q = M + nrmz(o) * probeM;
+        int nNear = 0;
+        for (size_t g = 0; g < gr.P.size() && nNear < coverMin; g++) {
+            if (!gr.alive[g] || (int)g == k.first || (int)g == k.second || coverEx.count((int)g)) continue;
+            const Guide& G = gr.P[g];
+            if (len(G[0] - Q) < probeR) { nNear++; continue; }
+            for (size_t j = 0; j + 1 < G.size(); j++) {   // hair lying over the probe point covers it
+                V3 ab = G[j + 1] - G[j];
+                float t = std::clamp(dot(Q - G[j], ab) / std::max(dot(ab, ab), 1e-12f), 0.0f, 1.0f);
+                if (len(G[j] + ab * t - Q) < coverM) { nNear++; break; }
+            }
+        }
+        if (nNear >= coverMin) { holeEdges++; continue; }
+        borderEdges++;
+        for (int g : {k.first, k.second}) {
+            outward[g] = outward[g] + nrmz(o);
+            if (!depth.count(g)) { depth[g] = 1; front.push_back(g); }
+        }
+    }
+    r["border_edges"] = borderEdges; r["hole_edges"] = holeEdges;
+    if (!facing.empty()) r["edges_not_facing"] = offFacing;
+    { json b1 = json::array(); for (auto& [g, d] : depth) if (d == 1) b1.push_back(g); r["row1_guides"] = b1; }
+    for (int d = 2; d <= rows + 1 && !front.empty(); d++) {
+        std::vector<int> nx;
+        for (int g : front) for (int h : nb[g]) if (!depth.count(h)) { depth[h] = d; nx.push_back(h); }
+        front.swap(nx);
+    }
+    auto uvOf = [&](int g, float& u, float& v) {
+        for (auto& F : gr.faces) for (int q = 0; q < 3; q++) if (F.g[q] == g) { u = F.uv[2 * q] - std::floor(F.uv[2 * q]); v = F.uv[2 * q + 1] - std::floor(F.uv[2 * q + 1]); return true; }
+        return false;
+    };
+    std::vector<int> inner;
+    for (size_t g = 0; g < gr.P.size(); g++) if (gr.alive[g] && (!depth.count((int)g) || depth[(int)g] > rows)) inner.push_back((int)g);
+    // fade guides: depth <= rows, in where; start texel = their nearest interior guide's uv
+    const float nearM = c.value("inner_mm", 40.0f) / 1000;
+    std::map<std::pair<int, int>, std::vector<std::pair<int, int>>> groups;   // P key -> (guide, depth)
+    std::map<std::pair<int, int>, std::pair<float, float>> Puv;
+    int noInner = 0;
+    for (auto& [g, d] : depth) {
+        if (d > rows || !S.count(g)) continue;
+        int best = -1; float bd = nearM;
+        for (int h : inner) { float dd = len(gr.P[h][0] - gr.P[g][0]); if (dd < bd) { bd = dd; best = h; } }
+        float u, v;
+        if (best < 0 || !uvOf(best, u, v)) {   // no interior guide near: the guide's own texel is the start
+            noInner++;
+            if (!uvOf(g, u, v)) continue;
+        }
+        auto key = std::make_pair(int(std::lround(u * 512)), int(std::lround(v * 512)));
+        groups[key].push_back({g, d}); Puv[key] = {u, v};
+    }
+    std::map<int, int> rowCount;
+    for (auto& [k, L] : groups) for (auto& gd : L) rowCount[gd.second]++;
+    r["rows"] = json::object();
+    for (auto& [d, n] : rowCount) r["rows"][std::to_string(d)] = n;
+    r["no_inner"] = noInner; r["inner_guides"] = inner.size();
+    { std::map<int, int> dc; for (auto& [g, d] : depth) dc[d]++; json dj = json::object(); for (auto& [d, n] : dc) dj[std::to_string(d)] = n; r["depth_all"] = dj; }
+    // fur maps
+    struct Map { std::string key, file; unsigned char* im = nullptr; int w = 0, h = 0; bool colour = false; int chn = 0; float tol = 0; };
+    std::vector<Map> maps;
+    const float ctol = c.value("colour_tol", 30.0f), wtol = c.value("width_tol", 40.0f), ktol = c.value("clump_tol", 60.0f), vtol = c.value("wave_tol", 60.0f);
+    auto addMap = [&](const json& grpJ, const std::string& section, const std::string& field, const std::string& key, bool colour, float tol) {
+        if (!grpJ.is_object() || !grpJ.contains(section) || !grpJ[section].is_object()) return;
+        json t = grpJ[section].value(field, json());
+        if (!t.is_object() || !t.contains("@import")) return;
+        std::string imp = t["@import"].get<std::string>();
+        if (!pk.textures.contains(imp)) return;
+        Map m; m.key = key; m.file = pk.textures[imp].value("file", ""); m.colour = colour; m.tol = tol;
+        if (key == "density") m.chn = pk.densityChannel == "GREEN" ? 1 : pk.densityChannel == "BLUE" ? 2 : pk.densityChannel == "ALPHA" ? 3 : 0;
+        if (m.file.empty()) return;
+        m.im = loadImage(pk.dir + "\\" + m.file, &m.w, &m.h);
+        if (m.im) maps.push_back(m);
+    };
+    addMap(pk.physical, "volume", "densityTex", "density", false, 0);
+    addMap(pk.graphical, "color", "rootColorTex", "root_colour", true, ctol);
+    addMap(pk.graphical, "color", "tipColorTex", "tip_colour", true, ctol);
+    addMap(pk.physical, "strandWidth", "rootWidthTex", "root_width", false, wtol);
+    addMap(pk.physical, "strandWidth", "tipWidthTex", "tip_width", false, wtol);
+    addMap(pk.physical, "clumping", "clumpScaleTex", "clump_scale", false, ktol);
+    addMap(pk.physical, "waveness", "waveFreqTex", "wave_freq", false, vtol);
+    if (maps.empty() || maps[0].key != "density") { for (auto& m : maps) freeImage(m.im); r["error"] = "this fur has no density map: no ramp to fade along"; return r; }
+    auto val = [](const Map& m, float u, float v) {
+        u -= std::floor(u); v -= std::floor(v);
+        int x = std::clamp(int(u * m.w), 0, m.w - 1), y = std::clamp(int(v * m.h), 0, m.h - 1);
+        const unsigned char* p = &m.im[(size_t(y) * m.w + x) * 4];
+        return m.colour ? (p[0] + p[1] + p[2]) / 3.0f : float(p[m.chn]);
+    };
+    const float low = c.value("low", 12.0f);
+    const Map& D = maps[0];
+    const float extM = c.value("extend_mm", 0.0f) / 1000, extDens = c.value("extend_density", 0.12f), extLen = c.value("extend_length", 0.45f);
+    const float flatX = c.value("extend_flat_mm", 8.0f) / 1000, liftX = c.value("extend_lift_mm", 0.8f) / 1000;
+    HeadSkin hsX = extM > 0 ? headSkin(a) : HeadSkin();
+    int extended = 0;
+    json out = json::array();
+    std::vector<json> ops;
+    int id = maxOpId(gr), grp = 1000 + (++grpId), moved = 0;
+    for (auto& [key, L] : groups) {
+        float u0 = Puv[key].first, v0 = Puv[key].second;
+        float d0 = val(D, u0, v0);
+        json gj{{"start_uv", {r4(u0), r4(v0)}}, {"start_density", d0}, {"guides", L.size()}};
+        { json ids = json::array(); for (auto& gd : L) ids.push_back(gd.first); gj["ids"] = ids; }
+        if (d0 < 40) { gj["skip"] = "start texel has almost no density"; out.push_back(gj); continue; }
+        std::vector<float> ref;
+        for (auto& m : maps) ref.push_back(val(m, u0, v0));
+        // ramp search over the whole density map: every mid-density pixel (25..75 % of P's density) is a candidate;
+        // walk up its gradient to the top (95 % of P's density) and down to "low"; the ramp must be monotone, at
+        // least min_ramp_px long, keep the other maps near P's, and the straight uv segment from P to the ramp top
+        // must be clean too (the faces between the fade rows and the interior sample along it).
+        float bestCost = 1e30f; std::vector<std::pair<float, float>> bestPath; std::vector<float> bestDen;
+        const float relax = c.value("relax", 2.0f);
+        float tolK = 1;
+        for (int attempt = 0; attempt < 2 && bestPath.empty(); attempt++) {
+        tolK = attempt == 0 ? 1.0f : relax;
+        if (attempt == 1 && relax <= 1) break;
+        const int stride = std::max(1, c.value("stride_px", 3));
+        const float minRamp = c.value("min_ramp_px", 8.0f);
+        auto at = [&](float x, float y) { return val(D, (x + 0.5f) / D.w, (y + 0.5f) / D.h); };
+        auto devAt = [&](float u, float v, float& dev) {
+            for (size_t m = 1; m < maps.size(); m++) {
+                float e = std::fabs(val(maps[m], u, v) - ref[m]);
+                if (e > maps[m].tol * tolK) return false;
+                dev += e / std::max(maps[m].tol, 1.0f);
+            }
+            return true;
+        };
+        const float px0 = u0 * D.w - 0.5f, py0 = v0 * D.h - 0.5f;
+        for (int y = 2; y < D.h - 2; y += stride)
+            for (int x = 2; x < D.w - 2; x += stride) {
+                float dm = at((float)x, (float)y);
+                if (dm < 0.25f * d0 || dm > 0.75f * d0) continue;
+                float gx = at(x + 1.0f, (float)y) - at(x - 1.0f, (float)y), gy = at((float)x, y + 1.0f) - at((float)x, y - 1.0f);
+                float gl = std::sqrt(gx * gx + gy * gy);
+                if (gl < 1) continue;
+                gx /= gl; gy /= gl;
+                // up to the top
+                float tx = (float)x, ty = (float)y, last = dm; bool okUp = false;
+                for (int s = 0; s < 400; s++) {
+                    float nx = tx + gx * 0.5f, ny = ty + gy * 0.5f, dn = at(nx, ny);
+                    if (dn < last - 15) break;
+                    tx = nx; ty = ny; last = std::max(last, dn);
+                    if (dn >= 0.95f * d0) { okUp = true; break; }
+                }
+                if (!okUp) continue;
+                // down from the top to "low": the ramp, top first
+                std::vector<std::pair<float, float>> path; std::vector<float> den;
+                float bx = tx, by = ty, prev = 1e9f, dev = 0; bool okDn = false, bad = false;
+                for (int s = 0; s < 800; s++) {
+                    float cx = bx - gx * 0.5f * s, cy = by - gy * 0.5f * s, dn = at(cx, cy);
+                    if (dn > prev + 15) { bad = true; break; }
+                    prev = std::min(prev, dn);
+                    float u = (cx + 0.5f) / D.w, v = (cy + 0.5f) / D.h;
+                    if (!devAt(u, v, dev)) { bad = true; break; }
+                    path.push_back({u, v}); den.push_back(dn);
+                    if (dn <= low) { okDn = true; break; }
+                }
+                if (bad || !okDn) continue;
+                int mid = 0;
+                for (float dn : den) if (dn > low && dn < 0.95f * d0) mid++;
+                if (mid * 0.5f < minRamp) continue;
+                // P -> ramp top must be clean (density stays >= 85 % of P's, other maps near P's)
+                float dist = std::sqrt((bx - px0) * (bx - px0) + (by - py0) * (by - py0)), dev2 = 0;
+                bool clean = true;
+                int ns = std::max(2, int(dist));
+                for (int s = 0; s <= ns && clean; s++) {
+                    float f = s / float(ns), cx = px0 + (bx - px0) * f, cy = py0 + (by - py0) * f;
+                    if (at(cx, cy) < 0.85f * d0) clean = false;
+                    else clean = devAt((cx + 0.5f) / D.w, (cy + 0.5f) / D.h, dev2);
+                }
+                if (!clean) continue;
+                float cost = dev / path.size() + dev2 / (ns + 1) + 0.0005f * dist;
+                if (cost < bestCost) { bestCost = cost; bestPath = path; bestDen = den; }
+            }
+        }
+        if (tolK > 1 && !bestPath.empty()) gj["relaxed"] = tolK;
+        if (bestPath.empty()) { gj["skip"] = "no clean monotone density ramp with steady colour / width for this texel"; out.push_back(gj); continue; }
+        gj["ramp_px"] = bestPath.size() / 2.0f; gj["cost"] = bestCost;
+        gj["ramp_end_uv"] = {r4(bestPath.back().first), r4(bestPath.back().second)};
+        json rowsJ = json::array();
+        for (int d = 1; d <= rows; d++) {
+            float want = fr[d - 1] * d0;
+            size_t i = 0;
+            while (i + 1 < bestDen.size() && bestDen[i] > want) i++;
+            // the sample on the ramp closest to the wanted density
+            if (i > 0 && std::fabs(bestDen[i - 1] - want) < std::fabs(bestDen[i] - want)) i--;
+            json roots = json::array();
+            for (auto& gd : L) if (gd.second == d) roots.push_back(rootJ(gr.P[gd.first][0]));
+            json texel = json::object();
+            for (size_t m = 0; m < maps.size(); m++) texel[maps[m].key] = std::round(val(maps[m], bestPath[i].first, bestPath[i].second));
+            rowsJ.push_back({{"row", d}, {"guides", roots.size()}, {"uv", {r4(bestPath[i].first), r4(bestPath[i].second)}}, {"texel", texel}});
+            if (roots.empty()) continue;
+            ops.push_back({{"op", "face_uv"}, {"roots", roots}, {"uv", {r4(bestPath[i].first), r4(bestPath[i].second)}}, {"corners", "guide"}, {"id", ++id}, {"grp", grp}});
+            moved += (int)roots.size();
+        }
+        gj["rows"] = rowsJ;
+        // extend_mm: a NEW sparse row outside the edge (baby hair): each row-1 guide copied extend_mm outward along its
+        // border edges' outward direction, root on the skin, shortened to extend_length of its length (same path), root
+        // part laid on the skin; its growth faces fan onto the old edge and only the new corner takes the texel of
+        // extend_density x P's density on the ramp, so the hair thins out to the new row instead of stopping at a line
+        if (extM > 0 && hsX.m) {
+            float want = extDens * d0;
+            size_t i = 0;
+            while (i + 1 < bestDen.size() && bestDen[i] > want) i++;
+            json nuv = {r4(bestPath[i].first), r4(bestPath[i].second)};
+            for (auto& gd : L) {
+                if (gd.second != 1 || !outward.count(gd.first)) continue;
+                const Guide& G = gr.P[gd.first];
+                V3 o = outward[gd.first];
+                if (len(o) < 1e-6f) continue;
+                V3 n0;
+                hsX.sd(G[0], &n0);
+                o = o - n0 * dot(o, n0);   // along the skin
+                if (len(o) < 1e-6f) continue;
+                V3 R = G[0] + nrmz(o) * extM, nR;
+                float sdR = hsX.sd(R, &nR);
+                R = R - nR * (sdR - hsX.sd(G[0]));   // same height above the skin as the old root
+                V3 dd = R - G[0];
+                V3 dr{r4(dd.x), r4(dd.y), r4(dd.z)};
+                ops.push_back({{"op", "duplicate"}, {"root", rootJ(G[0])}, {"d", rootJ(dr)}, {"edge_face", true}, {"new_uv", nuv}, {"id", ++id}, {"grp", grp}});
+                // shortened copy of the same path, root part on the skin
+                auto sl = arcLen(G);
+                float Lt = sl.back() * extLen;
+                Guide Q = G;
+                size_t seg = 1;
+                for (size_t k = 0; k < Q.size(); k++) {
+                    float t = Lt * k / float(Q.size() - 1);
+                    while (seg + 1 < G.size() && sl[seg] < t) seg++;
+                    float a0 = sl[seg - 1], a1 = std::max(sl[seg], a0 + 1e-6f), f = std::clamp((t - a0) / (a1 - a0), 0.0f, 1.0f);
+                    Q[k] = G[seg - 1] + (G[seg] - G[seg - 1]) * f + dr;
+                }
+                for (size_t k = 1; k < Q.size(); k++) {
+                    V3 nn;
+                    float sd = hsX.sd(Q[k], &nn);
+                    float t = Lt * k / float(Q.size() - 1);
+                    float w = t <= flatX ? 1.0f : std::max(0.0f, 1.0f - (t - flatX) / std::max(flatX, 1e-4f));
+                    if (sd < liftX) Q[k] = Q[k] + nn * (liftX - sd);
+                    else if (w > 0) Q[k] = Q[k] - nn * ((sd - liftX) * w);
+                }
+                Q[0] = G[0] + dr;
+                ops.push_back({{"op", "reshape"}, {"root", rootJ(Q[0])}, {"points", ptsJson(Q)}, {"id", ++id}, {"grp", grp}});
+                extended++;
+            }
+        }
+        out.push_back(gj);
+    }
+    r["extended"] = extended;
+    for (auto& m : maps) freeImage(m.im);
+    r["groups"] = out;
+    r["guides_faded"] = moved;
+    // lay the root part of the edge rows on the skin
+    const float flatM = c.value("flat_mm", 6.0f) / 1000, liftM = c.value("lift_mm", 0.6f) / 1000;
+    const int flatRows = std::clamp(c.value("flat_rows", 2), 0, rows);
+    const float firstLift = c.value("flat_first_lift_mm", 0.0f) / 1000;
+    HeadSkin hs = headSkin(a);
+    int flat = 0;
+    if (!c.value("list_only", false) && flatM > 0 && hs.m) {
+        for (auto& [key, L] : groups)
+            for (auto& gd : L) {
+                if (gd.second > flatRows) continue;
+                const Guide& G = gr.P[gd.first];
+                auto sl = arcLen(G);
+                Guide Q = G;
+                bool ch = false;
+                for (size_t k = 1; k < Q.size(); k++) {
+                    if (sl[k] > flatM * 2) {
+                        // coarse guides (first CV tens of mm out): flat_first_lift_mm lowers that first CV to this height
+                        // above the skin so the root part lies along the scalp instead of standing out as a stub
+                        if (k == 1 && firstLift > 0) {
+                            V3 n2;
+                            float sd = hs.sd(Q[1], &n2);
+                            if (sd > firstLift) { Q[1] = Q[1] - n2 * (sd - firstLift); ch = true; }
+                        }
+                        break;
+                    }
+                    V3 n2;
+                    float sd = hs.sd(Q[k], &n2);
+                    float w = sl[k] <= flatM ? 1.0f : 1.0f - (sl[k] - flatM) / flatM;   // full inside flat_mm, fading out over the next flat_mm
+                    if (sd > liftM) { Q[k] = Q[k] - n2 * ((sd - liftM) * w); ch = true; }
+                }
+                if (!ch) continue;
+                ops.push_back({{"op", "reshape"}, {"root", rootJ(G[0])}, {"points", ptsJson(Q)}, {"id", ++id}, {"grp", grp}});
+                flat++;
+            }
+    }
+    r["laid_flat"] = flat;
+    if (c.value("list_only", false) || ops.empty()) return r;
+    for (auto& o : ops) gr.ops.push_back(o);
+    gr.redo.clear(); gr.replay(); a.editsChanged();
     return r;
 }
 
@@ -2541,7 +3881,14 @@ static json centreParting(App& a, const json& c, int& grpId) {
     return r;
 }
 
-#include "serve_r3a.inc"   // regrow / route_behind_ears / twist_roll / plant_fringe / parting_roots (2026-10-12, opt-in)
+#include "serve_r3a.inc"
+#include "serve_braid.inc"   // braid (2026-10-15, opt-in): 3-strand plait from braid cards
+#include "serve_shell.inc"
+#include "serve_crown.inc"   // crown_swirl (2026-10-16, opt-in): coherent crown flow   // conform_shell (2026-10-16, opt-in): even concentric layers on a smooth outer surface
+#include "serve_faces.inc"   // check_faces (2026-10-16, opt-in): growth-face validator (interpolated-hair penetration at rest / wind, slivers, divergence)
+#include "serve_regrid.inc"  // regrid (2026-10-16, opt-in): re-grid a region from a smooth flow field (uniform roots, coherent shapes, clean faces)
+#include "gate.h"
+#include "serve_gate.inc"    // handback_gate (2026-10-16, agent tools): the whole hand-back checklist in one command; its verdict guards MCP / agent saves and exports
 
 json App::serveCommand(const json& c, const std::string& out, bool& quit) {
     std::string d = c.value("do", "");
@@ -2586,6 +3933,17 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
     }
     if (!loaded) { r["error"] = "no build open (use open)"; return r; }
     if (d == "status") { r["status"] = status_(); return r; }
+    if (d == "headgear") {   // 2026-10-16 View > Show headgear: {"on": bool, "app": appearance}; returns the state
+        if (c.contains("app") && c["app"].is_string()) headgearApp = c["app"].get<std::string>();
+        if (c.contains("on") && c["on"].is_boolean()) showHeadgear = c["on"].get<bool>();
+        r["available"] = pack.headgear.is_object();
+        r["on"] = showHeadgear; r["app"] = headgearApp;
+        if (pack.headgear.is_object()) { r["apps"] = pack.headgear["apps"]; r["all"] = pack.headgear.value("all", false); r["current"] = pack.headgear.value("current", ""); }
+        int n = 0;
+        for (auto& m : pack.meshes) if (m.kind == "headgear" && headgearVisible(m)) n++;
+        r["parts_shown"] = n;
+        return r;
+    }
     if (d == "shots_list") {
         json l = json::array();
         for (auto& [k, sh] : pack.shots.items())
@@ -2612,7 +3970,13 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         scalpOverlay = ov == "scalp";
         showGuideOverlay = ov == "guides";
         if (ov == "mask") { colorize = 4; maskPass = true; step(0.0); }
+        bool hg0 = showHeadgear;   // "headgear": true / false = the helmet / hat / hood in this render (default: the session's)
+        if (c.contains("headgear") && c["headgear"].is_boolean()) showHeadgear = c["headgear"].get<bool>();
+        struct HgRestore { bool& v; bool o; ~HgRestore() { v = o; } } hgr{showHeadgear, hg0};
+        bool scol = showCollision;   // "colliders": true = the SDK's collision capsules (the Studio's N overlay) in this render
+        if (c.contains("colliders") && c["colliders"].is_boolean() && c["colliders"].get<bool>() != scol) { showCollision = c["colliders"].get<bool>(); step(0.0); }
         bool ok = renderShot(cam, png, c.value("size", 1400));
+        if (showCollision != scol) { showCollision = scol; step(0.0); }
         if (ov == "mask") { colorize = cz; maskPass = false; step(0.0); }
         if (ov == "guides" && guideVisOn() && gvis.valid) r["guides_shown"] = gvis.nShown;
         scalpOverlay = so; showGuideOverlay = go; showHair = sh; vanillaHair = vh; guideFront = gf; guideBody = gb;
@@ -3065,17 +4429,66 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         std::vector<json> ops;
         json l = json::array(), sp = json::array();
         int nSpan = 0;
+        float spanMin = c.value("span_mm", 2.0f) / 1000;
+        std::vector<std::pair<float, int>> spAll, spAfter;
+        // 2026-10-17 opt-in fix_spans: also fix the spans dipping under the skin (fixSpans, span_standoff_mm = standoff_mm)
+        const bool fixSp = c.value("fix_spans", false);
+        const float spanSo = c.value("span_standoff_mm", c.value("standoff_mm", 3.0f)) / 1000;
+        int nFixed = 0, nAfter = 0, nDup = 0, nReject = 0, nUnaddr = 0;
+        std::vector<Guide> groom0;
+        if (fixSp) groom0 = groom.P;   // the guides before this call (before / after report)
         for (int g : ix) {
             Guide Q = groom.P[g];
             // read-only report: spans dipping under the skin between CVs (> 1 mm); delete those guides or re-space their CVs
             float dip = spanDip(hr, Q);
-            if (dip > 0.001f) { nSpan++; if (sp.size() < 60) sp.push_back({{"i", g}, {"dip_mm", r4(dip * 1000)}}); }
-            int m = pushOut(hr, Q, so, c.value("depth_mm", 8.0f) / 1000);
+            if (dip > spanMin) { nSpan++; spAll.push_back({dip, g}); }
+            const bool fixThis = fixSp && !c.value("delete", false);
+            // fix_spans: the span fix runs on the guide as it is (it lifts CVs too), the CV push-out only afterwards
+            int m = fixThis ? 0 : pushOut(hr, Q, so, c.value("depth_mm", 8.0f) / 1000);
+            if (fixThis) {
+                { Guide T = Q; m = pushOut(hr, T, so, c.value("depth_mm", 8.0f) / 1000); }
+                if (dip > spanMin || m) {
+                    Guide Q0 = Q;
+                    int itn = fixSpans(hr, Q, spanSo, spanMin, c.value("span_iterations", 8));
+                    if (c.value("debug_index", -1) == g) r["debug_raw"] = {{"out", ptsJson(Q)}, {"dip_mm", spanDip(hr, Q) * 1000}, {"len", guideLen(Q)}};
+                    // keep the fix only when it helps and stays a clean strand: shallower dip, length within 5 %, no added kinks
+                    auto turnDeg = [](const Guide& X) { float t = 0; for (size_t k = 1; k + 1 < X.size(); k++) { V3 u = X[k] - X[k - 1], v = X[k + 1] - X[k]; if (len(u) > 1e-6f && len(v) > 1e-6f) t += std::acos(std::clamp(dot(nrmz(u), nrmz(v)), -1.0f, 1.0f)); } return t * 57.2958f; };
+                    if (itn && (spanDipRc(hr, Q) >= spanDipRc(hr, Q0) || std::fabs(guideLen(Q) - guideLen(Q0)) > 0.05f * guideLen(Q0) || turnDeg(Q) > turnDeg(Q0) + c.value("span_max_added_turn_deg", 60.0f))) {
+                        Q = Q0; itn = 0; nReject++;
+                    }
+                    if (c.value("debug_index", -1) == g) r["debug_guide"] = {{"in", ptsJson(Q0)}, {"out", ptsJson(Q)}, {"iterations", itn}};
+                    float d2 = spanDipRc(hr, Q);
+                    if (itn) { nFixed++; if (d2 > spanMin) { nAfter++; spAfter.push_back({d2, g}); } }
+                    else if (dip > spanMin) { nAfter++; spAfter.push_back({d2, g}); }
+                    if (m) { Guide T = Q; int m2 = pushOut(hr, T, so, c.value("depth_mm", 8.0f) / 1000); if (m2) Q = T; m = m2; }   // CVs still inside
+                    if (itn && !m) m = -1;   // reshape below even with no CV inside
+                }
+            }
             if (!m) continue;
+            if (m < 0) m = 0;
             V3 r0 = Q[0];
             // "delete": true removes such guides (usually bad copies; pushed out they hang as stray hair)
             if (c.value("delete", false)) ops.push_back({{"op", "delete"}, {"roots", json::array({{r4(r0.x), r4(r0.y), r4(r0.z)}})}, {"id", ++id}, {"grp", grp}});
-            else ops.push_back({{"op", "reshape"}, {"root", {r4(r0.x), r4(r0.y), r4(r0.z)}}, {"points", ptsJson(Q)}, {"id", ++id}, {"grp", grp}});
+            else {
+                json op = {{"op", "reshape"}, {"root", {r4(r0.x), r4(r0.y), r4(r0.z)}}, {"points", ptsJson(Q)}, {"id", ++id}, {"grp", grp}};
+                if (fixSp) {   // guides stacked on one root: address the k-th of them ("dup"), else the reshape hits the first
+                    int k = 0;
+                    for (int j = 0; j < g; j++) if (groom.alive[j] && len(groom.P[j][0] - r0) < 2e-4f) k++;
+                    if (k) { op["dup"] = k; nDup++; }
+                    // the op must land on g when replayed (nearest root within tol, then the k-th of that stack)
+                    V3 rq{op["root"][0].get<float>(), op["root"][1].get<float>(), op["root"][2].get<float>()};
+                    int m0 = -1; float bd = 1e9f;
+                    for (size_t j = 0; j < groom.P.size(); j++) if (groom.alive[j]) { float dd = len(groom.P[j][0] - rq); if (dd < bd) { bd = dd; m0 = (int)j; } }
+                    int tgt = -1;
+                    if (m0 >= 0 && bd <= groom.tol) {
+                        std::vector<int> same;
+                        for (size_t j = 0; j < groom.P.size(); j++) if (groom.alive[j] && len(groom.P[j][0] - groom.P[m0][0]) < 2e-4f) same.push_back((int)j);
+                        tgt = k == 0 ? m0 : (k < (int)same.size() ? same[k] : -1);
+                    }
+                    if (tgt != g) { nUnaddr++; continue; }
+                }
+                ops.push_back(op);
+            }
             if (l.size() < 60) l.push_back({{"i", g}, {"points_inside", m}});
             n++; pts += m;
         }
@@ -3084,7 +4497,25 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
             groom.redo.clear(); groom.replay(); editsChanged(); settleRest(*this, 0.5);
         }
         r["guides_inside"] = n; r["points_moved"] = pts; r["guides"] = l;
-        r["spans_under_skin"] = nSpan; r["span_guides"] = sp; r["status"] = status_();
+        std::sort(spAll.begin(), spAll.end(), [](auto& a, auto& b) { return a.first > b.first; });   // deepest first
+        for (auto& e : spAll) { if ((int)sp.size() >= c.value("span_list", 60)) break; sp.push_back({{"i", e.second}, {"dip_mm", r4(e.first * 1000)}}); }
+        r["spans_under_skin"] = nSpan; r["span_guides"] = sp;
+        if (fixSp) {
+            std::sort(spAfter.begin(), spAfter.end(), [](auto& a, auto& b) { return a.first > b.first; });
+            json sa = json::array();
+            for (auto& e : spAfter) { if (sa.size() >= 30) break; sa.push_back({{"i", e.second}, {"dip_mm", r4(e.first * 1000)}}); }
+            // measured on the guides as replayed (not the planned shapes)
+            int nMeas = 0, nMeasRc = 0, nRc0 = 0;
+            for (int g : ix) if (g < (int)groom.P.size() && groom.alive[g]) {
+                if (!c.value("list_only", false)) { if (spanDip(hr, groom.P[g]) > spanMin) nMeas++; if (spanDipRc(hr, groom.P[g]) > spanMin) nMeasRc++; }
+            }
+            for (auto& e : spAll) if (spanDipRc(hr, groom0[e.second]) > spanMin) nRc0++;
+            r["spans_under_skin_root_discounted"] = nRc0;
+            if (!c.value("list_only", false)) r["spans_under_skin_root_discounted_after"] = nMeasRc;
+            r["spans_fixed"] = nFixed; r["spans_under_skin_after"] = c.value("list_only", false) ? nAfter : nMeas; r["span_guides_after"] = sa;
+            r["stacked_root_reshapes"] = nDup; r["span_fixes_rejected"] = nReject; r["unaddressable"] = nUnaddr;
+        }
+        r["status"] = status_();
         return r;
     }
     if (d == "resample") {
@@ -3354,6 +4785,311 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         for (auto& o : ops) groom.ops.push_back(o);
         groom.redo.clear(); groom.replay(); editsChanged(); settleRest(*this, 0.5);
         r["changed"] = n; r["status"] = status_();
+        return r;
+    }
+    if (d == "parting_comb") {
+        // 2026-10-15 opt-in: parting lines = roots whose neighbours (within detect_mm) start off in diverging directions
+        // (root tangents opposite AND moving apart). Roots within band_mm of such a line get the first root_part of the
+        // strand re-aimed toward ONE side (side "auto" = the flow most neighbours share, or a direction [x,y,z]), blended
+        // smoothly into the rest (segment lengths kept). exclude [x,y,z] + exclude_mm: leave a crown swirl alone.
+        auto ix = selectGuides(c.value("where", json::object({{"all", true}})));
+        const float det = c.value("detect_mm", 10.0f) / 1000, band = c.value("band_mm", 8.0f) / 1000;
+        const float part = std::clamp(c.value("root_part", 0.3f), 0.05f, 0.9f), lift = c.value("lift", 0.15f);
+        const float pTail = std::clamp(c.value("tail", 0.5f), 0.0f, 1.0f);
+        const int minDiv = c.value("min_diverging", 5);
+        const float side_r = c.value("side_mm", 18.0f) / 1000, st = std::clamp(c.value("strength", 1.0f), 0.0f, 1.0f);
+        V3 exP{0, 0, 0}; float exR = 0;
+        if (c.contains("exclude") && c["exclude"].is_array() && c["exclude"].size() == 3) { exP = V3{c["exclude"][0].get<float>(), c["exclude"][1].get<float>(), c["exclude"][2].get<float>()}; exR = c.value("exclude_mm", 30.0f) / 1000; }
+        bool sideGiven = c.contains("side") && c["side"].is_array() && c["side"].size() == 3;
+        V3 sideV = sideGiven ? nrmz(V3{c["side"][0].get<float>(), c["side"][1].get<float>(), c["side"][2].get<float>()}) : V3{0, 0, 0};
+        const V3 HC = pack.headC;
+        std::vector<int> al;
+        for (size_t g = 0; g < groom.P.size(); g++) if (groom.alive[g] && groom.P[g].size() >= 3) al.push_back((int)g);
+        std::vector<V3> T(groom.P.size(), V3{0, 0, 0});
+        for (int g : al) T[g] = rootTangent(*this, g);
+        rebuild::Grid rg(0.01f);
+        for (int g : al) rg.add(groom.P[g][0], g);
+        std::vector<char> core(groom.P.size(), 0);
+        int nCore = 0;
+        for (int g : al) {
+            V3 R = groom.P[g][0];
+            if (exR > 0 && len(R - exP) < exR) continue;
+            int div = 0;
+            rg.around(R, det, [&](int h) {
+                if (h == g) return;
+                V3 o = groom.P[h][0] - R; float l = len(o);
+                if (l > det || l < 1e-5f) return;
+                if (dot(T[g], T[h]) < -0.2f && dot(T[h] - T[g], o) > 0.3f * l) div++;
+            });
+            if (div >= minDiv) { core[g] = 1; nCore++; }
+        }
+        std::vector<int> coreIx; for (int g : al) if (core[g]) coreIx.push_back(g);
+        rebuild::Grid cgd(0.01f); for (int g : coreIx) cgd.add(groom.P[g][0], g);
+        std::set<int> selS(ix.begin(), ix.end());
+        std::vector<char> inBand(groom.P.size(), 0);
+        HeadRadial hr = headRadial(*this);
+        int id = 0, grp = 1000 + (++grpId), n = 0;
+        for (auto& o : groom.ops) if (o.contains("id")) id = std::max(id, o["id"].get<int>());
+        std::vector<json> ops;
+        json sides = json::array();
+        for (int g : al) {
+            if (!selS.count(g)) continue;
+            V3 R = groom.P[g][0];
+            if (exR > 0 && len(R - exP) < exR) continue;
+            float bd = band + 1;
+            cgd.around(R, band, [&](int h) { bd = std::min(bd, len(groom.P[h][0] - R)); });
+            if (bd > band) continue;
+            inBand[g] = 1;
+            float w = st * (1.0f - 0.5f * bd / band);
+            V3 nR = nrmz(R - HC);
+            // target side: given, or the larger of the two opposite flow groups among the roots within side_mm
+            V3 tgt;
+            if (sideGiven) tgt = sideV;
+            else {
+                V3 a{0, 0, 0}, b{0, 0, 0}; int na = 0, nb = 0;
+                rg.around(R, side_r, [&](int h) {
+                    if (len(groom.P[h][0] - R) > side_r) return;
+                    if (dot(T[h], T[g]) >= 0) { a = a + T[h]; na++; } else { b = b + T[h]; nb++; }
+                });
+                tgt = na >= nb ? a : b;
+            }
+            tgt = tgt - nR * dot(tgt, nR);
+            if (len(tgt) < 1e-6f) continue;
+            tgt = nrmz(tgt + nR * lift);
+            Guide G = groom.P[g];
+            size_t K = G.size();
+            auto sl = arcLen(G);
+            Guide Q = G;
+            for (size_t k = 1; k < K; k++) {
+                float t = float(k) / (K - 1);
+                float u = std::clamp(t / part, 0.0f, 1.0f); float bl = 1 - (1 - pTail) * u * u * (3 - 2 * u);   // 1 at the root -> tail past root_part (no loop back over the parting)
+                V3 own = nrmz(G[k] - G[k - 1]);
+                V3 dir = nrmz(own * (1 - w * bl) + tgt * (w * bl));
+                Q[k] = Q[k - 1] + dir * (sl[k] - sl[k - 1]);
+            }
+            pushOut(hr, Q, 0.003f);
+            ops.push_back({{"op", "reshape"}, {"root", {r4(R.x), r4(R.y), r4(R.z)}}, {"points", ptsJson(Q)}, {"id", ++id}, {"grp", grp}});
+            n++;
+        }
+        // v3 (2026-10-15): plant true = new roots across the parting band (every plant_mm, within plant_band_mm of each
+        // parting root, none within plant_min_mm of an existing root, never off the scalp rim: only between existing
+        // roots). Each copies the nearest guide of the chosen side (template), lies flat on the scalp near the root
+        // (height capped to plant_flat_mm rising over root_part) and then follows the template: the bare scalp and the
+        // stubs at the parting are covered by hair going the lock's way.
+        int nPlant = 0;
+        if (c.value("plant", false) && !coreIx.empty()) {
+            const float pStep = c.value("plant_mm", 3.0f) / 1000, pBand = c.value("plant_band_mm", 5.0f) / 1000;
+            const float pMin = c.value("plant_min_mm", 2.5f) / 1000, pFlat = c.value("plant_flat_mm", 1.5f) / 1000;
+            const int pMax = c.value("plant_max", -1);   // opt-in hard cap on planted guides (-1 = no cap)
+            std::vector<V3> taken;
+            for (int g : al) taken.push_back(groom.P[g][0]);
+            rebuild::Grid tg(0.01f); for (size_t i = 0; i < taken.size(); i++) tg.add(taken[i], (int)i);
+            for (int cg0 : coreIx) {
+                V3 C0 = groom.P[cg0][0];
+                if (exR > 0 && len(C0 - exP) < exR) continue;
+                if (!selS.count(cg0)) continue;
+                V3 nC = nrmz(C0 - HC);
+                // side of this parting spot (as the comb)
+                V3 a{0, 0, 0}, b{0, 0, 0}; int na = 0, nb = 0;
+                rg.around(C0, side_r, [&](int h) {
+                    if (len(groom.P[h][0] - C0) > side_r) return;
+                    if (dot(T[h], T[cg0]) >= 0) { a = a + T[h]; na++; } else { b = b + T[h]; nb++; }
+                });
+                V3 tgt = sideGiven ? sideV : (na >= nb ? a : b);
+                tgt = tgt - nC * dot(tgt, nC);
+                if (len(tgt) < 1e-6f) continue;
+                tgt = nrmz(tgt);
+                V3 e1 = tgt, e2 = nrmz(cross(nC, tgt));
+                for (float u = -pBand; u <= pBand + 1e-6f; u += pStep)
+                    for (float v = -pBand; v <= pBand + 1e-6f; v += pStep) {
+                        if (pMax >= 0 && nPlant >= pMax) continue;
+                        V3 X = C0 + e1 * u + e2 * v;
+                        X = HC + nrmz(X - HC) * len(C0 - HC);   // stay on the scalp sphere through C0 (radius of the core root)
+                        bool near_ = false;
+                        tg.around(X, pMin, [&](int i) { if (!near_ && len(taken[i] - X) < pMin) near_ = true; });
+                        if (near_) continue;
+                        // surrounded by existing roots on 3 of 4 sides (inside the hair, not past the rim / forehead)
+                        int sides = 0;
+                        for (int q = 0; q < 4; q++) {
+                            V3 dir = q == 0 ? e1 : q == 1 ? e2 : q == 2 ? e1 * -1.0f : e2 * -1.0f;
+                            bool hit = false;
+                            tg.around(X, 0.012f, [&](int i) { if (hit) return; V3 d = taken[i] - X; float l = len(d); if (l < 0.012f && l > 1e-4f && dot(d, dir) > 0.6f * l) hit = true; });
+                            if (hit) sides++;
+                        }
+                        if (sides < 3) continue;
+                        // template: nearest guide flowing the chosen way
+                        int tpl = -1; float bd = 1e9f;
+                        rg.around(X, side_r, [&](int h) { if (dot(T[h], tgt) < 0.5f) return; float dd = len(groom.P[h][0] - X); if (dd < bd) { bd = dd; tpl = h; } });
+                        if (tpl < 0) continue;
+                        Guide G = groom.P[tpl];
+                        V3 dd = X - G[0];
+                        for (auto& p : G) p = p + dd;
+                        auto sl = arcLen(G);
+                        float rX = len(X - HC);
+                        float hAt = 0;   // template height at root_part
+                        for (size_t k = 1; k < G.size(); k++) if (sl[k] <= sl.back() * part) hAt = len(G[k] - HC) - rX;
+                        for (size_t k = 1; k < G.size(); k++) {
+                            float t = sl[k] / std::max(sl.back() * part, 1e-5f);
+                            if (t >= 1) break;
+                            float cap = pFlat + (std::max(hAt, pFlat) - pFlat) * t * t;
+                            V3 rel = G[k] - HC; float h = len(rel) - rX;
+                            if (h > cap) G[k] = HC + nrmz(rel) * (rX + cap);
+                        }
+                        Guide L2 = G;   // keep segment lengths
+                        for (size_t k = 1; k < G.size(); k++) L2[k] = L2[k - 1] + nrmz(G[k] - L2[k - 1]) * (sl[k] - sl[k - 1]);
+                        pushOut(hr, L2, 0.002f);
+                        V3 rs = groom.P[tpl][0];
+                        ops.push_back({{"op", "duplicate"}, {"root", t6::rootJ(rs)}, {"d", {r4(dd.x), r4(dd.y), r4(dd.z)}}, {"edge_face", true}, {"edge_uv", "src"}, {"id", ++id}, {"grp", grp}});
+                        ops.push_back({{"op", "reshape"}, {"root", t6::rootJ(L2[0])}, {"points", ptsJson(L2)}, {"id", ++id}, {"grp", grp}});
+                        taken.push_back(X); tg.add(X, (int)taken.size() - 1);
+                        nPlant++;
+                    }
+            }
+        }
+        r["planted"] = nPlant;
+        // v2 (2026-10-15): faces "drop" (default) removes the growth faces whose guides lie in the parting band and start
+        // off in opposite directions: HairWorks then interpolates no hair spreading apart across the line; the combed
+        // strands of the chosen side cover it. faces "keep" = v1
+        int nFaceDrop = 0;
+        if (c.value("faces", std::string("drop")) == "drop") {
+            for (auto& f : groom.faces) {
+                int a0 = f.g[0], a1 = f.g[1], a2 = f.g[2];
+                if (a0 < 0 || a1 < 0 || a2 < 0 || a0 >= (int)groom.P.size() || a1 >= (int)groom.P.size() || a2 >= (int)groom.P.size()) continue;
+                if (!(inBand[a0] || inBand[a1] || inBand[a2])) continue;
+                if (exR > 0 && len(groom.P[a0][0] - exP) < exR) continue;
+                bool span = dot(T[a0], T[a1]) < -0.2f || dot(T[a1], T[a2]) < -0.2f || dot(T[a0], T[a2]) < -0.2f;
+                if (!span) continue;
+                ops.push_back({{"op", "delete_face"}, {"roots", {t6::rootJ(groom.P[a0][0]), t6::rootJ(groom.P[a1][0]), t6::rootJ(groom.P[a2][0])}}, {"id", ++id}, {"grp", grp}});
+                nFaceDrop++;
+            }
+        }
+        r["faces_dropped"] = nFaceDrop;
+        json coreJ = json::array();
+        for (size_t i = 0; i < coreIx.size() && i < 400; i++) coreJ.push_back(v3j(groom.P[coreIx[i]][0]));
+        r["parting_roots"] = nCore; r["changed"] = n;
+        if (c.value("list_core", false)) r["core"] = coreJ;
+        if (c.value("dry", false)) { r["status"] = status_(); return r; }
+        for (auto& o : ops) groom.ops.push_back(o);
+        if (!ops.empty()) { groom.redo.clear(); groom.replay(); editsChanged(); settleRest(*this, 0.5); }
+        r["status"] = status_();
+        return r;
+    }
+    if (d == "volume_lift") {
+        // 2026-10-15 opt-in: uniform volume. Every guide in 'where' (weight 1) and the guides within feather_mm outside it
+        // (weight falling to 0) lift their outer part by offset_mm along the head-centre radial direction; the lift
+        // ramps in smoothly from the root (root_part: no lift at the root, full past it) so roots and partings blend,
+        // and the per-guide weight is smoothed over smooth_mm (smooth_passes) so no strand stands out (no starburst,
+        // no bumps). Segment lengths are not kept (the strand stretches by the lift).
+        auto ix = selectGuides(c.value("where", json::object({{"all", true}})));
+        const float off = c.value("offset_mm", 6.0f) / 1000, fe = c.value("feather_mm", 25.0f) / 1000;
+        const float part = std::clamp(c.value("root_part", 0.35f), 0.05f, 0.95f);
+        const float sm = c.value("smooth_mm", 12.0f) / 1000; const int sp = std::clamp(c.value("smooth_passes", 2), 0, 8);
+        // v2 (2026-10-15): profile "bump" (default) lifts only the near-scalp part (peak_at 0.3 of the length) and returns
+        // to the original path by return_at (0.6), segment lengths kept: long hair gets volume on top, no flyaways.
+        // profile "ramp" = v1 (whole outer part lifted, strand stretched)
+        const bool bump = c.value("profile", std::string("bump")) == "bump";
+        const float peakAt = c.value("peak_at", 0.3f), retAt = c.value("return_at", 0.6f);
+        const V3 HC = pack.headC;
+        std::vector<int> al;
+        for (size_t g = 0; g < groom.P.size(); g++) if (groom.alive[g] && groom.P[g].size() >= 3) al.push_back((int)g);
+        std::vector<float> W(groom.P.size(), 0.0f);
+        rebuild::Grid sg(0.01f);
+        for (int g : ix) { W[g] = 1; sg.add(groom.P[g][0], g); }
+        for (int g : al) {
+            if (W[g] >= 1) continue;
+            float bd = fe + 1;
+            sg.around(groom.P[g][0], fe, [&](int h) { bd = std::min(bd, len(groom.P[h][0] - groom.P[g][0])); });
+            if (bd < fe) { float t = 1 - bd / fe; W[g] = t * t * (3 - 2 * t); }
+        }
+        rebuild::Grid ag(0.01f); for (int g : al) ag.add(groom.P[g][0], g);
+        for (int p = 0; p < sp; p++) {
+            std::vector<float> W2 = W;
+            for (int g : al) {
+                float s = 0, ws = 0;
+                ag.around(groom.P[g][0], sm, [&](int h) { float dd = len(groom.P[h][0] - groom.P[g][0]); if (dd < sm) { float w = 1 - dd / sm; s += W[h] * w; ws += w; } });
+                if (ws > 0) W2[g] = s / ws;
+            }
+            W.swap(W2);
+        }
+        HeadRadial hr = headRadial(*this);
+        int id = 0, grp = 1000 + (++grpId), n = 0;
+        for (auto& o : groom.ops) if (o.contains("id")) id = std::max(id, o["id"].get<int>());
+        std::vector<json> ops;
+        for (int g : al) {
+            if (W[g] < 0.01f) continue;
+            Guide Q = groom.P[g];
+            size_t K = Q.size();
+            auto sl = arcLen(Q);
+            for (size_t k = 1; k < K; k++) {
+                float ramp;
+                if (bump) {   // v2: rises to full lift at peak_at of the length, back to the original path by return_at
+                    float t = sl[k] / std::max(sl.back(), 1e-5f);
+                    if (t <= peakAt) { float u = t / std::max(peakAt, 1e-4f); ramp = u * u * (3 - 2 * u); }
+                    else { float u = std::clamp((t - peakAt) / std::max(retAt - peakAt, 1e-4f), 0.0f, 1.0f); ramp = 1 - u * u * (3 - 2 * u); }
+                } else { float u = std::clamp(sl[k] / std::max(sl.back() * part, 1e-5f), 0.0f, 1.0f); ramp = u * u * (3 - 2 * u); }
+                Q[k] = Q[k] + nrmz(Q[k] - HC) * (off * W[g] * ramp);
+            }
+            if (bump) {   // keep segment lengths (no stretched / flying tips)
+                Guide L2 = Q;
+                for (size_t k = 1; k < K; k++) L2[k] = L2[k - 1] + nrmz(Q[k] - L2[k - 1]) * (sl[k] - sl[k - 1]);
+                Q = L2;
+            }
+            pushOut(hr, Q, 0.003f);
+            V3 R = Q[0];
+            ops.push_back({{"op", "reshape"}, {"root", {r4(R.x), r4(R.y), r4(R.z)}}, {"points", ptsJson(Q)}, {"id", ++id}, {"grp", grp}});
+            n++;
+        }
+        for (auto& o : ops) groom.ops.push_back(o);
+        if (!ops.empty()) { groom.redo.clear(); groom.replay(); editsChanged(); settleRest(*this, 0.5); }
+        r["changed"] = n; r["status"] = status_();
+        return r;
+    }
+    if (d == "thicken_lock") {
+        // 2026-10-15 opt-in: a lock that reads as a thin flat sheet (one layer of strands) gets layers (2) copies of each
+        // guide in 'where', stacked along the head-centre radial direction at +-layer_mm (4) x layer index (alternating
+        // over / under; under is kept outside the skin), with a tangential root jitter_mm (1.5) so the copies do not
+        // sit on the same root. The offset ramps in over root_part (0.2) from the root (no stubs). The lock becomes a
+        // thick rounded lock. edge_face copies join the growth mesh.
+        auto ix = selectGuides(c.value("where", json::object({{"all", true}})));
+        const int layers = std::clamp(c.value("layers", 2), 1, 6);
+        const float lay = c.value("layer_mm", 4.0f) / 1000, jit = c.value("jitter_mm", 1.5f) / 1000;
+        const float part = std::clamp(c.value("root_part", 0.2f), 0.02f, 0.9f);
+        const float shrink = c.value("under_shrink", 0.9f);   // under-layer copies slightly shorter (inside the lock)
+        const V3 HC = pack.headC;
+        HeadRadial hr = headRadial(*this);
+        int id = 0, grp = 1000 + (++grpId), n = 0;
+        for (auto& o : groom.ops) if (o.contains("id")) id = std::max(id, o["id"].get<int>());
+        std::vector<json> ops;
+        auto hs = [](V3 p, float s) { float u = std::sin(p.x * (12.9898f + s) * 1000 + p.y * (78.233f + s) * 1000 + p.z * (37.719f + 2 * s) * 1000) * 43758.5453f; return u - std::floor(u); };
+        for (int g : ix) {
+            const Guide& G0 = groom.P[g];
+            if (G0.size() < 3) continue;
+            V3 R = G0[0], nR = nrmz(R - HC);
+            V3 e1 = nrmz(cross(nR, V3{0, 0, 1})); if (len(e1) < 0.5f) e1 = V3{1, 0, 0};
+            V3 e2 = cross(nR, e1);
+            auto sl = arcLen(G0);
+            for (int L = 1; L <= layers; L++) {
+                float sgn = (L % 2 == 1) ? 1.0f : -1.0f;
+                float off = sgn * lay * float((L + 1) / 2);
+                float a = hs(R, 1.7f * L) * 6.2831853f, rj = jit * (0.5f + 0.5f * hs(R, 3.1f * L));
+                V3 dj = e1 * (std::cos(a) * rj) + e2 * (std::sin(a) * rj);
+                Guide Q = G0;
+                for (size_t k = 0; k < Q.size(); k++) {
+                    float u = std::clamp(sl[k] / std::max(sl.back() * part, 1e-5f), 0.0f, 1.0f); float ramp = u * u * (3 - 2 * u);
+                    Q[k] = Q[k] + dj + nrmz(G0[k] - HC) * (off * ramp);
+                }
+                Q[0] = HC + nrmz(Q[0] - HC) * len(R - HC);   // root on the scalp (sphere through the original root)
+                if (sgn < 0 && shrink < 1.0f) { Guide S = shortenGuide(Q, shrink); if (S.size() == Q.size()) Q = S; }
+                pushOut(hr, Q, 0.002f);
+                V3 dd = Q[0] - R;
+                ops.push_back({{"op", "duplicate"}, {"root", t6::rootJ(R)}, {"d", {r4(dd.x), r4(dd.y), r4(dd.z)}}, {"edge_face", true}, {"edge_uv", "src"}, {"id", ++id}, {"grp", grp}});
+                ops.push_back({{"op", "reshape"}, {"root", t6::rootJ(Q[0])}, {"points", ptsJson(Q)}, {"id", ++id}, {"grp", grp}});
+                n++;
+            }
+        }
+        for (auto& o : ops) groom.ops.push_back(o);
+        if (!ops.empty()) { groom.redo.clear(); groom.replay(); editsChanged(); settleRest(*this, 0.5); }
+        r["copies"] = n; r["status"] = status_();
         return r;
     }
     if (d == "make_bun") {
@@ -3855,7 +5591,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
             size_t n0 = groom.P.size();
             for (auto& o : fops) groom.ops.push_back(o);
             groom.replay(); editsChanged();
-            int dropped = t6::dropForBudget(*this, planted, 2, maxRatio, c.value("ignore_budget", false));
+            int dropped = t6::dropForBudget(*this, planted, 2, maxRatio, true /* budget = information only (2026-10-15) */);
             for (size_t g = n0; g < groom.P.size(); g++) if (groom.alive[g]) newG.push_back((int)g);
             float gap1 = 0;
             for (float gv : gapv) gap1 = std::max(gap1, gv);
@@ -4255,6 +5991,13 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         r["result"] = res; r["status"] = status_();
         return r;
     }
+    if (d == "braid") {
+        json res = braidTool(c);
+        if (res.contains("error")) { r["error"] = res["error"]; return r; }
+        if (!c.value("list_only", false)) settleRest(*this, 0.5);
+        r["result"] = res; r["status"] = status_();
+        return r;
+    }
     if (d == "keep_cards") {
         // 2026-10-12 opt-in PREVIEW of mixing cards + strands (Hjalmar's attached lock): the vanilla hair cards picked here
         // stay drawn together with the groom (render / compare / shots). Picks: `near` [x,y,z] (edit frame, e.g. a
@@ -4332,6 +6075,37 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
                              "by: component} around these components (hairpipe.py split_tri_mask); strands under the kept "
                              "cards can be deleted with studio_delete where.near";
         r["head_centre"] = v3j(pack.headC);
+        return r;
+    }
+    if (d == "card_offset") {
+        // 2026-10-17 opt-in: MOVE kept vanilla card pieces (Junior's tie ring), saved in the project ("card_offsets") and
+        // exported by studio_to_config.py as the pipeline key card_offset (hairpipe.py moves the split_cards kept mesh).
+        // Args: uv_min/uv_max and/or near + radius_mm (selection, as keep_cards), offset [dx,dy,dz] m, rotate_deg [x,y,z]
+        // about the piece's centroid; add: true appends (default: replaces every earlier move); clear: true = no moves.
+        json prevEntries = cardOffsets;
+        if (c.value("clear", false)) cardOffsets = json::array();
+        else {
+            bool uvBox = c.contains("uv_min") && c.contains("uv_max");
+            if (!uvBox && !c.contains("near")) { r["error"] = "card_offset needs uv_min + uv_max and/or near (or clear: true)"; return r; }
+            json e = json::object();
+            for (const char* k : {"uv_min", "uv_max", "near", "radius_mm", "offset", "rotate_deg"}) if (c.contains(k)) e[k] = c[k];
+            if (!c.value("add", false)) cardOffsets = json::array();
+            cardOffsets.push_back(e);
+        }
+        r["moves"] = applyCardOffsets();
+        // 2026-10-17: one undoable snapshot op; guides_follow (follow_mm 14, follow_min_len 0.10 m) moves the guides that
+        // gather in the piece (Junior's ponytail through the ring) with it, as in the UI's "Guides follow"
+        if (fur == 0) {
+            cardSel = cardOffsets.empty() ? -1 : (int)cardOffsets.size() - 1;
+            float fm = cardFollowMm, fl = cardFollowLen;
+            cardFollowMm = c.value("follow_mm", 14.0f); cardFollowLen = c.value("follow_min_len", 0.10f);
+            r["follow"] = commitCardOffsets(prevEntries, c.value("guides_follow", false) && c.value("add", false) == false && prevEntries.size() == cardOffsets.size());
+            cardFollowMm = fm; cardFollowLen = fl;
+        }
+        r["card_offsets"] = cardOffsets;
+        if (!cardOffsets.empty() && r["moves"].back().value("moved_vertices", 0) == 0) r["warning"] = "the last entry picks no card vertex";
+        r["pipeline_hint"] = "saved in the project as card_offsets; studio_to_config.py exports it as the config key card_offset, "
+                             "applied to the split_cards kept mesh (the base config / plan must keep the piece with split_cards)";
         return r;
     }
     if (d == "outside_vanilla") {
@@ -4519,6 +6293,8 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         hideGuide.clear(); hideFace.clear();
         rebuildHair();
         simulate = false; paused = false; windOn = false;
+        if (c.contains("wind_yaw_deg")) motion.windYawDeg = c["wind_yaw_deg"].get<float>();
+        if (c.contains("wind_pitch_deg")) motion.windPitchDeg = std::clamp(c["wind_pitch_deg"].get<float>(), -45.0f, 45.0f);
         motion.preset = MotionPreset::Rest; motion.speed = 1; motion.amount = 1; motion.t = 0; simAcc = 0; teleport = true;
         for (int i = 0; i < 3; i++) step(1.0 / 60.0);
         std::vector<float> xyz;
@@ -4604,6 +6380,11 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         restore();
         r["status"] = status_();
         return r;
+    }
+    if (d == "fit_colliders" || d == "list_colliders" || d == "edit_collider" || d == "collider_report" || d == "drape_outfit" || d == "drape_report" || d == "list_meshes" || d == "grow_colliders" || d == "shell_colliders") {   // colliders.cpp, drape.cpp
+        json cr = colCommand(d, c);
+        if (!cr.contains("error")) { if (d == "fit_colliders" || d == "edit_collider") settleRest(*this, 0.5); cr["status"] = status_(); }
+        return cr;
     }
     if (d == "collision_band") {
         // opt-in (2026-10-14, Ciri wavy headband): collision spheres / capsules that reach OUT through a headband push the
@@ -5014,7 +6795,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         // budget guard: drop the last planted guides (2 ops each) until the hair budget is within the limit
         int dropped = 0;
         computeBudget();
-        while (bud.overLimit && n > 0 && !c.value("ignore_budget", false)) {
+        while (bud.overLimit && n > 0 && !true /* budget = information only (2026-10-15) */) {
             groom.ops.pop_back(); groom.ops.pop_back();
             n--; dropped++;
             if (dropped % 4 == 0 || n == 0) { groom.replay(); editsChanged(); computeBudget(); }
@@ -5109,7 +6890,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         // budget guard: drop the last planted guides (2 ops each) until the hair budget is within the limit
         int dropped = 0;
         computeBudget();
-        while (bud.overLimit && n > 0 && !c.value("ignore_budget", false)) {
+        while (bud.overLimit && n > 0 && !true /* budget = information only (2026-10-15) */) {
             groom.ops.pop_back(); groom.ops.pop_back();
             n--; dropped++;
             if (dropped % 4 == 0 || n == 0) { groom.replay(); editsChanged(); computeBudget(); }
@@ -5143,7 +6924,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         float smoothR = c.value("smooth_mm", 12.0f) / 1000;
         int maxNew = c.value("max_new", 240);
         computeBudget();
-        if (bud.ratio > maxRatio && !c.value("ignore_budget", false)) {
+        if (bud.ratio > maxRatio && !true /* budget = information only (2026-10-15) */) {
             r["error"] = "hair budget ratio already above max_ratio: nothing planted"; r["status"] = status_(); return r;
         }
         const V3 C = pack.headC;
@@ -5348,7 +7129,7 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         int dropped = 0;
         computeBudget();
         auto over = [&]() { return bud.overLimit || bud.ratio > maxRatio; };
-        while (over() && n > 0 && !c.value("ignore_budget", false)) {   // outermost rows were planted last: they go first
+        while (over() && n > 0 && !true /* budget = information only (2026-10-15) */) {   // outermost rows were planted last: they go first
             groom.ops.pop_back(); groom.ops.pop_back();
             n--; dropped++;
             if (dropped % 4 == 0 || n == 0) { groom.replay(); editsChanged(); computeBudget(); }
@@ -5367,8 +7148,63 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         r["result"] = res; r["status"] = status_();
         return r;
     }
-    if (d == "free_budget" || d == "fill_below_hairline" || d == "centre_parting") {
-        json res = d == "free_budget" ? freeBudget(*this, c, grpId) : d == "fill_below_hairline" ? fillBelowHairline(*this, c, grpId, out) : centreParting(*this, c, grpId);
+    if (d == "regrid" && loaded) {
+        r["result"] = regridRegion(*this, c, grpId);
+        if (!c.value("list_only", false) && !r["result"].contains("error")) settleRest(*this, 0.5);
+        r["status"] = status_();
+        return r;
+    }
+    if (d == "skin_guard" && loaded) {
+        r["result"] = skinGuard(*this, c, grpId);
+        if (!c.value("list_only", false) && r["result"].value("guides_moved", 0) > 0) settleRest(*this, 0.5);
+        r["status"] = status_();
+        return r;
+    }
+    if (d == "check_faces" && loaded) {
+        r["result"] = checkFaces(*this, c, grpId);
+        if (r["result"].value("deleted_faces", 0) > 0) settleRest(*this, 0.5);
+        r["status"] = status_();
+        return r;
+    }
+    if (d == "check_direction" && loaded) {
+        r["result"] = checkDirection(c);
+        if (c.value("fix", false)) settleRest(*this, 0.5);
+        r["status"] = status_();
+        return r;
+    }
+    if (d == "direction_guard") { if (c.contains("mode")) dirGuardMode = c["mode"].get<std::string>(); r["mode"] = dirGuardMode; return r; }
+    if (d == "handback_gate") return handbackGateCmd(*this, c, out);
+    if (d == "gate_cameras") {   // the gate's camera set (name, eye, target, fovy) for the composite MCP tools
+        json l = json::array();
+        for (auto& cm : hgate::cameras(*this, c)) { json e = cm.cam; e["name"] = cm.name; l.push_back(e); }
+        r["cameras"] = l;
+        return r;
+    }
+    if (d == "gate_fail") {   // the MCP layer adds an item it ran itself (export_audit.py): the recorded verdict becomes FAIL
+        auto& g = gate::state();
+        if (g.ran && g.config == configName) { g.ok = false; g.summary["failed"].push_back(c.value("why", std::string("external item failed"))); }
+        r["pass"] = g.ok; r["failed"] = g.summary.value("failed", json::array());
+        return r;
+    }
+    if (d == "gate_status") {   // the last gate verdict on this build (what the save / export guard will do)
+        auto& g = gate::state();
+        r["ran"] = g.ran; r["pass"] = g.ok; r["project"] = g.project; r["config"] = g.config; r["when"] = g.when; r["ops_at_gate"] = g.ops;
+        r["ops_now"] = groom.ops.size(); r["stale"] = g.ran && g.ops != groom.ops.size(); r["summary"] = g.summary; r["sheet"] = g.sheet;
+        r["guard_applies"] = g.ran && g.config == configName;
+        return r;
+    }
+    if ((d == "conform_shell" || d == "crown_swirl") && loaded) {
+        json res = d == "crown_swirl" ? crownSwirl(*this, c, grpId) : conformShell(*this, c, grpId);
+        if (res.contains("error")) { r["error"] = res["error"]; return r; }
+        smap.ensure(groom.P.size());
+        if (!c.value("list_only", false)) settleRest(*this, 0.5);
+        r["result"] = res; r["status"] = status_();
+        return r;
+    }
+    if (d == "free_budget" || d == "fill_below_hairline" || d == "centre_parting" || d == "plant_flow" || d == "face_texel" || d == "soften_hairline" || d == "fade_hairline") {
+        json res = d == "free_budget" ? freeBudget(*this, c, grpId) : d == "fill_below_hairline" ? fillBelowHairline(*this, c, grpId, out)
+                 : d == "plant_flow" ? plantFlow(*this, c, grpId, out) : d == "face_texel" ? faceTexel(*this, c, grpId) : d == "soften_hairline" ? softenHairline(*this, c, grpId)
+                 : d == "fade_hairline" ? fadeHairline(*this, c, grpId) : centreParting(*this, c, grpId);
         if (res.contains("error")) { r["error"] = res["error"]; return r; }
         smap.ensure(groom.P.size());
         settleRest(*this, 0.5);
@@ -5426,6 +7262,9 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         return r;
     }
     if (d == "save_edits") {
+        std::string gerr; json gnote;   // hand-back gate guard (MCP / agent calls only; the UI never comes through here)
+        if (!gate::guard(*this, c, "save_edits", out, gerr, gnote)) { r["error"] = gerr; return r; }
+        if (!gnote.is_null()) r["gate_note"] = gnote;
         std::string p = c.value("path", out + "\\edits.json");
         std::ofstream(p) << groom.editsText(true);
         r["path"] = p; r["status"] = status_();
@@ -5462,7 +7301,26 @@ int App::runServe(const std::string& out) {
         json c, r;
         try {
             c = json::parse(line);
+            size_t ops0 = groom.ops.size(), g0 = groom.P.size();
+            std::string dcmd = c.value("do", "");
+            // direction guard: not for read-only / history commands, nor for the deliberate shape tools (buns, braids,
+            // curls, twists, fur rise or roll on purpose)
+            static const std::set<std::string> noGuard = {"open", "undo", "redo", "reset_edits", "check_direction", "direction_guard",
+                "status", "render", "guides", "guide", "faces", "check_faces", "shots_list", "look_get", "materials_list", "save_edits", "quit",
+                "pick_region", "eye_check", "hairline_check", "wind_check", "collider_report", "list_colliders", "list_meshes",
+                "drape_report", "check_loops", "free_budget", "make_bun", "braid", "curl", "hold_curls", "twist_roll", "fur"};
+            bool guard = loaded && !c.value("dry_run", false) && !c.value("list_only", false) && !noGuard.count(dcmd) &&
+                         !c.value("baseline", false) && c.value("direction_guard", dirGuardMode) != "off";
+            std::set<long long> dirPre;
+            if (guard) dirPre = directionGuardPre();
             r = serveCommand(c, out, quit);
+            if (guard && !r.contains("error")) {
+                json gd = directionGuard(ops0, g0, c.value("direction_guard", dirGuardMode), dirPre);
+                if (gd.is_object() && gd.value("refused", false))
+                    r["error"] = "direction guard: the command made " + std::to_string(gd.value("new_offenders", 0)) +
+                                 " strands point the wrong way at rest; undone (studio_direction_guard fix to auto-fix, report to allow)";
+                if (!gd.is_null()) { r["direction_guard"] = gd; if (gd.value("fixed", 0) > 0) settleRest(*this, 0.5); }
+            }
         } catch (std::exception& e) {
             r = {{"error", std::string("exception: ") + e.what()}};
         }

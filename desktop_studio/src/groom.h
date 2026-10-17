@@ -25,6 +25,10 @@ struct Groom {
 
     void init(const DeskPack* p);
     void replay();
+    // interactive drags (Move tool): checkpoint() = full replay + snapshot of the result; replayTail(n) restores the
+    // snapshot and applies only ops[n..] (n must equal the op count at checkpoint time, else it falls back to replay())
+    void checkpoint();
+    void replayTail(size_t from);
     int baseOf(int i) const;
     V3 renderPoint(int i, int k) const;      // edit frame + fixed build offset = fur frame
     Guide renderGuide(int i) const;
@@ -43,7 +47,7 @@ private:
     std::vector<int> match(const json& roots);
     void applyOp(const json& op);
     void removeGuides(const std::vector<int>& dead);
-    void insertGuide(int newIdx, bool edgeFace = false, bool srcUv = false, const float* fixUv = nullptr);
+    void insertGuide(int newIdx, bool edgeFace = false, bool srcUv = false, const float* fixUv = nullptr, const float* newUv = nullptr);
     void applyMirror(const json& op);
     void applyRebuild(const json& op);
 public:
@@ -53,6 +57,10 @@ public:
     float headSigned(V3 p, V3* nrm) const; // signed distance to the head mesh (nearest vertex + its normal)
 private:
     float planeCache = 1e9f;
+public:   // ck: read by the agent's bench_move
+    struct Snap { bool valid = false; size_t nOps = 0; std::vector<Guide> P; std::vector<char> alive; std::vector<int> src;
+                  std::set<int> edited; std::vector<Face> faces; size_t nBaked = 0; int unmatched = 0; } ck;
+    size_t stOps = size_t(-1); json stLast;   // op count + last op of the replayed state (checkpoint skips a redundant replay)
     std::vector<V3> headV, headN;
 };
 

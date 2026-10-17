@@ -265,8 +265,8 @@ void App::handleInput() {
     }
     if (!io.WantCaptureKeyboard) {
         bool ctrl = io.KeyCtrl;
-        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z)) { groom.undo(); editsChanged(); }
-        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y)) { groom.redoOp(); editsChanged(); }
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z)) { if (!colUndoKey(false)) { groom.undo(); editsChanged(); } }
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y)) { if (!colUndoKey(true)) { groom.redoOp(); editsChanged(); } }
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_O)) pickerOpen = true;
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_G)) { guideBody = !guideBody; if (guideBody) showGuideOverlay = true; }   // hide guides behind the body
         if (ctrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_H)) {   // hairstyle switcher (opens under the breadcrumb)
@@ -288,7 +288,7 @@ void App::handleInput() {
             if (ImGui::IsKeyPressed(ImGuiKey_P)) tool = Tool::Paint;
             if (ImGui::IsKeyPressed(ImGuiKey_A)) tool = Tool::Draw;
             // edits
-            if (ImGui::IsKeyPressed(ImGuiKey_Delete)) opDelete();
+            if (ImGui::IsKeyPressed(ImGuiKey_Delete)) { if (colEdit && colSel >= 0) colDeleteSel(); else opDelete(); }
             if (ImGui::IsKeyPressed(ImGuiKey_D)) opDuplicate();
             if (ImGui::IsKeyPressed(ImGuiKey_S)) opShorten();
             if (ImGui::IsKeyPressed(ImGuiKey_C)) opCurl(selList());
@@ -301,6 +301,7 @@ void App::handleInput() {
             if (ImGui::IsKeyPressed(ImGuiKey_H)) showHair = !showHair;
             if (ImGui::IsKeyPressed(ImGuiKey_M)) showMeshes = !showMeshes;
             if (ImGui::IsKeyPressed(ImGuiKey_N)) showCollision = !showCollision;
+            if (ImGui::IsKeyPressed(ImGuiKey_Y)) colSetEdit(!colEdit);   // collider edit mode
             if (ImGui::IsKeyPressed(ImGuiKey_B)) showBones = !showBones;
             if (ImGui::IsKeyPressed(ImGuiKey_Z)) wireframe = !wireframe;
             if (ImGui::IsKeyPressed(ImGuiKey_V)) showSymPlane = !showSymPlane;
@@ -309,7 +310,10 @@ void App::handleInput() {
             if (ImGui::IsKeyPressed(ImGuiKey_R)) teleport = true;
             if (ImGui::IsKeyPressed(ImGuiKey_Period)) { paused = true; stepOnce = true; }
             if (ImGui::IsKeyPressed(ImGuiKey_J)) windOn = !windOn;
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { if (!sel.empty()) sel.clear(); else stopReset(); }
+            if (tool == Tool::Move && ImGui::IsKeyPressed(ImGuiKey_LeftBracket)) focusPx = std::max(15.0f, focusPx / 1.15f);
+            if (tool == Tool::Move && ImGui::IsKeyPressed(ImGuiKey_RightBracket)) focusPx = std::min(800.0f, focusPx * 1.15f);
+            if (focusActive() && ImGui::IsKeyPressed(ImGuiKey_Escape)) focusOn = false;   // focus circle off first
+            else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { if (colEdit && colSel >= 0) colSel = colSel2 = -1; else if (!sel.empty()) sel.clear(); else stopReset(); }
             if (ImGui::IsKeyPressed(ImGuiKey_Tab)) { if (editPose) resumeMotion(); else enterEditPose(); }
             // camera
             if (ImGui::IsKeyPressed(ImGuiKey_1)) cameraShot(4);
@@ -345,7 +349,26 @@ void App::handleInput() {
         V3 d = screenDeltaToWorld(-io.MouseDelta.x, -io.MouseDelta.y, {cam.target.x, cam.target.y, cam.target.z});
         cam.target.x += d.x; cam.target.y += d.y; cam.target.z += d.z;
     }
-    if (io.MouseWheel != 0) cam.dist = std::clamp(cam.dist * std::pow(0.9f, io.MouseWheel), 0.15f, 30.0f);
+    if (io.MouseWheel != 0 && io.KeyCtrl && tool == Tool::Move) focusPx = std::clamp(focusPx * std::pow(1.12f, io.MouseWheel), 15.0f, 800.0f);   // Ctrl+wheel: focus circle radius
+    else if (io.MouseWheel != 0) cam.dist = std::clamp(cam.dist * std::pow(0.9f, io.MouseWheel), 0.15f, 30.0f);
+    if (cardPick && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { pickCardPiece(mx, my); cardPick = false; return; }   // Card pieces > Pick piece
+    if (colEdit && colMouse()) return;   // collider edit mode (Y): click / drag a collider instead of a guide
+    if (tool == Tool::Move && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        // focus circle: double-click the head = show / grab only the facing guides around it; empty space = all again
+        V3 h;
+        if (headRay(mx, my, h)) {
+            if (groom.ops.size() > strokeOps0 && dragging) { groom.ops.resize(strokeOps0); groom.replayTail(strokeOps0); }
+            focusOn = true;
+            focusW = {h.x, h.y, h.z};
+            showGuideOverlay = true;
+            sel.clear();
+            dragging = false;
+            focusUpdate();
+        } else focusOn = false;
+        dragging = false;
+        return;
+    }
+    focusUpdate();
 
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         mx0 = mxl = mx;
@@ -365,6 +388,8 @@ void App::handleInput() {
         } else if (tool == Tool::Move) {
             // a selection is locked while the button is held (user 2026-10-14): the drag moves it, never the hair under the
             // cursor; a plain click re-selects on release (below); with nothing selected the press picks the guide to move
+            for (auto it = sel.begin(); it != sel.end();)   // stale indices after undo / delete (crash 2026-10-15)
+                it = (*it < 0 || *it >= (int)groom.alive.size() || !groom.alive[*it]) ? sel.erase(it) : std::next(it);
             if (sel.empty()) { int g = pickGuide(mx, my); if (g >= 0) sel.insert(g); }
             if (sel.empty()) dragging = false;
             else {
@@ -382,6 +407,7 @@ void App::handleInput() {
                     }
                     if (dragK > 0) { fo = "point"; fk = dragK; }
                 }
+                groom.checkpoint();   // perf 2026-10-15: drag updates replay only the stroke's ops on this snapshot
                 strokeOps0 = groom.ops.size();
                 int grp = 3000 + (++grpId);
                 groom.ops.push_back({{"type", "translate"}, {"roots", groom.rootsOf(selList())}, {"offset", {0.0f, 0.0f, 0.0f}}, {"falloff", fo}, {"from", fk}, {"grp", grp}});
@@ -389,7 +415,7 @@ void App::handleInput() {
                 if (!mir.empty())
                     groom.ops.push_back({{"type", "translate"}, {"roots", groom.rootsOf(mir)}, {"offset", {0.0f, 0.0f, 0.0f}}, {"falloff", fo}, {"from", fk}, {"grp", grp}, {"mirrored", true}});
                 groom.redo.clear();
-                groom.replay();
+                groom.replayTail(strokeOps0);
             }
         } else if (tool == Tool::Comb) {
             strokeOps0 = groom.ops.size();
@@ -419,8 +445,9 @@ void App::handleInput() {
                 bool m = groom.ops[k].value("mirrored", false);
                 groom.ops[k]["offset"] = {r4(m ? -w.x : w.x), r4(w.y), r4(w.z)};
             }
-            groom.replay();
-            assetDirty = true;
+            groom.replayTail(strokeOps0);
+            // perf 2026-10-15: no HairWorks asset rebuild (~200 ms on Yennefer) while the Move drag is held; the guides
+            // follow live and the hair is rebuilt once on release (editsChanged)
         } else if (tool == Tool::Comb && (dx != 0 || dy != 0)) {
             for (int i : guidesUnderBrush(mx, my, brushPx)) {
                 float best = 1e9f;
@@ -473,11 +500,11 @@ void App::handleInput() {
         }
         if (tool == Tool::Move && groom.ops.size() > strokeOps0) {
             auto& o = groom.ops.back()["offset"];
-            if (o[0] == 0.0f && o[1] == 0.0f && o[2] == 0.0f) { groom.ops.resize(strokeOps0); groom.replay(); }
+            if (o[0] == 0.0f && o[1] == 0.0f && o[2] == 0.0f) { groom.ops.resize(strokeOps0); groom.replayTail(strokeOps0); }
         }
         // a plain click (no drag) in Move still selects the hair under the cursor (user 2026-10-14): only a held drag is locked
         if (tool == Tool::Move && std::abs(mx - mx0) < 3 && std::abs(my - my0) < 3) {
-            if (groom.ops.size() > strokeOps0) { groom.ops.resize(strokeOps0); groom.replay(); }
+            if (groom.ops.size() > strokeOps0) { groom.ops.resize(strokeOps0); groom.replayTail(strokeOps0); }
             int g = pickGuide(mx, my);
             if (g >= 0) {
                 if (io.KeyCtrl) { if (sel.count(g)) sel.erase(g); else sel.insert(g); }
@@ -661,7 +688,7 @@ static void drawTitleBar(App& a) {
             ImGui::Separator();
             if (ImGui::MenuItem("Settings...")) s_settingsReq = true;
         } else if (!strcmp(m, "Edit")) {
-            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, a.loaded)) { a.groom.undo(); a.editsChanged(); }
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, a.loaded)) { if (!a.colUndoKey(false)) { a.groom.undo(); a.editsChanged(); } }
             if (ImGui::MenuItem("Redo", "Ctrl+Y", false, a.loaded && !a.groom.redo.empty())) { a.groom.redoOp(); a.editsChanged(); }
             ImGui::Separator();
             if (ImGui::MenuItem("Select all", nullptr, false, a.loaded)) {
@@ -669,6 +696,7 @@ static void drawTitleBar(App& a) {
                 for (size_t i = 0; i < a.groom.alive.size(); i++) if (a.groom.alive[i]) a.sel.insert((int)i);
             }
             if (ImGui::MenuItem("Mirror side", nullptr, false, a.loaded)) a.opMirror();
+            if (ImGui::MenuItem("Conform to shell...", nullptr, a.shellOpen, a.loaded)) a.shellOpen = !a.shellOpen;
             if (a.beardOn) {   // Beard mode (builds with a beard fur): same switch as the inspector's "Editing  Hair | Beard"
                 ImGui::Separator();
                 if (ImGui::MenuItem("Edit the beard fur", nullptr, a.fur == 1, a.loaded && !a.windBusy)) a.setFur(a.fur == 1 ? 0 : 1);
@@ -680,6 +708,21 @@ static void drawTitleBar(App& a) {
             ImGui::Separator();
             ImGui::MenuItem("Hair (HairWorks)", "H", &a.showHair);
             ImGui::MenuItem("Head and outfit", "M", &a.showMeshes);
+            {   // 2026-10-16: helmet / hat / hood of the character's appearances (pack.headgear)
+                bool hg = a.pack.headgear.is_object();
+                ImGui::MenuItem("Show headgear / outfit items", nullptr, &a.showHeadgear, a.loaded && hg);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(hg ? "The helmet / hat / hood the character wears in the game (from the appearance), to see hair clipping through it. On by default when every appearance wears headgear."
+                                                                : "This character has no appearance with headgear.");
+                int n = 0;
+                if (hg) for (auto& [app, ms] : a.pack.headgear["apps"].items()) if (!ms.empty()) n++;
+                if (hg && n > 1 && ImGui::BeginMenu("Headgear appearance")) {
+                    for (auto& [app, ms] : a.pack.headgear["apps"].items()) {
+                        if (ms.empty()) continue;
+                        if (ImGui::MenuItem(app.c_str(), nullptr, a.headgearApp == app)) { a.headgearApp = app; a.showHeadgear = true; }
+                    }
+                    ImGui::EndMenu();
+                }
+            }
             ImGui::MenuItem("Scalp highlight (green)", nullptr, &a.scalpOverlay);
             ImGui::MenuItem("Vanilla reference...", nullptr, &a.vanillaOpen);
             if (ImGui::MenuItem("Vanilla hair (cards)", nullptr, &a.vanillaHair)) a.showHair = !a.vanillaHair;
@@ -849,12 +892,12 @@ static void drawTitleBar(App& a) {
     }
     // right: Characters (Ctrl O), Save, primary Export mod
     {
-        bool canExport = a.loaded && !a.bud.overLimit;
+        bool canExport = a.loaded;   // budget = information only (2026-10-15)
         float ew = w::textSize(g_fontUiSemi, "Export mod").x + S(22) + S(24);
         float rx = o.x + W - S(14) - ew;
         ImGui::SetCursorScreenPos(ImVec2(rx, cy - S(15)));
         if (w::primaryButton("Export mod##title", "Export mod", ImVec2(ew, S(30)), canExport, ICON_LC_PACKAGE)) { a.exportReq = true; a.pickerOpen = false; }
-        tip(!a.loaded ? "Export mod\nOpen a character first." : a.bud.overLimit ? "Export mod\nBlocked: over the 120 % performance budget." : "Export mod\nOpens the Export section (mod folder, tag, export).");
+        tip(!a.loaded ? "Export mod\nOpen a character first." : "Export mod\nOpens the Export section (mod folder, tag, export).");
         {   // Community, same size class as Export mod
             float cw = w::textSize(g_fontUiSemi, "Community").x + S(22) + S(24);
             rx -= S(8) + cw;
@@ -967,7 +1010,7 @@ static void drawRail(App& a) {
                    "Symmetry (X)\nEdits, combing, curls and paint on one side are mirrored onto the partner guides across the head's mid-plane.", on))
         a.symmetry = !a.symmetry;
     railSep();
-    if (railButton("##undo", ICON_LC_UNDO_2, w::CI_NONE, false, false, "", "Undo (Ctrl+Z)", on && !a.groom.ops.empty())) { a.groom.undo(); a.editsChanged(); }
+    if (railButton("##undo", ICON_LC_UNDO_2, w::CI_NONE, false, false, "", "Undo (Ctrl+Z)", on && (!a.groom.ops.empty() || !a.colUndoSt.empty()))) { if (!a.colUndoKey(false)) { a.groom.undo(); a.editsChanged(); } }
     if (railButton("##redo", ICON_LC_REDO_2, w::CI_NONE, false, false, "", "Redo (Ctrl+Y)", on && !a.groom.redo.empty())) { a.groom.redoOp(); a.editsChanged(); }
     railSep();
     if (railButton("##dup", ICON_LC_COPY, w::CI_NONE, false, false, "D", "Duplicate selected guides (D)\nCopies are placed one 'dup step' to the screen right, on the scalp.", on)) a.opDuplicate();
@@ -996,7 +1039,7 @@ static void budgetCard(App& a) {
     // row 1: BUDGET + state
     d->AddText(g_fontCap, g_fontCap->FontSize, ImVec2(x, y + S(3)), tc(tok::MUTED), "BUDGET");
     {
-        const char* st = b.overLimit ? "Over 120 %: export blocked" : "Within budget \xC2\xB7 export OK";
+        const char* st = b.overLimit ? "Above 120 % (information only)" : "Within 120 % \xC2\xB7 information only";
         ImU32 c = b.overLimit ? tc(tok::WARN) : tc(tok::OK);
         ImVec2 ss = ImGui::CalcTextSize(st);
         d->AddText(ImVec2(xr - ss.x, y), c, st);
@@ -1073,7 +1116,7 @@ static void budgetCard(App& a) {
     {
         std::string t = "Performance budget\nClose-up hairs " + fmtCount(b.hairsClose) + " vs the reference " + fmtCount(b.refHairsClose) + " (" + b.refName + ", " +
                         a.pack.budgetRef.value("kind", std::string("")) + ").\nHairs HairWorks generates for the current camera: " + fmtCount(a.st.hairs) +
-                        ".\nLimits are enforced: density, close-up density and width are capped, LOD stays on, export is blocked above 120 %." +
+                        ".\nLimits are enforced: density, close-up density and width are capped, LOD stays on. The 120 % mark is information only (never blocks an export)." +
                         (b.overLimit ? "\n" + b.msg : "");
         tip(t.c_str());
     }
@@ -1146,6 +1189,17 @@ static void colourRow(App& a, const ParamDef& d) {
     ImGui::PopID();
 }
 
+// L480 (2026-10-16): these change the hair in the Studio's own shading and NOTHING in the game's path tracer; in game-accurate
+// mode the preview ignores them too (hairsdk.h ptNeutralise) and the row says so
+static bool noEffectInGame(const char* path) {
+    static const char* k[] = {"graphicalMaterials.specular.specularPrimary", "graphicalMaterials.specular.specularSecondary",
+                              "graphicalMaterials.diffuse.diffuseHairNormalWeight", "graphicalMaterials.color.ambientEnvScale",
+                              "graphicalMaterials.shadow.shadowSigma", "graphicalMaterials.shadow.shadowDensityScale",
+                              "physicalMaterials.volume.density"};   // L505: the path tracer ignores the density scalar (32 hairs per face x the density map), unless enableLOD is off
+    for (const char* p : k) if (strcmp(p, path) == 0) return true;
+    return false;
+}
+
 static void paramSlider(App& a, const ParamDef& d, bool capped) {
     float v = a.look.f(d.path, paramDefault(d.path));
     bool modified = a.look.over.count(d.path) > 0;
@@ -1154,10 +1208,58 @@ static void paramSlider(App& a, const ParamDef& d, bool capped) {
     std::string disp = d.label;
     if (!disp.empty()) disp[0] = (char)toupper((unsigned char)disp[0]);
     std::string t = capped ? std::string(d.path) + "\nbuild value: " + (b.is_null() ? "(absent: HairWorks default)" : b.dump()) : std::string(d.path);
+    // 2026-10-16 (FINDINGS 10.4, user OK): always greyed, in both preview modes. waveClump / waveStrand: the engine sends
+    // 0 / 1 whatever the fur holds (the preview draws them that way too, hairsdk.cpp); density: the path tracer ignores the
+    // scalar, the Studio export writes it as a flat density map (look.density_flat / beard.density_flat) instead
+    const char* engineTip = nullptr;
+    if (!strcmp(d.path, "physicalMaterials.waveness.waveClump") || !strcmp(d.path, "physicalMaterials.waveness.waveStrand")) engineTip = "the game forces 0 / 1 (engine), ignored for the export";
+    else if (!strcmp(d.path, "physicalMaterials.volume.density")) engineTip = "the path tracer ignores it; exported as a density map";
+    // 2026-10-17 (FINDINGS 13.1, beard sweep L602-L609 measured against the game): preview gaps and dead keys get a note in the
+    // tooltip; the beard rows that neither side follows at head distance are greyed out like the engine-forced ones
+    const char* auditTip = nullptr; bool auditDead = false;
+    if (a.beardOn) {
+        if (!strcmp(d.path, "physicalMaterials.strandWidth.width")) { auditTip = "at head distance the close-up width replaces it, in the Studio and in the game (measured L602 / L608): use 'close-up width (mm)'"; auditDead = true; }
+        else if (!strcmp(d.path, "physicalMaterials.strandWidth.widthNoise") || !strcmp(d.path, "physicalMaterials.clumping.clumpScale") || !strcmp(d.path, "physicalMaterials.clumping.clumpRoundness")
+                 || !strcmp(d.path, "physicalMaterials.clumping.clumpNoise") || !strcmp(d.path, "graphicalMaterials.color.rootAlphaFalloff") || !strcmp(d.path, "levelOfDetail.distanceLOD.distanceLODWidth")
+                 || !strcmp(d.path, "graphicalMaterials.shadow.shadowSigma") || !strcmp(d.path, "graphicalMaterials.shadow.shadowDensityScale") || !strcmp(d.path, "graphicalMaterials.glint.glintStrength")) { auditTip = "no visible effect on a short beard, in the Studio or in the game (measured L602-L608)"; auditDead = true; }
+        else if (!strcmp(d.path, "graphicalMaterials.color.textureBrightness")) auditTip = "the Studio preview does not apply it; the game follows it and the export sends 1.4 for the Studio's look (measured L607)";
+        else if (!strncmp(d.path, "graphicalMaterials.specular.", 28)) auditTip = "the Studio beard preview does not apply it; the game responds a little to spec primary only (measured L607 / L608)";
+        else if (!strcmp(d.path, "physicalMaterials.strandWidth.widthRootScale") || !strcmp(d.path, "physicalMaterials.strandWidth.widthTipScale")) auditTip = "preview gap: a wider root / tip DARKENS the Studio beard and LIGHTENS it in the game (measured L602)";
+        else if (!strcmp(d.path, "physicalMaterials.waveness.waveScaleNoise")) auditTip = "preview gap: the game responds more strongly than the Studio (measured L605)";
+        else if (!strcmp(d.path, "levelOfDetail.detailLOD.detailLODWidth")) auditTip = "the game follows it over 0-3 (.3 fine strands, 1 thick, 3 a block) and it replaces the width at head distance on both sides (measured L608)";
+    } else {
+        // 2026-10-17 (FINDINGS 13.5, hair sweep L620 Ves / L621 Shani, 30 keys x 2-3 values, Studio render vs game): the two
+        // keys neither groom's game capture followed are greyed out; preview gaps get a note. Nothing the user relies on
+        // (lengthScale / lengthNoise / waves / colours) is touched: those reach the game.
+        if (!strcmp(d.path, "graphicalMaterials.shadow.shadowSigma") || !strcmp(d.path, "graphicalMaterials.shadow.shadowDensityScale")) { auditTip = "the game's path tracer ignores it (its own hair shadows; measured on two grooms, L620 / L621): Studio-only"; auditDead = true; }
+        else if (!strcmp(d.path, "physicalMaterials.strandWidth.width")) auditTip = "at head distance neither the Studio nor the game changed between .3 and 1.5 (L620 / L621): the close-up width is the visible width";
+        else if (!strcmp(d.path, "physicalMaterials.volume.lengthNoise")) auditTip = "preview gap: the game shortens / breaks the ends much more than the Studio shows (L620 / L621, 1.0 visible in game, barely in the Studio)";
+        else if (!strcmp(d.path, "graphicalMaterials.color.textureBrightness")) auditTip = "the game follows it (.5 darker, 2 lighter and desaturated; L620 / L621); the Studio applies it in game-accurate mode only (textureBrightness^1.28 gain), not in the plain preview";
+        else if (!strcmp(d.path, "levelOfDetail.detailLOD.detailLODWidth")) auditTip = "the game responds more strongly than the Studio (3 = thick painted clumps in game, a little thicker in the Studio; L620 / L621)";
+        else if (!strcmp(d.path, "graphicalMaterials.specular.specularPowerPrimary")) auditTip = "the Studio preview barely shows it; the game follows it (10 = broad shine; L620 / L621)";
+        else if (!strcmp(d.path, "graphicalMaterials.specular.specularSecondary")) auditTip = "Studio-only so far: the game showed no change at .5 (L621)";
+        else if (!strcmp(d.path, "physicalMaterials.volume.density")) auditTip = "neither side changed between .3 and 1.5 in the hair sweep (L620 / L621); the export writes the Studio's hair count as a density map";
+    }
+    if (auditTip) t += std::string("\n") + auditTip;
+    if (auditDead && !engineTip) engineTip = auditTip;
+    const bool noFx = engineTip || (a.hw.gameAccurate && a.hw.ptNeutralise && noEffectInGame(d.path));
+    if (engineTip) { disp += "  (ignored by the game)"; t += std::string("\n") + engineTip; ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.55f); ImGui::BeginDisabled(); }
+    else if (noFx) { disp += "  (no effect in game)"; t += "\nNo effect in game: the path tracer ignores this value (L480 report). The game-accurate preview ignores it too; it is still exported."; ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.55f); }
     bool reset = false;
     float hi = capped ? std::min(d.hi, a.look.cap(d.path)) : d.hi;
+    // 2026-10-17 GPU warning (FINDINGS 11.4, gpu_agent L580-L586): stiffnessStrength below 1 together with a low stiffness group
+    // (stiffness < .5 or tipStiffness 0) made the Svanrige user save cost 80-180 ms a frame; strength 1 (the default, also on
+    // reset) is free. Shown only; nothing in the project is changed.
+    const bool gpuWarn = !strcmp(d.path, "physicalMaterials.stiffness.stiffnessStrength") && v < 0.999f &&
+                         (a.look.f("physicalMaterials.stiffness.stiffness", 0.5f) < 0.5f || a.look.f("physicalMaterials.stiffness.tipStiffness", 0.0f) <= 0.0f);
+    if (gpuWarn) {
+        disp += "  (GPU!)";
+        t += "\nGPU WARNING: stiffness strength below 1 with stiffness < .5 or tip stiffness 0 costs 5-10x the GPU time in the game (measured: 15 -> 80-180 ms). Keep it at 1 and free the motion with the other keys.";
+    }
     if (w::sliderRow(d.label, disp.c_str(), &v, d.lo, hi, "%.3f", ref, modified, &reset, t.c_str())) { a.look.setF(d.path, v); a.computeBudget(); }
     if (reset) { a.look.reset(d.path); a.computeBudget(); }
+    if (engineTip) ImGui::EndDisabled();
+    if (noFx) ImGui::PopStyleVar();
 }
 
 static void curveEditor(App& a) {
@@ -1444,6 +1546,215 @@ static void furSwitch(App& a) {
     ImGui::SetCursorScreenPos(ImVec2(wp.x, ImGui::GetCursorScreenPos().y));
 }
 
+// ---- Colliders section (colliders.cpp): fit to the shown geometry, edit by hand, clearance check
+static void colliderSection(App& a) {
+    DeskPack& pk = a.pack;
+    if (a.fur == 1) { smallNote("Colliders belong to the hair fur: switch back to Hair mode."); return; }
+    w::subHeader("Fit to the geometry");
+    if (a.colTargets.empty()) {
+        if (w::button("Find the meshes", "Find the meshes", ImVec2(-1, 0))) a.colScan();
+        tip("Lists the meshes of this build that can be fitted: outfit pieces (also the ones of an outfit mod named in the config), hood, scabbard, sword. Takes a few seconds.");
+    } else {
+        for (auto& t : a.colTargets) {
+            std::string id = t.value("id", ""), lb = t.value("label", id);
+            bool v = a.colPick[id];
+            std::string note = t.value("note", "");
+            if (w::switchRow(lb.c_str(), &v, note.c_str())) a.colPick[id] = v;
+        }
+    }
+    bool r = false;
+    w::sliderRow("pad mm", "Pad mm", &a.colPad, 0, 10, "%.1f", NAN, false, &r, "Added to every fitted radius (the pipeline uses 2 mm).");
+    w::switchRow("reach as the config", &a.colReachCfg, "On: only the part of each mesh the hair can touch, as the config says (outfit_reach / item reach). Off: the slider below.");
+    if (!a.colReachCfg) w::sliderRow("reach mm", "Reach mm", &a.colReach, 0, 300, "%.0f", NAN, false, &r, "Only mesh parts within this distance of a guide are fitted. 0 = the whole mesh.");
+    smallNote("Replaces the outfit / back-item colliders; head, neck, ear and hand-made colliders stay. Limit 85 spheres / 75 capsules in a fur (twin spheres count).");
+    if (w::primaryButton("Fit colliders", "Fit colliders", ImVec2(-1, S(34)), true)) a.colFit(json::object());
+    tip("Fits spheres and capsules to the ticked meshes, bound to the skin bone that moves them. Undo with Ctrl+Z. Stored in the project and exported into the fur.");
+    if (!a.colMsg.empty()) smallNote(a.colMsg);
+    if (a.colReportJ.is_object() && a.colReportJ.contains("targets")) {
+        for (auto& [k, v] : a.colReportJ["targets"].items()) {
+            std::string b0 = v["coverage_before_pct"].is_number() ? std::to_string((int)std::lround(v["coverage_before_pct"].get<double>())) : "-";
+            std::string b1 = v["coverage_pct"].is_number() ? std::to_string((int)std::lround(v["coverage_pct"].get<double>())) : "-";
+            smallNote(k + ": " + std::to_string(v.value("spheres", 0)) + " spheres, vertices covered " + b0 + " -> " + b1 + " %");
+        }
+        for (auto& n : a.colReportJ.value("notes", json::array())) smallNote(n.get<std::string>(), tok::WARN);
+    }
+    ImGui::Dummy(ImVec2(0, S(4)));
+    w::subHeader("Edit by hand");
+    bool ed = a.colEdit;
+    if (w::switchRow("Edit colliders (Y)", &ed, "Circles for every collider in the viewport. Click selects, drag moves it in the screen plane (bone-local), Ctrl+click picks a second sphere, Delete removes. The character is held in the bind pose.")) a.colSetEdit(ed);
+    int selFlat = a.colEdit ? a.colFlatOf(a.colSel) : -1;
+    if (selFlat >= 0 && a.colFlats.count(selFlat)) {
+        // a flat (a panel of thin capsules): edited as a whole, every change remakes its capsules
+        App::ColFlat f = a.colFlats[selFlat];
+        int nCap = 0;
+        for (int i = 0; i < (int)pk.spheres.size(); i++) if (a.colFlatOf(i) == selFlat) nCap++;
+        smallNote("flat#" + std::to_string(selFlat) + " on " + pk.bones[f.bone].name + " \xC2\xB7 " + std::to_string(nCap / 2) + " capsules");
+        bool ch = false;
+        float cm[3] = {f.c.x * 1000, f.c.y * 1000, f.c.z * 1000}, wm = f.w * 1000, hm = f.h * 1000, tm = f.t * 1000;
+        ch |= w::sliderRow("flat centre x", "Centre x mm", &cm[0], -1000, 1000, "%.1f", NAN, false, &r, "World position of the flat's centre (rest pose). It moves with its bone.");
+        ch |= w::sliderRow("flat centre y", "Centre y mm", &cm[1], -1000, 1000, "%.1f", NAN, false, &r, nullptr);
+        ch |= w::sliderRow("flat centre z", "Centre z mm", &cm[2], 0, 2200, "%.1f", NAN, false, &r, nullptr);
+        ch |= w::sliderRow("flat width", "Width mm", &wm, 5, 800, "%.1f", NAN, false, &r, "Across the capsules. More width = more capsules (they touch), within the 85 / 75 limit.");
+        ch |= w::sliderRow("flat height", "Height mm", &hm, 5, 800, "%.1f", NAN, false, &r, "Along the capsules.");
+        ch |= w::sliderRow("flat thickness", "Thickness mm", &tm, 1, 60, "%.1f", NAN, false, &r, "Capsule radius.");
+        ch |= w::sliderRow("flat yaw", "Yaw \xC2\xB0", &f.yaw, -180, 180, "%.1f", NAN, false, &r, "Turn about the vertical axis. 0 = facing the front.");
+        ch |= w::sliderRow("flat pitch", "Pitch \xC2\xB0", &f.pitch, -180, 180, "%.1f", NAN, false, &r, "Tilt forward / back.");
+        ch |= w::sliderRow("flat roll", "Roll \xC2\xB0", &f.roll, -180, 180, "%.1f", NAN, false, &r, "Spin in its own plane.");
+        if (ch) {
+            if (!a.colDragPushed) { a.colPushUndo(); a.colDragPushed = true; }
+            f.c = {cm[0] / 1000, cm[1] / 1000, cm[2] / 1000};
+            f.w = wm / 1000, f.h = hm / 1000, f.t = tm / 1000;
+            std::string e = a.colFlatBuild(selFlat, f);
+            if (!e.empty()) a.status = "Flat: " + e;
+            pk.colModified = true;
+            a.colOpsAt = a.groom.ops.size();
+            if (ImGui::GetTime() - a.lastBuild > 0.25) a.assetDirty = true;
+        }
+        if (a.colDragPushed && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { a.colDragPushed = false; a.colChanged(); }
+        float hw = (ImGui::GetContentRegionAvail().x - S(8)) * 0.5f;
+        if (w::button("Delete flat", "Delete flat", ImVec2(hw, 0))) {
+            json c = {{"op", "flat_delete"}, {"flat", selFlat}};
+            a.colEditOp(c);
+            a.status = "Flat deleted";
+        }
+        ImGui::SameLine(0, S(8));
+        if (w::button("Mirror L/R##flat", "Mirror L/R", ImVec2(hw, 0))) {
+            json c = {{"op", "flat_mirror"}, {"flat", selFlat}};
+            json res = a.colEditOp(c);
+            a.status = res.contains("error") ? "Mirror: " + res["error"].get<std::string>() : "Mirrored to " + res.value("tag", std::string());
+        }
+        tip("Adds the mirror image of the flat about the head's mid-plane (r_ <-> l_ bone when the bone has a twin).");
+    } else if (a.colEdit && a.colSel >= 0 && a.colSel < (int)pk.spheres.size()) {
+        Sphere& s = pk.spheres[a.colSel];
+        const char* gn = s.grp == 0 ? "base" : s.grp == 1 ? "fitted / outfit" : s.grp == 2 ? "manual" : "as built";
+        smallNote("#" + std::to_string(a.colSel) + " on " + pk.bones[s.bone].name + " \xC2\xB7 " + gn + (s.tag.empty() ? "" : " \xC2\xB7 " + s.tag));
+        {   // bone the sphere follows (2026-10-16): combo of the bones that matter, rebinding keeps the world position
+            static const char* kBones[] = {"head", "neck", "neck2", "torso3"};
+            int cur = -1;
+            for (int k = 0; k < 4; k++) if (pk.bones[s.bone].name == kBones[k]) cur = k;
+            int pick = cur < 0 ? 0 : cur;
+            if (comboRow("bone", &pick, kBones, 4, "The bone this collider follows. A head-height sphere on torso3 does not turn with the head: it eats the hair when the character moves (Geralt's headband ring, 2026-10-16). Changing it keeps the sphere where it is.") && pick != cur) {
+                json res = a.colEditOp({{"op", "bone"}, {"index", a.colSel}, {"bone", kBones[pick]}});
+                if (res.contains("error")) a.status = "Bone: " + res["error"].get<std::string>();
+            }
+            int want = a.colBoneFor(s.hasC ? s.c : a.colLocalToWorld(s.bone, s.local));
+            if (want != s.bone) smallNote("sits in the " + pk.bones[want].name + " region: rebind it", tok::WARN);
+        }
+        if (w::button("Rebind all by position", "Rebind all by position", ImVec2(-1, 0))) {
+            json res = a.colEditOp({{"op", "rebind"}});
+            a.status = res.contains("error") ? "Rebind: " + res["error"].get<std::string>() : "Rebound " + std::to_string(res.value("count", 0)) + " spheres to the bone of their region (world positions kept)";
+        }
+        tip("Every sphere takes the bone of the region it sits in (head above the neck, neck, else torso3), keeping its rest position. One undo step.");
+        bool ch = false;
+        float mm[3] = {s.local.x * 1000, s.local.y * 1000, s.local.z * 1000}, rm = s.r * 1000;
+        ch |= w::sliderRow("offset x", "Offset x mm", &mm[0], -200, 200, "%.1f", NAN, false, &r, "Bone-local offset of the sphere centre.");
+        ch |= w::sliderRow("offset y", "Offset y mm", &mm[1], -200, 200, "%.1f", NAN, false, &r, nullptr);
+        ch |= w::sliderRow("offset z", "Offset z mm", &mm[2], -200, 200, "%.1f", NAN, false, &r, nullptr);
+        ch |= w::sliderRow("radius mm", "Radius mm", &rm, 1, 100, "%.1f", NAN, false, &r, "Sphere radius.");
+        if (ch) {
+            if (!a.colDragPushed) { a.colPushUndo(); a.colDragPushed = true; }
+            s.local = {mm[0] / 1000, mm[1] / 1000, mm[2] / 1000};
+            s.r = rm / 1000;
+            if (a.colR.count(a.colSel)) a.colR.erase(a.colSel);
+            if (s.grp >= 0 && s.grp != 2) { s.grp = 2; if (s.tag.empty()) s.tag = "edited"; }
+            a.colRecompute(a.colSel);
+            pk.colModified = true;
+            a.colOpsAt = a.groom.ops.size();
+            if (ImGui::GetTime() - a.lastBuild > 0.25) a.assetDirty = true;
+        }
+        if (a.colDragPushed && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { a.colDragPushed = false; a.colChanged(); }
+        float hw = (ImGui::GetContentRegionAvail().x - S(8)) * 0.5f;
+        if (w::button("Delete (Del)", "Delete (Del)", ImVec2(hw, 0))) a.colDeleteSel();
+        ImGui::SameLine(0, S(8));
+        if (w::button("Mirror L/R", "Mirror L/R", ImVec2(hw, 0))) {
+            std::string why;
+            a.colPushUndo();
+            int k = a.colMirrorSphere(a.colSel, &why);
+            if (k < 0) { a.colUndoSt.pop_back(); a.status = "Mirror: " + why; }
+            else { a.colSel = k; a.colChanged(); a.status = "Mirrored to #" + std::to_string(k); }
+        }
+        tip("Adds the mirror image about the head's mid-plane (r_ <-> l_ bone when the bone has a twin), with its own capsule.");
+        if (a.colSel2 >= 0 && a.colSel2 < (int)pk.spheres.size() && a.colSel2 != a.colSel) {
+            std::string lbl = "Capsule between #" + std::to_string(a.colSel) + " and #" + std::to_string(a.colSel2);
+            if (w::button(lbl.c_str(), lbl.c_str(), ImVec2(-1, 0))) {
+                json c = {{"op", "link"}, {"a", a.colSel}, {"b", a.colSel2}};
+                a.colEditOp(c);
+            }
+            tip("HairWorks collides with capsules (two spheres joined). Ctrl+click picks the second sphere.");
+        }
+    }
+    if (w::button("Add a sphere", "Add a sphere", ImVec2(-1, 0))) {
+        bool has = a.colSel >= 0 && a.colSel < (int)pk.spheres.size();
+        V3 at = has ? pk.spheres[a.colSel].c + V3{0.03f, 0, 0} : a.pack.headC;
+        int bone = a.colBoneFor(at);   // the bone of the region (2026-10-16; a head-height sphere on torso3 does not turn with the head)
+        if (pk.spheres.size() + 2 > 85) a.status = "Colliders: the 85-sphere limit is reached";
+        else {
+            a.colPushUndo();
+            a.colSel = a.colAddSphere(bone, at, 0.02f, 2, "manual", true);
+            a.colChanged();
+            a.colSetEdit(true);
+        }
+    }
+    tip("New 20 mm sphere (with its twin and capsule) next to the selected one, or at the head. Move and resize it, or use the Mirror button.");
+    if (w::button("Add a flat", "Add a flat", ImVec2(-1, 0))) {
+        bool has = a.colSel >= 0 && a.colSel < (int)pk.spheres.size();
+        V3 at = has ? pk.spheres[a.colSel].c + V3{0.03f, 0, 0} : a.pack.headC;
+        int bone = a.colBoneFor(at);
+        json c = {{"op", "add_flat"}, {"bone", bone}, {"world_mm", {at.x * 1000, at.y * 1000, at.z * 1000}}, {"width_mm", 200}, {"height_mm", 150}, {"thickness_mm", 10}};
+        json res = a.colEditOp(c);
+        if (res.contains("error")) a.status = "Flat: " + res["error"].get<std::string>();
+        else { a.colSetEdit(true); a.status = "Added " + res.value("tag", std::string()) + " (" + std::to_string(res.value("capsules_in_flat", 0)) + " capsules)"; }
+    }
+    tip("New flat panel (200 x 150 mm, 10 mm thick) next to the selected collider, or at the head: thin parallel capsules side by side, "
+        "as HairWorks collides with spheres and capsules only. Select one of its circles to move, size and turn it.");
+    if (pk.colModified && w::button("Reset to the build's colliders", "Reset to the build's colliders", ImVec2(-1, 0))) {
+        json c = {{"op", "reset"}};
+        a.colEditOp(c);
+        a.status = "Colliders back to the build's own";
+    }
+    ImGui::Dummy(ImVec2(0, S(4)));
+    w::subHeader("Drape hair over meshes");
+    {
+        json dl = a.drapeList();
+        std::string picked;
+        for (auto& m : dl) {
+            std::string key = std::to_string(m.value("i", 0));
+            bool v = a.drapePick[key];
+            std::string lb = m.value("name", "") + (m.value("hood", false) ? " (hood)" : "") + " #" + key;
+            std::string note = "texture " + m.value("tex", std::string("-")) + ", " + std::to_string(m.value("tris", 0)) + " triangles";
+            if (w::switchRow(lb.c_str(), &v, note.c_str())) a.drapePick[key] = v;
+            if (v) picked += (picked.empty() ? "" : ",") + key;
+        }
+        w::sliderRow("drape pad mm", "Pad mm", &a.drapePad, 0, 15, "%.1f", NAN, false, &r, "Hair is moved to this distance above the outer surface of the ticked meshes.");
+        w::sliderRow("drape root mm", "Fixed root part mm", &a.drapeRoot, 5, 80, "%.0f", NAN, false, &r, "The first part of every strand never moves.");
+        if (w::button("Drape hair over selected meshes", "Drape hair over selected meshes", ImVec2(-1, S(30)), ICON_LC_MOVE, false, !picked.empty())) {
+            json mm = json::array();
+            for (auto& [k, v] : a.drapePick) if (v) mm.push_back(std::stoi(k));
+            json c = {{"meshes", mm}, {"pad_mm", a.drapePad}, {"root_mm", a.drapeRoot}};
+            json res = a.drapeCommand("drape_outfit", c);
+            a.drapeMsg = res.contains("error") ? "Drape: " + res["error"].get<std::string>()
+                       : "Draped " + std::to_string(res.value("guides_draped", 0)) + " guides (" + std::to_string(res.value("points_moved", 0)) + " points)";
+            a.status = a.drapeMsg;
+        }
+        tip("Guide points inside or within the pad of the ticked meshes (hood, scabbard, sword, outfit) move to the outside of their surface and the rest of "
+            "the strand follows (segment lengths kept, root part fixed). One undoable step (Ctrl+Z), saved in the project, replayed by the export.");
+        if (!a.drapeMsg.empty()) smallNote(a.drapeMsg);
+    }
+    ImGui::Dummy(ImVec2(0, S(4)));
+    w::subHeader("Clearance");
+    float hw2 = (ImGui::GetContentRegionAvail().x - S(8)) * 0.5f;
+    if (w::button("Check at rest", "Check at rest", ImVec2(hw2, 0))) { json c = {{"mode", "rest"}}; a.colReportJ["clearance"] = a.colReport(c); }
+    ImGui::SameLine(0, S(8));
+    if (w::button("Check moving", "Check moving", ImVec2(hw2, 0))) { json c = {{"mode", "sim"}, {"preset", motionName(a.motion.preset)}}; a.colReportJ["clearance"] = a.colReport(c); }
+    tip("Guides whose strand ends inside a collider (rest: the authored hair; moving: the simulation read back with the current motion preset), and capsules that stick out of the skin or the outfit.");
+    if (a.colReportJ.is_object() && a.colReportJ.contains("clearance")) {
+        const json& cl = a.colReportJ["clearance"];
+        std::string t = cl.value("mode", std::string()) + ": " + std::to_string(cl.value("guides_inside", 0)) + " guides end inside a collider \xC2\xB7 " +
+                        std::to_string(cl.value("capsules_poking_out", 0)) + " capsules poke out \xC2\xB7 " + std::to_string(cl.value("spheres_without_capsule", 0)) + " spheres have no capsule";
+        smallNote(t, cl.value("guides_inside", 0) || cl.value("capsules_poking_out", 0) ? tok::WARN : tok::MUTED);
+    }
+}
+
 static void drawInspector(App& a) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     float top = vp->Pos.y + g_titleH, H = vp->Size.y - g_titleH - g_statusH;
@@ -1495,6 +1806,28 @@ static void drawInspector(App& a) {
                 else paramSlider(a, d, true);
                 ImGui::PopID();
             }
+            if (a.beardOn) {
+                // 2026-10-17 user request: copy the root / tip colours between the hair and the beard fur (look is the
+                // live fur, beardLook the parked one; swapFur exchanges them in Beard mode)
+                Look& hairL = a.fur == 0 ? a.look : a.beardLook;
+                Look& beardL = a.fur == 0 ? a.beardLook : a.look;
+                auto copyColours = [](const Look& from, Look& to) {
+                    for (const char* p : {"graphicalMaterials.color.rootColor", "graphicalMaterials.color.tipColor"}) to.setJson(p, from.get(p));
+                };
+                w::subHeader("Hair / beard");
+                float hw = (ImGui::GetContentRegionAvail().x - S(8)) * 0.5f;
+                if (w::button("Hair colour to beard", "Hair colour to beard", ImVec2(hw, 0))) {
+                    copyColours(hairL, beardL);
+                    a.status = "Beard root / tip colour set from the hair";
+                }
+                tip("Copies the hair's root and tip colours to the beard.");
+                ImGui::SameLine(0, S(8));
+                if (w::button("Beard colour to hair", "Beard colour to hair", ImVec2(hw, 0))) {
+                    copyColours(beardL, hairL);
+                    a.status = "Hair root / tip colour set from the beard";
+                }
+                tip("Copies the beard's root and tip colours to the hair.");
+            }
             bodyEnd();
         }
     }
@@ -1513,7 +1846,32 @@ static void drawInspector(App& a) {
             curveEditor(a);
             ImGui::Dummy(ImVec2(0, S(4)));
             w::switchRow("Simulate", &a.simulate, "Simulate\nOff = rest pose (what you edit).");
-            w::switchRow("Close-up LOD", &a.forceCloseLod, "Close-up LOD\nShow the close-up (detail LOD) hair count at any distance: the dialogue worst case.");
+            {
+                bool ga = a.hw.gameAccurate;
+                if (w::switchRow("Game-accurate hair", &ga,
+                                 "Game-accurate hair (default on)\nShow the hair the way the game's path tracer builds it: 32 hairs per growth face "
+                                 "(RTNHairsPerPatch), the close-up detail LOD blended into the width and hair count as the game does (L480), the density texture per hair, root transparency from your "
+                                 "dx12user.settings (closest hair only, as in the game), no per-clump / per-strand wave weights. "
+                                 "Off = the HairWorks 1.2.1 raster preview (close-up detail LOD: about 2.8x more, thinner hairs than the game)."))
+                    a.setGameAccurate({{"on", ga}});
+                if (ga) {
+                    bool pl = a.hw.ptLook;
+                    if (w::switchRow("Path-traced look", &pl,
+                                     "Path-traced look (default on)\nComposite the hair like the game's denoised path tracer: a soft veil whose "
+                                     "opacity follows how much of each pixel the strands cover, so the skin shows through thin hair the way it "
+                                     "does in game. Calibrated on in-game shots (L387). Off = every strand drawn crisp and opaque."))
+                        a.setGameAccurate({{"pt_look", pl}});
+                    if (pl) {
+                        bool th = a.thinHair;
+                        if (w::switchRow("Thin-hair model", &th,
+                                         "Thin-hair model (default off)\nTwice the hairs, each much finer, and width / root / tip changes compressed as in game (PT_LOOK_STUDY.md sn1): "
+                                         "root / tip 1.0 or 2.0 stay fine strands instead of thick clumps. Preview only."))
+                            a.setGameAccurate({{"thin_hair", th}});
+                    }
+                }
+            }
+            if (!a.hw.gameAccurate)
+                w::switchRow("Close-up LOD", &a.forceCloseLod, "Close-up LOD\nShow the close-up (detail LOD) hair count at any distance: the dialogue worst case.");
             bool ewm = a.editWhileMoving;
             if (w::switchRow("Edit while moving", &ewm,
                              "Edit while moving\nOff (default): an editing tool pauses the motion and edits the bind pose. On: edit the posed hair while it moves; "
@@ -1603,6 +1961,106 @@ static void drawInspector(App& a) {
             bodyEnd();
         }
     }
+    // ---- Braid tool (2026-10-15, serve_braid.inc): small 3-strand HairWorks plaits from kept braid cards
+    {
+        int kept = 0;
+        for (auto& kv : a.keepCards) for (auto b : kv.second) kept += b;
+        std::string sum = kept ? std::to_string(kept) + " kept card triangles" : "pick braid cards first (keep cards)";
+        if (w::sectionHeader("Braid tool", "Braid tool", nullptr, w::CI_NONE, sum.c_str(), false, false)) {
+            bool r = false;
+            w::sliderRow("period mm", "Plait period mm", &a.braidPeriod, 3, 30, "%.1f", NAN, false, &r, "Length of one full plait period (a lobe crosses over twice).");
+            w::sliderRow("width x", "Width x", &a.braidWidth, 0.3f, 2.0f, "%.2f", NAN, false, &r, "Braid width relative to the card strip.");
+            w::sliderRow("tightness", "Tightness", &a.braidTight, 0, 1.5f, "%.2f", NAN, false, &r, "How deep the lobes pass over / under each other.");
+            w::sliderRow("tassel x", "Tassel x", &a.braidTassel, 0, 2.0f, "%.2f", NAN, false, &r, "Tassel length below the tie relative to the cards.");
+            float pl = (float)a.braidPerLobe;
+            if (w::sliderRow("guides / lobe", "Guides per lobe", &pl, 3, 8, "%.0f", NAN, false, &r, "Guides on each lobe ring (growth faces stay inside the lobe).")) a.braidPerLobe = (int)pl;
+            if (w::button("Braid the kept cards", "Braid the kept cards", ImVec2(-1, 0))) {
+                json res = a.braidTool({{"from", "kept"}, {"period_mm", a.braidPeriod}, {"width_scale", a.braidWidth}, {"tightness", a.braidTight},
+                                        {"tassel_scale", a.braidTassel}, {"guides_per_lobe", a.braidPerLobe}});
+                a.status = res.contains("error") ? "Braid: " + res["error"].get<std::string>()
+                                                 : "Braid: " + std::to_string(res.value("new_guides", 0)) + " guides, kept cards replaced (Ctrl+Z undoes the guides)";
+            }
+            tip("Each kept braid card group (studio_keep_cards / project keep_cards) becomes a plait of short stiff guide pieces rooted along the braid, faces only inside each lobe. Works on the live fur (Beard mode for beard braids). MCP: studio_braid.");
+            smallNote("Undo removes the braid guides; the dropped cards come back by reopening the project or keep cards.");
+            bodyEnd();
+        }
+    }
+    // ---- Card pieces (2026-10-17): move kept vanilla card pieces (Junior's tie ring); studio_card_offset in the UI
+    {
+        std::string sum = a.cardOffsets.empty() ? "no moved pieces" : std::to_string(a.cardOffsets.size()) + " moved piece" + (a.cardOffsets.size() > 1 ? "s" : "");
+        if (w::sectionHeader("Card pieces", "Card pieces", nullptr, w::CI_NONE, sum.c_str(), !a.cardOffsets.empty(), false)) {
+            if (w::button(a.cardPick ? "Click a kept card piece..." : "Pick piece", a.cardPick ? "Click a kept card piece..." : "Pick piece", ImVec2(-1, 0)))
+                a.cardPick = !a.cardPick;
+            tip("Then click a kept vanilla card piece in the viewport (the cards kept with keep cards, e.g. a tie ring). Clicking a piece that already has a move selects it.");
+            if (a.fur == 1) smallNote("Card pieces belong to the hair fur: switch back from Beard mode to edit them.");
+            for (int k = 0; k < (int)a.cardOffsets.size(); k++) {
+                const json& e = a.cardOffsets[k];
+                auto o = e.value("offset", json::array({0, 0, 0}));
+                char lbl[96];
+                snprintf(lbl, sizeof lbl, "Piece %d  %+.0f %+.0f %+.0f mm##cp%d", k + 1, o[0].get<float>() * 1000, o[1].get<float>() * 1000, o[2].get<float>() * 1000, k);
+                if (ImGui::Selectable(lbl, a.cardSel == k)) a.cardSel = k;
+            }
+            if (a.cardSel >= 0 && a.cardSel < (int)a.cardOffsets.size() && a.fur == 0) {
+                json& e = a.cardOffsets[a.cardSel];
+                if (!e.contains("offset")) e["offset"] = {0.0, 0.0, 0.0};
+                if (!e.contains("rotate_deg")) e["rotate_deg"] = {0.0, 0.0, 0.0};
+                float off[3], rot[3];
+                for (int q = 0; q < 3; q++) { off[q] = e["offset"][q].get<float>() * 1000; rot[q] = e["rotate_deg"][q].get<float>(); }
+                bool ch = false, rs = false;
+                w::subHeader("Offset (mm, +Y forward, +Z up)");
+                const char* ol[] = {"X mm", "Y mm", "Z mm"}, *rl[] = {"rot X", "rot Y", "rot Z"};
+                if (!a.cardDirty) a.cardPrev = a.cardOffsets;
+                for (int q = 0; q < 3; q++) {
+                    rs = false;
+                    if (w::sliderRow(ol[q], ol[q], &off[q], -80, 80, "%.1f", 0.0f, off[q] != 0, &rs, "Move the piece (mm). Ctrl+click to type a value.")) ch = true;
+                    if (rs) { off[q] = 0; ch = true; }
+                }
+                w::subHeader("Rotate (deg, about the piece centre)");
+                for (int q = 0; q < 3; q++) {
+                    rs = false;
+                    if (w::sliderRow(rl[q], rl[q], &rot[q], -180, 180, "%.0f", 0.0f, rot[q] != 0, &rs, "Rotate the piece about its centre (X, then Y, then Z).")) ch = true;
+                    if (rs) { rot[q] = 0; ch = true; }
+                }
+                if (ch) {
+                    for (int q = 0; q < 3; q++) { e["offset"][q] = std::round(off[q] * 10) / 10000.0; e["rotate_deg"][q] = std::round(rot[q] * 10) / 10.0; }
+                    a.applyCardOffsets();   // live preview while dragging; one undo step on release
+                    a.cardDirty = true;
+                }
+                w::switchRow("Guides follow", &a.cardFollow, "On release, guides that pass near the piece's old centre (a ponytail gathered by a ring) move with it: they converge into the hole, the part above slides along, the rest is carried. Same undo step.");
+                if (a.cardFollow) {
+                    bool r2 = false;
+                    w::sliderRow("follow mm", "Follow radius mm", &a.cardFollowMm, 4, 30, "%.0f", 14.0f, false, &r2, "Guides whose closest point to the old piece centre is within this distance follow.");
+                    w::sliderRow("min length m", "Min guide length m", &a.cardFollowLen, 0.02f, 0.4f, "%.2f", 0.10f, false, &r2, "Shorter guides never follow (keeps the scalp hair around the piece).");
+                }
+                if (a.cardDirty && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    json res = a.commitCardOffsets(a.cardPrev, a.cardFollow);
+                    a.cardDirty = false;
+                    a.status = "Card pieces: piece " + std::to_string(a.cardSel + 1) + " moved" +
+                               (a.cardFollow ? ", " + std::to_string(res.value("guides_followed", 0)) + " guides followed" : "") + " (Ctrl+Z undoes)";
+                }
+                if (w::button("Reset piece", "Reset piece", ImVec2(-1, 0))) {
+                    json prev = a.cardOffsets;
+                    e["offset"] = {0.0, 0.0, 0.0}; e["rotate_deg"] = {0.0, 0.0, 0.0};
+                    a.applyCardOffsets(); a.commitCardOffsets(prev, false);
+                } else if (w::button("Remove piece", "Remove piece", ImVec2(-1, 0))) {
+                    json prev = a.cardOffsets;
+                    a.cardOffsets.erase(a.cardOffsets.begin() + a.cardSel);
+                    a.cardSel = -1;
+                    a.applyCardOffsets(); a.commitCardOffsets(prev, false);
+                }
+            }
+            smallNote("Saved in the project (card_offsets); the game build moves the same piece (config key card_offset, needs split_cards keeping it). MCP: studio_card_offset.");
+            bodyEnd();
+        }
+    }
+    // ---- Colliders (colliders.cpp): fit to the shown meshes, edit by hand, clearance
+    {
+        std::string sum = std::to_string(a.pack.spheres.size()) + " spheres · " + std::to_string(a.pack.capsules.size()) + " capsules" + (a.pack.colModified ? " · edited" : "");
+        if (w::sectionHeader("Colliders", "Colliders", nullptr, w::CI_COLLIDER, sum.c_str(), a.pack.colModified, false)) {
+            colliderSection(a);
+            bodyEnd();
+        }
+    }
     // ---- Symmetry
     if (w::sectionHeader("Symmetry", "Symmetry", ICON_LC_FLIP_HORIZONTAL_2, w::CI_NONE, a.symmetry ? "Live mirror on" : "Live mirror off", a.symmetry, false)) {
         w::switchRow("Live symmetry (X)", &a.symmetry, "Every edit on one side is applied to the partner guides on the other side (nearest mirrored root within 15 mm).");
@@ -1630,6 +2088,9 @@ static void drawInspector(App& a) {
             bool r = false;
             float fk = (float)a.fromK;
             if (w::sliderRow("from CV", "From CV", &fk, 0, (float)std::max(a.groom.K - 1, 1), "%.0f", NAN, false, &r, "CVs before this one stay fixed.")) a.fromK = (int)std::lround(fk);
+            w::sliderRow("grab circle px", "Grab circle px", &a.focusPx, 15, 800, "%.0f", NAN, false, &r,
+                         "Move tool: double-click the head to show and grab only the camera-facing guides inside this circle "
+                         "(Ctrl+wheel or [ ] resize it); double-click empty space or Esc shows all guides again.");
             w::sliderRow("comb strength", "Comb strength", &a.combStrength, 0.1f, 2.0f, "%.2f", NAN, false, &r, "How strongly the comb drags guides.");
             w::sliderRow("keep %", "Keep %", &a.keepPct, 10, 100, "%.0f", NAN, false, &r, "Shorten keeps this percentage of the length.");
             w::sliderRow("dup step mm", "Dup step mm", &a.dupStepMm, 1, 20, "%.0f", NAN, false, &r, "Distance of a duplicate from its source.");
@@ -1655,14 +2116,14 @@ static void drawInspector(App& a) {
             w::popInputStyle();
             tip("Name of this edit set, used in the file names.");
             ImGui::Dummy(ImVec2(0, S(4)));
-            if (w::primaryButton("Export edits + mod", "Export edits + mod", ImVec2(-1, S(36)), !a.bud.overLimit, ICON_LC_PACKAGE)) { std::string o; a.exportAll(o); }
+            if (w::primaryButton("Export edits + mod", "Export edits + mod", ImVec2(-1, S(36)), true, ICON_LC_PACKAGE)) { std::string o; a.exportAll(o); }
             tip("Writes build\\desktop_studio\\<build>\\export\\: the edits JSON (same format as the web Studio), the look JSON "
                 "(only changed values), the config keys, and a ready mod folder + zip built by the Python pipeline from this "
                 "character's OWN redfur. Nothing is installed into the game.");
-            if (a.bud.overLimit) { char b[64]; snprintf(b, sizeof b, "Blocked: over the %.0f %% budget.", a.look.limit * 100); smallNote(b, tok::WARN); }
+            if (a.bud.overLimit) { char b[80]; snprintf(b, sizeof b, "Above %.0f %% of the reference (information only).", a.look.limit * 100); smallNote(b, tok::WARN); }
             // release export (opt-in): the mod ships a script that calls the Hairwork for All Core, which players install too
             ImGui::Dummy(ImVec2(0, S(2)));
-            if (w::button("Export for release (requires Core)", "Export for release (requires Core)", ImVec2(-1, S(30)), ICON_LC_PACKAGE, false, !a.bud.overLimit)) { std::string o; a.exportAll(o, true); }
+            if (w::button("Export for release (requires Core)", "Export for release (requires Core)", ImVec2(-1, S(30)), ICON_LC_PACKAGE, false, true)) { std::string o; a.exportAll(o, true); }
             tip("Same export, for publishing: the same hair and textures, plus a small script that calls the Hairwork for All "
                 "\xE2\x80\x93 Core mod, and REQUIREMENTS.txt + hairworkforall_mod.json (requires_core). "
                 "Players must install the Core: the game will refuse to start without the Core (its script compiler reports "
@@ -1855,6 +2316,7 @@ void App::ui() {
     drawToolbar();   // viewport overlays: top / playback bars, HUD, gizmo, hint card (toolbar.cpp)
     if (pickerOpen || !loaded) drawPicker();
     drawStyleMenu();   // editor hairstyle switcher popup + the unsaved-edits modal (stylesw.cpp)
+    // "Export blocked" modal removed 2026-10-15: the budget never blocks an export
 
     // log drawer (status bar "Log")
     if (s_logOpen) {
@@ -1982,6 +2444,7 @@ void App::ui() {
         fg->AddRectFilled(ImVec2(std::min(mx0, io.MousePos.x), std::min(my0, io.MousePos.y)), ImVec2(std::max(mx0, io.MousePos.x), std::max(my0, io.MousePos.y)), tc(tok::GLOW, 0.06f));
         fg->AddRect(ImVec2(mx0, my0), io.MousePos, ImGui::GetColorU32(C_GLOW), 0, 0, 1.0f);
     }
+    colOverlay();   // collider circles (edit mode)
     bool inView = !io.WantCaptureMouse;
     // light-direction gizmo (Light window open): sun marker, arrow from the sun to the head, ground shadow direction
     if (loaded && !pickerOpen && (lightOpen || (io.KeyCtrl && ImGui::IsMouseDown(ImGuiMouseButton_Right)))) {
@@ -2010,6 +2473,12 @@ void App::ui() {
         char buf[64];
         snprintf(buf, sizeof buf, "sun  az %.0f  el %.0f  (Ctrl + right drag)", rig.sunAz * 57.2958f, rig.sunEl * 57.2958f);
         fg->AddText(ImVec2(A.x + 24, A.y - 8), amber, buf);
+    }
+    // Move focus circle outline (double-click on the head)
+    if (loaded && !pickerOpen && focusActive()) {
+        XMFLOAT2 c = project({focusW.x, focusW.y, focusW.z});
+        fg->AddCircle(ImVec2(c.x, c.y), focusPx + 1.5f, IM_COL32(0, 0, 0, 100), 96, 1.0f);
+        fg->AddCircle(ImVec2(c.x, c.y), focusPx, tc(tok::GLOW, 0.9f), 96, 1.5f);
     }
     // brush cursor: amber ring + dark outer ring, dashed inner ring at 30 %, centre dot
     if (loaded && !pickerOpen && inView && (tool == Tool::Comb || tool == Tool::Curl || tool == Tool::Paint)) {
@@ -2091,11 +2560,82 @@ void App::ui() {
         ImGui::EndPopup();
     }
     if (helpOpen) { ImGui::OpenPopup("Shortcuts"); helpOpen = false; }
+    // Edit > Conform to shell: even, rounded layering (serve_shell.inc, same command as the MCP studio_conform_shell)
+    if (shellOpen && loaded) {
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + S(16), vp->Pos.y + g_titleH + S(110)), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ImVec2(S(380), 0), ImGuiCond_Appearing);
+        if (ImGui::Begin("Conform to shell", &shellOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::PushTextWrapPos(S(360));
+            ImGui::TextWrapped("Lays the guides on concentric shells under a smooth outer surface: no lumps, no strands wandering in and out in depth, "
+                               "parallel flow. Roots and lengths are kept. One undo step.");
+            const char* regions[] = {"All guides", "Selection", "Crown (top)", "Sides", "Back"};
+            ImGui::Combo("region##shreg", &shellRegion, regions, 5);
+            const char* surfs[] = {"Smoothed guide envelope", "Vanilla cards", "Blend"};
+            ImGui::Combo("outer surface##shsurf", &shellSurface, surfs, 3);
+            ImGui::SliderInt("layers##shlay", &shellLayers, 1, 8);
+            const char* asg[] = {"Even population", "Current depth"};
+            ImGui::Combo("assign##shasg", &shellAssign, asg, 2);
+            const char* fsrc[] = {"Guides", "Vanilla cards", "Blend"};
+            ImGui::Combo("flow from##shflow", &shellFlowSrc, fsrc, 3);
+            ImGui::SliderFloat("flow strength##shfst", &shellFlow, 0, 1, "%.2f");
+            ImGui::SliderInt("surface smoothing##shsm", &shellSmooth, 0, 30);
+            ImGui::SliderFloat("lump cut (mm)##shlump", &shellLump, 0, 15, "%.1f");
+            ImGui::SliderFloat("max depth (mm)##shth", &shellThick, 3, 40, "%.0f");
+            ImGui::SliderFloat("root part (mm)##shroot", &shellRoot, 0, 40, "%.0f");
+            ImGui::SliderFloat("surface offset (mm)##shoff", &shellOffset, -10, 10, "%.1f");
+            ImGui::SliderFloat("strength##shst", &shellStrength, 0, 1, "%.2f");
+            ImGui::Checkbox("keep the fringe over the forehead / eyes##shfr", &shellFringe);
+            auto cmd = [&](bool listOnly) {
+                json c = {{"do", "conform_shell"}, {"layers", shellLayers}, {"assign", shellAssign ? "depth" : "even"},
+                          {"surface", shellSurface == 0 ? "guides" : shellSurface == 1 ? "cards" : "blend"},
+                          {"flow_source", shellFlowSrc == 0 ? "guides" : shellFlowSrc == 1 ? "cards" : "blend"},
+                          {"flow", shellFlow}, {"smooth", shellSmooth}, {"lump_mm", shellLump}, {"thick_mm", shellThick},
+                          {"root_mm", shellRoot}, {"offset_mm", shellOffset}, {"strength", shellStrength}, {"exclude_fringe", shellFringe}};
+                if (shellRegion == 1) c["where"] = "selection";
+                else if (shellRegion == 2) c["where"] = {{"z_min", -0.05}};
+                else if (shellRegion == 3) c["where"] = {{"z_max", -0.05}};
+                else if (shellRegion == 4) c["where"] = {{"back", true}};
+                if (listOnly) c["list_only"] = true;
+                bool q = false;
+                json res = serveCommand(c, "", q);
+                if (res.contains("error")) shellReport = "Error: " + (res["error"].is_string() ? res["error"].get<std::string>() : res["error"].dump());
+                else if (res.contains("result")) {
+                    auto& x = res["result"];
+                    char b[256];
+                    snprintf(b, sizeof b, "%s%d guides, depth wander %.1f -> %.1f mm, fringe guides kept %d",
+                             listOnly ? "Preview: " : "Applied: ", x.value("changed", 0), x.value("depth_wander_mm_before", 0.0), x.value("depth_wander_mm_after", 0.0), x.value("fringe_guides", 0));
+                    shellReport = b;
+                }
+            };
+            if (ImGui::Button("Preview numbers##shprev")) cmd(true);
+            ImGui::SameLine();
+            if (ImGui::Button("Apply##shapply")) cmd(false);
+            if (!shellReport.empty()) ImGui::TextWrapped("%s", shellReport.c_str());
+            ImGui::SeparatorText("Crown swirl");
+            ImGui::TextWrapped("Combs the crown guides out of one crown point (fringe / face-side guides left alone). Run it before the shell.");
+            ImGui::SliderFloat("crown radius (mm)##cwr", &crownRadius, 20, 90, "%.0f");
+            ImGui::SliderFloat("spiral (deg)##cwsp", &crownSpiral, -60, 60, "%.0f");
+            ImGui::SliderFloat("crown behind top (deg)##cwb", &crownBack, 0, 60, "%.0f");
+            if (ImGui::Button("Apply crown swirl##cwapply")) {
+                json cc = {{"do", "crown_swirl"}, {"radius_mm", crownRadius}, {"spiral_deg", crownSpiral}, {"crown_back_deg", crownBack}};
+                if (shellRegion == 1) cc["where"] = "selection";
+                bool q = false;
+                json res = serveCommand(cc, "", q);
+                if (res.contains("error")) shellReport = "Error: " + (res["error"].is_string() ? res["error"].get<std::string>() : res["error"].dump());
+                else if (res.contains("result")) shellReport = "Crown swirl: " + std::to_string(res["result"].value("changed", 0)) + " guides combed, " +
+                                                               std::to_string(res["result"].value("face_side_kept", 0)) + " face-side kept";
+            }
+            ImGui::TextWrapped("'Sides' = roots more than 5 cm below the head top; the crown is roots within 5 cm of the head top. Undo with Ctrl+Z.");
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::End();
+    }
+
     if (ImGui::BeginPopupModal("Shortcuts", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         const char* rows[][2] = {{"Q W E T P A", "Select, Move, Comb, Curl brush, Paint stiffness, Draw a new guide"}, {"Right drag / middle drag / wheel", "Orbit / pan / zoom"},
                                  {"Click, Ctrl+click, Shift+click, drag", "Select, toggle, add, box select"}, {"Del / D / S / C", "Delete / duplicate / shorten / curl the selection"},
                                  {"Ctrl+Z / Ctrl+Y", "Undo / redo"}, {"Ctrl+S", "Save the project"}, {"Ctrl+O", "Characters"},
-                                 {"Ctrl+Shift+H", "Hairstyle switcher (breadcrumb / inspector \"Hairstyle\")"}, {"X", "Live symmetry"}, {"G / H / M / N / B / Z / V", "Guides, hair, head+body mesh, colliders, bones, wireframe, symmetry plane"},
+                                 {"Ctrl+Shift+H", "Hairstyle switcher (breadcrumb / inspector \"Hairstyle\")"}, {"X", "Live symmetry"}, {"Y", "Collider edit mode: click / drag a collider, Del removes it (Colliders section)"}, {"G / H / M / N / B / Z / V", "Guides, hair, head+body mesh, colliders, bones, wireframe, symmetry plane"},
                                  {"Shift+G / Ctrl+G", "Guides: front layer only / hide guides behind the body (View menu, toolbar)"},
                                  {"Space / Esc / .", "Play-pause / stop and reset to rest (Esc clears the selection first) / step one frame"},
                                  {"R / J", "Re-teleport the simulation / wind on-off"}, {"Tab", "Edit pose on / off"},
@@ -2231,4 +2771,35 @@ void App::drawVanillaRef() {
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
+}
+
+// "Export blocked": the export refused geometry with performance-budget errors (desk_export.py PERF BLOCKED). The status
+// line alone was easy to miss; this lists the errors and offers a one-shot "Export anyway" (--allow-perf, never release).
+void App::drawPerfBlocked() {
+    if (perfBlockReq) { ImGui::OpenPopup("Export blocked"); perfBlockReq = false; }
+    ImGui::SetNextWindowSize(ImVec2(S(520), 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Export blocked", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize)) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + S(500));
+        ImGui::TextColored(tv(tok::TEXT), ICON_LC_TRIANGLE_ALERT "  The export was blocked by the performance budget.");
+        ImGui::Dummy(ImVec2(0, S(4)));
+        ImGui::TextColored(tv(tok::MUTED), "%s", perfBlockMsg.c_str());
+        ImGui::Dummy(ImVec2(0, S(4)));
+        ImGui::TextColored(tv(tok::MUTED), "Export anyway keeps the geometry as it is (it may cost frame rate or upset the hair "
+                                           "simulation in game). Release exports cannot be overridden.");
+        ImGui::PopTextWrapPos();
+        ImGui::Dummy(ImVec2(0, S(6)));
+        if (w::primaryButton("Export anyway##perfblk", "Export anyway", ImVec2(S(160), S(32)), true, ICON_LC_PACKAGE)) {
+            ImGui::CloseCurrentPopup();
+            exportAllowPerf = true;
+            perfAccepted = true;   // remembered in the project (saved below), so later exports do not ask again
+            if (!projectPath.empty()) saveProject(projectPath);
+            std::string o;
+            exportAll(o);
+        }
+        w::tip("Export anyway\nExports this one time despite the errors above (desk_export.py --allow-perf).");
+        ImGui::SameLine(0, S(8));
+        if (w::button("Close##perfblk", "Close", ImVec2(S(120), S(32)), nullptr, true) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }

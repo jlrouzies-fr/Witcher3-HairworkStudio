@@ -117,6 +117,8 @@ V3 Motion::wind() const {
     float T = float(t) * speed;
     float gust = 0.6f + 0.4f * std::sin(2 * PI * 0.17f * T) * std::sin(2 * PI * 0.41f * T + 1.0f);
     float s = windStrength * amount * gust;
-    // from the character's front-left towards the back
-    return {-0.45f * s, -0.9f * s, 0.05f * s};
+    // default yaw / pitch = the old fixed {-0.45, -0.9, 0.05}: from the character's front-left towards the back
+    const float mag = 1.00623f, yaw = windYawDeg * PI / 180.0f, pit = windPitchDeg * PI / 180.0f;
+    float h = mag * std::cos(pit);
+    return {h * std::sin(yaw) * s, h * std::cos(yaw) * s, mag * std::sin(pit) * s};
 }

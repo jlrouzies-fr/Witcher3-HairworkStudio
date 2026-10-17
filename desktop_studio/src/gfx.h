@@ -33,6 +33,8 @@ struct LightCB {
     DirectX::XMFLOAT4 aoDir[16];   // xyz towards the sky direction, w weight (radiance luminance x solid angle)
     DirectX::XMFLOAT4X4 aoVP[16];  // orthographic view-projection of each sky-occlusion map
     DirectX::XMFLOAT4 hair3;       // x hair colour encoding (1 = redfur values as stored, like the game)
+    DirectX::XMFLOAT4 pt;          // x game-accurate hair scatter onto meshes: share of the light the hair blocks that still
+                                   // reaches the skin under it (0 = hair shadows meshes like an opaque occluder)
 };
 static const int kMaxAoDirs = 16;
 
@@ -64,6 +66,7 @@ struct Gfx {
     ID3D11Buffer* frameCb = nullptr, * lightCb = nullptr;
     ID3D11RasterizerState* rsSolid = nullptr, * rsLine = nullptr;
     ID3D11DepthStencilState* dsOn = nullptr, * dsOff = nullptr;
+    ID3D11DepthStencilState* dsTestNoWrite = nullptr;   // depth test (<=) without write: game-accurate hair shading pass
     ID3D11BlendState* bsOpaque = nullptr, * bsAlpha = nullptr, * bsA2C = nullptr;   // A2C: alpha to coverage (cards)
     ID3D11Buffer* dynVb = nullptr; size_t dynCap = 0;
     // key-light shadow map
@@ -81,11 +84,34 @@ struct Gfx {
     ID3D11DepthStencilView* aoDsv[kMaxAoDirs] = {};
     ID3D11ShaderResourceView* aoSrv = nullptr;
     void beginAoPass(int k);
+    // mesh-only copies of the key-light / sky-occlusion maps (taken before the hair is drawn into them, t10 / t11): the
+    // game-accurate preview lets part of the light the hair blocks reach the skin (path-traced scattering through the hair)
+    ID3D11Texture2D* shadowMeshTex = nullptr, * aoMeshTex = nullptr;
+    ID3D11ShaderResourceView* shadowMeshSrv = nullptr, * aoMeshSrv = nullptr;
+    void snapshotShadowMeshes();
+    void snapshotAoMeshes(int k);
     void drawTrisDepth(const std::vector<GVertex>& v);
     void drawTrisDepthAlpha(const std::vector<GVertex>& v, ID3D11ShaderResourceView* tex);   // alpha-tested cards
     void drawTrisDepthWith(const std::vector<GVertex>& v, ID3D11PixelShader* ps, ID3D11ShaderResourceView* tex);
     void bindShadow(bool on, bool ao = false);
     void drawColor(const std::vector<GVertex>& v);   // clip-space coloured triangles (backdrop gradient)
+
+    // "Path-traced look" composite (shaders/pt_look.hlsl): hair drawn alone into a premultiplied RGBA16F MSAA target, then
+    // blurred / composited over a copy of the scene without hair. Targets follow the current scene size (made on demand).
+    ID3D11VertexShader* vsFull = nullptr;
+    ID3D11PixelShader* psPtLook = nullptr;
+    ID3D11Buffer* ptCb = nullptr;
+    ID3D11Texture2D* ptHairMs = nullptr, * ptHairRes = nullptr, * ptScene = nullptr;
+    ID3D11RenderTargetView* ptHairRtv = nullptr;
+    ID3D11Texture2D* ptCountMs = nullptr, * ptCountRes = nullptr;   // strand layers per pixel (additive, MSAA -> mean per sample)
+    ID3D11RenderTargetView* ptCountRtv = nullptr; ID3D11ShaderResourceView* ptCountSrv = nullptr;
+    ID3D11BlendState* bsPt = nullptr;     // RT0 alpha over (hair), RT1 additive (layer count)
+    ID3D11ShaderResourceView* ptHairSrv = nullptr, * ptSceneSrv = nullptr;
+    int ptW = 0, ptH = 0, ptS = 0;
+    bool ptReady() const { return vsFull && psPtLook; }
+    bool ptBegin();                         // copy the scene, bind the cleared hair target with the scene depth
+    void ptComposite(const float p[8]);     // resolve the hair, composite into the scene target, rebind it
+    void ptRelease();
 
     bool init(HWND h, std::string& err);
     bool loadShaders(const std::string& dir, std::string& err);

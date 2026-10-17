@@ -7,6 +7,7 @@
 #include <fstream>
 
 #include "app.h"
+#include "gate.h"
 std::string applyPackHeadless(App& a, const std::string& dir);   // community.cpp
 #include "lighting.h"
 
@@ -33,6 +34,13 @@ bool App::renderShot(const json& shot, const std::string& outPng, int size) {
     if (!gfx.beginOffscreen(size)) { camOverride = false; return false; }
     drawScene();
     st = hw.stats();
+    if (hw.gameAccurate && hw.ptLodEmu && st.camDist > 0.0f && std::fabs(st.camDist - hw.ptCamDistSdk) > 0.01f) {
+        // the descriptor's LOD factor was built for the previous camera: rebuild it for this shot and draw again
+        hw.ptCamDistSdk = st.camDist;
+        step(0.0);
+        drawScene();
+        st = hw.stats();
+    }
     bool ok = gfx.endOffscreen(outPng);
     camOverride = false;
     return ok;
@@ -139,6 +147,12 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
             // {"do": "bone_stiffness", "amount": 0..1}: W3 stiffnessBone emulation strength (0 = raw 1.2.1 runtime)
             hw.boneStiffEmu = std::clamp(stp.value("amount", 1.0f), 0.0f, 1.0f);
             r["amount"] = hw.boneStiffEmu;
+        } else if (d == "game_accurate") {
+            // {"do": "game_accurate", "on": true, "width_scale": w, "hairs_per_face": n, "root_alpha_mode": m, "root_alpha_falloff": f,
+            //  "spline": n, "hair_scatter": s}
+            setGameAccurate(stp);
+            step(0.0);   // the descriptor (density / LOD / width / root alpha) is rebuilt in step(): apply it before the next shot
+            r["game_accurate"] = gameAccurateJson();
         } else if (d == "dump_params") {
             // fur value vs SDK instance descriptor value, param by param (after one step so the descriptor is current)
             step(0.0);
@@ -187,6 +201,8 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
             motion.preset = d == "settle" ? MotionPreset::Rest : motionByName(stp.value("preset", "idle"));
             motion.speed = stp.value("speed", 1.0f);
             motion.amount = stp.value("amount", 1.0f);
+            if (stp.contains("wind_yaw_deg")) motion.windYawDeg = stp["wind_yaw_deg"].get<float>();
+            if (stp.contains("wind_pitch_deg")) motion.windPitchDeg = std::clamp(stp["wind_pitch_deg"].get<float>(), -45.0f, 45.0f);
             if (stp.value("reset", false)) teleport = true;
             motion.t = 0;
             runSim(*this, stp.value("seconds", 2.0));
@@ -197,6 +213,8 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
             int size = stp.value("size", 1400);
             bool ovPrev = scalpOverlay;   // "overlay": "scalp" renders these shots with the scalp highlight
             if (stp.contains("overlay")) scalpOverlay = stp["overlay"].is_string() && stp["overlay"].get<std::string>() == "scalp";
+            bool hairPrev = showHair;   // "hair": false = meshes only (skin / scalp under the hair)
+            if (stp.contains("hair")) showHair = stp["hair"].get<bool>();
             json shots = json::array();
             for (auto& n : stp.value("shots", json::array({0, 2, 3, 4, 5, 15}))) {
                 std::string k = std::to_string(n.get<int>());
@@ -204,7 +222,8 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
                 auto& sh = pack.shots[k];
                 std::string png = out + "\\" + tagS + "_shot" + k + ".png";
                 bool ok = renderShot(sh, png, size);
-                json e = {{"shot", n}, {"view", sh.value("view", "")}, {"png", png}, {"ok", ok}, {"hairs_live", st.hairs}};
+                json e = {{"shot", n}, {"view", sh.value("view", "")}, {"png", png}, {"ok", ok}, {"hairs_live", st.hairs},
+                          {"sdk_stats", {{"faces", st.faces}, {"avg_density", st.avgDensity}, {"detail_lod", st.detailLod}, {"distance_lod", st.distanceLod}, {"cam_dist", st.camDist}}}};
                 if (stp.value("mask", false)) {
                     // hair-only pass in flat red (SDK colorize mode) = exact hair mask for calibration / scoring
                     int cz = colorize; bool sm = showMeshes;
@@ -225,6 +244,7 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
             }
             r["shots"] = shots;
             scalpOverlay = ovPrev;
+            showHair = hairPrev;
         } else if (d == "scalp_coverage") {
             // {"do": "scalp_coverage", "shot": 15 | "shots": [3, 15], "size": 1400, "tag": "x", "rect": [x0, y0, x1, y1]}: shot with the scalp
             // overlay, count pure-ish green pixels (g>200, r<60, b<60) (whole image and optional rect), save the overlay image + mask PNG
@@ -490,15 +510,103 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
             r["fps_median"] = med > 0 ? 1000.0 / med : 0;
             logf("bench %dx%d quality %d: median %.2f ms (%.0f fps), p95 %.2f ms", bw, bh, rig.quality, med, med > 0 ? 1000.0 / med : 0, p95);
             rig.quality = q0;
+        } else if (d == "focus_test") {
+            // {"do": "focus_test", "x": px, "y": px, "px": radius}: Move focus circle at a screen point (2026-10-15)
+            if (stp.contains("view")) setView(stp["view"].get<std::string>());
+            Tool t0 = tool;
+            tool = Tool::Move;
+            XMStoreFloat4x4(&viewM, cam.view());   // headless: no frame drawn yet, give project() the camera
+            XMStoreFloat4x4(&projM, XMMatrixPerspectiveFovRH(XMConvertToRadians(cam.fov), float(gfx.w) / std::max(gfx.h, 1), 0.02f, 200.0f));
+            V3 h;
+            float fx = stp.value("x", gfx.w * 0.5f), fy = stp.value("y", gfx.h * 0.4f);
+            bool hit = headRay(fx, fy, h);
+            if (!hit && stp.contains("guide")) {   // headless: no viewport ray, anchor on a guide root instead
+                h = posedPoint(stp["guide"].get<int>(), 0);
+                XMFLOAT2 sp = project(h);
+                fx = sp.x; fy = sp.y;
+                hit = true;
+            }
+            r["w"] = gfx.w; r["h"] = gfx.h;
+            focusOn = hit;
+            focusW = {h.x, h.y, h.z};
+            focusPx = stp.value("px", 90.0f);
+            focusNKey = 0;
+            auto t0c = std::chrono::high_resolution_clock::now();
+            focusUpdate();
+            auto t1c = std::chrono::high_resolution_clock::now();
+            focusUpdate();
+            auto t2c = std::chrono::high_resolution_clock::now();
+            int nIn = 0;
+            for (auto v : focusIn) nIn += v;
+            r["hit"] = hit; r["shown"] = nIn; r["guides"] = groom.P.size();
+            r["first_ms"] = std::chrono::duration<double, std::milli>(t1c - t0c).count();
+            r["frame_ms"] = std::chrono::duration<double, std::milli>(t2c - t1c).count();
+            int pk = pickGuide(fx, fy);
+            r["pick"] = pk; r["pick_in"] = pk >= 0 && focusShown(pk);
+            focusOn = false;
+            tool = t0;
+        } else if (d == "bench_move") {
+            // {"do": "bench_move", "where": {...}, "updates": 30, "rebuild": true}: timings of a Move-tool drag on the
+            // selection (perf 2026-10-15): per update the old full replay, the new tail replay and the HairWorks rebuild.
+            // The drag ops are removed afterwards (the groom is left as it was).
+            auto ix = stp.contains("where") ? selectGuides(stp["where"]) : selList();
+            int nu = stp.value("updates", 30);
+            using clk = std::chrono::high_resolution_clock;
+            auto ms = [](clk::time_point a, clk::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+            auto t0 = clk::now();
+            groom.checkpoint();
+            auto t1 = clk::now();
+            size_t s0 = groom.ops.size();
+            groom.ops.push_back({{"type", "translate"}, {"roots", groom.rootsOf(ix)}, {"offset", {0.0f, 0.0f, 0.0f}}, {"falloff", "carry"}, {"from", 0}, {"grp", 99999}});
+            double full = 0, tail = 0, reb = 0;
+            int nreb = 0;
+            std::vector<Guide> Pf;
+            bool same = true;
+            for (int u = 1; u <= nu; u++) {
+                groom.ops.back()["offset"] = {r4(0.001f * u), r4(-0.0005f * u), 0.0f};
+                auto a0 = clk::now();
+                groom.replay();
+                auto a1 = clk::now();
+                Pf = groom.P;
+                groom.ck.valid = true;   // replay() cleared it: re-arm without the cost (state of ops[0..s0) is unchanged)
+                auto a2 = clk::now();
+                groom.replayTail(s0);
+                auto a3 = clk::now();
+                full += ms(a0, a1);
+                tail += ms(a2, a3);
+                for (size_t i = 0; i < Pf.size() && same; i++)
+                    for (int k = 0; k < groom.K; k++) if (Pf[i][k].x != groom.P[i][k].x || Pf[i][k].y != groom.P[i][k].y || Pf[i][k].z != groom.P[i][k].z) { same = false; break; }
+                if (stp.value("rebuild", true) && sdkOk) { auto b0 = clk::now(); rebuildHair(); reb += ms(b0, clk::now()); nreb++; }
+            }
+            groom.ops.resize(s0);
+            groom.replay();
+            assetDirty = true;
+            r["guides"] = ix.size(); r["total_guides"] = groom.P.size(); r["ops"] = s0; r["updates"] = nu;
+            r["checkpoint_ms"] = ms(t0, t1); r["full_replay_ms"] = full / nu; r["tail_replay_ms"] = tail / nu;
+            r["rebuild_ms"] = nreb ? reb / nreb : 0; r["identical"] = same;
+            logf("bench_move: %d of %d guides, %d ops: full replay %.2f ms, tail replay %.3f ms, rebuild %.2f ms per update (checkpoint %.1f ms, identical %d)",
+                 (int)ix.size(), (int)groom.P.size(), (int)s0, full / nu, tail / nu, nreb ? reb / nreb : 0, ms(t0, t1), (int)same);
+        } else if (d == "handback_gate") {
+            // {"do": "handback_gate", "reference": "<user snapshot .groomproj.json>", ...}: the whole hand-back checklist
+            // (serve_gate.inc); its verdict guards the save_project / export steps that follow
+            r = handbackGateCmd(*this, stp, out);
+            if (r.contains("error")) rc = 7;
         } else if (d == "save_project") {
+            std::string gerr; json gnote;   // hand-back gate guard (agent / MCP calls only, never the UI's own save)
+            if (!gate::guard(*this, stp, "save_project", out, gerr, gnote)) { r["error"] = gerr; rc = 8; return r; }
+            if (!gnote.is_null()) r["gate_note"] = gnote;
             std::string p = stp.value("path", out + "\\" + configName + ".groomproj.json");
             saveProject(p);
             r["path"] = p;
         } else if (d == "export") {
+            std::string gerr; json gnote;
+            if (!gate::guard(*this, stp, "export", out, gerr, gnote)) { r["error"] = gerr; rc = 8; return r; }
+            if (!gnote.is_null()) r["gate_note"] = gnote;
             snprintf(tag, sizeof tag, "%s", stp.value("tag", std::string("agent1")).c_str());
             if (stp.contains("mod")) snprintf(modName, sizeof modName, "%s", stp["mod"].get<std::string>().c_str());
             std::string od;
             bool rel = stp.value("release", false);   // "release": true = Export for release (requires the Core)
+            exportAllowPerf = stp.value("allow_perf", false);   // dev export despite performance-budget errors (never release)
             bool ok = exportAll(od, rel);
             r["ok"] = ok;
             r["dir"] = od;
@@ -523,7 +631,21 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
                 G.push_back(pts);
             }
             for (auto& f : groom.faces) Fa.push_back({{"g", {ix[f.g[0]], ix[f.g[1]], ix[f.g[2]]}}, {"uv", {f.uv[0], f.uv[1], f.uv[2], f.uv[3], f.uv[4], f.uv[5]}}});
-            std::ofstream(stp.value("path", out + "\\geo.json")) << json{{"K", groom.K}, {"guides", G}, {"index", Ix}, {"faces", Fa}}.dump();
+            json geo{{"K", groom.K}, {"guides", G}, {"index", Ix}, {"faces", Fa}};
+            // opt-in "render": true (2026-10-15): also the points the Studio draws / exports (edit point + the build's
+            // per-CV fur-frame offset of the base guide, Groom::renderPoint), same order as "guides"; reshape ops are
+            // written in the edit frame, so an agent designing shapes in the drawn frame needs both
+            if (stp.value("render", false)) {
+                json Rn = json::array();
+                for (size_t i = 0; i < groom.P.size(); i++) {
+                    if (!groom.alive[i]) continue;
+                    json pts = json::array();
+                    for (int k = 0; k < groom.K; k++) { V3 q = groom.renderPoint(int(i), k); pts.push_back({r4(q.x), r4(q.y), r4(q.z)}); }
+                    Rn.push_back(pts);
+                }
+                geo["render"] = Rn;
+            }
+            std::ofstream(stp.value("path", out + "\\geo.json")) << geo.dump();
             r["guides"] = G.size();
             r["faces"] = Fa.size();
         } else if (d == "fur") {

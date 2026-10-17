@@ -25,7 +25,9 @@ struct Bone {
     int parent = -1;
 };
 
-struct Sphere { int bone; V3 local; float r; V3 c{}; bool hasC = false; };   // c: rest world centre (desk.json "c")
+// c: rest world centre (desk.json "c"). grp (collider fit, colliders.cpp): -1 = as built (not classified yet), 0 = base (cranium, neck,
+// ears: a fit keeps them), 1 = outfit / back item (a fit replaces them), 2 = manual; tag = the fit target it came from
+struct Sphere { int bone; V3 local; float r; V3 c{}; bool hasC = false; int grp = -1; std::string tag; };
 
 struct Mesh {
     std::string name, kind, texFile, nrmFile, path;   // texFile / nrmFile: diffuse / normal PNG (game files)
@@ -33,6 +35,7 @@ struct Mesh {
     std::vector<V3> v;
     std::vector<std::array<int, 3>> t;
     bool alphaTest = false;   // vanilla beard / moustache cards: alpha-tested (texFile keeps the alpha)
+    std::vector<std::string> apps;   // kind "headgear": the appearances that wear it (View > Show headgear)
     float alphaRef = 0.3f;
 };
 
@@ -47,7 +50,12 @@ struct DeskPack {
     std::vector<Bone> bones;
     std::vector<Sphere> spheres;
     std::vector<std::array<int, 2>> capsules;
+    // collider editing (colliders.cpp): spheres0 / capsules0 = the build's own set (Reset), colModified = the project replaces it
+    std::vector<Sphere> spheres0;
+    std::vector<std::array<int, 2>> capsules0;
+    bool colModified = false;
     json physical, graphical, lod, mod, budgetRef, budgetSelf, textures, lookCfg, shots;
+    json lodBeard;   // the beard fur's own LOD block (desk_prep beard_fur.lod): used by the game-accurate preview only; `lod` stays empty for a beard pack so the default preview is unchanged (2026-10-16)
     // density
     std::string densityFile, densityChannel, colorFile;   // colorFile: rootColorTex (card diffuse), when the fur uses it
     bool densityPixel = false;
@@ -55,6 +63,8 @@ struct DeskPack {
     std::vector<Mesh> meshes;
     V3 headC; float headTop = 0;
 
+    // desk.json "headgear" (2026-10-16): {apps: {appearance: [meshes]}, current, all, default_app}; null = none
+    json headgear;
     json beardFur;                   // desk.json "beard_fur" of a beard config (second fur), null when absent
 
     bool load(const std::string& dir, std::string& err);
