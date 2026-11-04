@@ -265,7 +265,7 @@ void App::handleInput() {
     }
     if (!io.WantCaptureKeyboard) {
         bool ctrl = io.KeyCtrl;
-        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z)) { if (!colUndoKey(false)) { groom.undo(); editsChanged(); } }
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z)) { if (!gbUndoKey() && !colUndoKey(false)) { groom.undo(); editsChanged(); } }
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y)) { if (!colUndoKey(true)) { groom.redoOp(); editsChanged(); } }
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_O)) pickerOpen = true;
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_G)) { guideBody = !guideBody; if (guideBody) showGuideOverlay = true; }   // hide guides behind the body
@@ -688,7 +688,7 @@ static void drawTitleBar(App& a) {
             ImGui::Separator();
             if (ImGui::MenuItem("Settings...")) s_settingsReq = true;
         } else if (!strcmp(m, "Edit")) {
-            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, a.loaded)) { if (!a.colUndoKey(false)) { a.groom.undo(); a.editsChanged(); } }
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, a.loaded)) { if (!a.gbUndoKey() && !a.colUndoKey(false)) { a.groom.undo(); a.editsChanged(); } }
             if (ImGui::MenuItem("Redo", "Ctrl+Y", false, a.loaded && !a.groom.redo.empty())) { a.groom.redoOp(); a.editsChanged(); }
             ImGui::Separator();
             if (ImGui::MenuItem("Select all", nullptr, false, a.loaded)) {
@@ -699,7 +699,7 @@ static void drawTitleBar(App& a) {
             if (ImGui::MenuItem("Conform to shell...", nullptr, a.shellOpen, a.loaded)) a.shellOpen = !a.shellOpen;
             if (a.beardOn) {   // Beard mode (builds with a beard fur): same switch as the inspector's "Editing  Hair | Beard"
                 ImGui::Separator();
-                if (ImGui::MenuItem("Edit the beard fur", nullptr, a.fur == 1, a.loaded && !a.windBusy)) a.setFur(a.fur == 1 ? 0 : 1);
+                if (ImGui::MenuItem(("Edit the " + a.beardName + " fur").c_str(), nullptr, a.fur == 1, a.loaded && !a.windBusy)) a.setFur(a.fur == 1 ? 0 : 1);
             }
         } else if (!strcmp(m, "View")) {
             const char* vn[] = {"front", "back", "left", "right", "34", "back34"};
@@ -1010,7 +1010,7 @@ static void drawRail(App& a) {
                    "Symmetry (X)\nEdits, combing, curls and paint on one side are mirrored onto the partner guides across the head's mid-plane.", on))
         a.symmetry = !a.symmetry;
     railSep();
-    if (railButton("##undo", ICON_LC_UNDO_2, w::CI_NONE, false, false, "", "Undo (Ctrl+Z)", on && (!a.groom.ops.empty() || !a.colUndoSt.empty()))) { if (!a.colUndoKey(false)) { a.groom.undo(); a.editsChanged(); } }
+    if (railButton("##undo", ICON_LC_UNDO_2, w::CI_NONE, false, false, "", "Undo (Ctrl+Z)", on && (!a.groom.ops.empty() || !a.colUndoSt.empty() || !a.gb.undo.empty()))) { if (!a.gbUndoKey() && !a.colUndoKey(false)) { a.groom.undo(); a.editsChanged(); } }
     if (railButton("##redo", ICON_LC_REDO_2, w::CI_NONE, false, false, "", "Redo (Ctrl+Y)", on && !a.groom.redo.empty())) { a.groom.redoOp(); a.editsChanged(); }
     railSep();
     if (railButton("##dup", ICON_LC_COPY, w::CI_NONE, false, false, "D", "Duplicate selected guides (D)\nCopies are placed one 'dup step' to the screen right, on the scalp.", on)) a.opDuplicate();
@@ -1260,6 +1260,160 @@ static void paramSlider(App& a, const ParamDef& d, bool capped) {
     if (reset) { a.look.reset(d.path); a.computeBudget(); }
     if (engineTip) ImGui::EndDisabled();
     if (noFx) ImGui::PopStyleVar();
+}
+
+// ---- 2026-10-18 GPU cost of the motion (gpu_cost.cpp): a model fitted on measured game rows (same-launch deltas over Vesemir,
+// tools/hairworks/toolarch/gpu_cost_model.py). Shown as an ESTIMATE; nothing here changes the groom until a row is applied.
+static unsigned gpuCol(int c) { return c == 0 ? tok::OK : c == 1 ? tok::AMBER : tok::WARN; }
+
+static void gpuPanel(App& a) {
+    ImGui::Dummy(ImVec2(0, S(4)));
+    w::subHeader("GPU cost of the motion");
+    GpuEstimate e = a.gpuEstimateNow();
+    if (!a.gpuModel.loaded) { smallNote("GPU estimate unavailable: " + a.gpuModel.err); return; }
+    char b[200];
+    snprintf(b, sizeof b, "Estimated GPU: %+.1f ms over Vesemir (model, \xC2\xB1%.1f)", e.extra, e.err);
+    smallNote(b, gpuCol(e.colour));
+    std::string t = "Estimated GPU cost over the Vesemir reference (estimate, not measured)\n"
+                    "Model fitted on " + std::to_string(a.gpuModel.fitRows) + " measured game rows (fpsrun GPU ms, same-launch deltas over Vesemir): "
+                    "a render part per drawn segment plus a motion part that grows steeply as the stiffness holds the strand less "
+                    "(tip stiffness and stiffness strength count most). Drawn hairs = faces x 32 x the close-up LOD keep share.\n";
+    char d[200];
+    snprintf(d, sizeof d, "render %+.1f ms, motion %+.1f ms, %s drawn hairs, hold %.2f.\n", e.render, e.motion, fmtCount(e.hairs).c_str(), e.hold);
+    t += d;
+    t += e.anchored ? "This character has measured rows: the model uses its own motion scale." : "No measured rows for this character: global scale, wider error.";
+    t += "\nGreen = within the budget, amber = up to 1.5 x the budget, red = above, or measured-bad physics.\nNo data for:";
+    for (auto& s : a.gpuModel.noData) t += "\n- " + s;
+    tip(t.c_str());
+    smallNote(std::string("estimate, not measured") + (e.anchored ? "" : " (no measured rows for this character)"), tok::DIM);
+    for (auto& s : e.bad) smallNote("Measured-bad physics: " + s, tok::WARN);
+    bool rr = false;
+    if (w::sliderRow("gpu budget ms", "GPU budget (ms)", &a.gb.budget, 1, 30, "%.1f", 6.0f, a.gb.budget != 6.0f, &rr,
+                     "GPU budget\nMilliseconds over the Vesemir reference that this character may cost (default 6). Colours the estimate and drives Auto-balance.") && a.gb.open)
+        a.gbCompute();
+    if (rr) { a.gb.budget = 6.0f; if (a.gb.open) a.gbCompute(); }
+    if (w::button("Auto-balance", "Auto-balance", ImVec2(-1, 0), ICON_LC_ACTIVITY)) { a.gb.open = true; a.gbCompute(); }
+    tip("Auto-balance\nTrade-off table: for each stiffness, the share of the drawn hairs that fits the GPU budget (estimate), with the motion the "
+        "Studio wind simulation gives. Applying a row sets stiffness / tip stiffness / hair count on the groom (Ctrl+Z undoes it). Guides are never deleted.");
+}
+
+static void drawAutoBalance(App& a) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - g_panelW - S(620), vp->Pos.y + g_titleH + S(60)), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(S(600), 0), ImGuiCond_Appearing);
+    bool open = true;
+    if (ImGui::Begin("Auto-balance: stiffness vs hair count", &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
+        auto& g = a.gb;
+        ImGui::PushTextWrapPos(S(580));
+        smallNote("Estimate, not measured: GPU ms over Vesemir from a model fitted on measured game rows. Lower stiffness = more motion = more GPU; "
+                  "each row lowers the drawn hair count until it fits the budget (guides are never deleted). Red rows = measured-bad physics, never applied.");
+        ImGui::PopTextWrapPos();
+        bool ch = false, r = false;
+        ImGui::BeginGroup();
+        ImGui::PushItemWidth(S(580));
+        ch |= w::sliderRow("ab budget", "GPU budget (ms)", &g.budget, 1, 30, "%.1f", 6.0f, g.budget != 6.0f, &r, "Milliseconds over the Vesemir reference (default 6).");
+        if (r) { g.budget = 6.0f; ch = true; }
+        r = false;
+        ch |= w::sliderRow("ab minkeep", "Min hair share", &g.minKeep, 0.25f, 1.0f, "%.2f", 0.5f, g.minKeep != 0.5f, &r,
+                           "The recommended row is the lowest stiffness that fits while keeping at least this share of the drawn hairs.");
+        if (r) { g.minKeep = 0.5f; ch = true; }
+        r = false;
+        ch |= w::sliderRow("ab custom", "Your stiffness", &g.customStiff, 0.2f, 1.0f, "%.2f", 0.4f, false, &r,
+                           "Custom row: the most hairs that fit the budget at this stiffness.");
+        const char* routes[] = {"Thin with: close-up LOD density (detailLODDensity, preview + live hook)", "Thin with: density (flat density map at export)"};
+        ch |= comboFull("##gbroute", &g.route, routes, 2,
+                        "How the hair count is lowered.\nClose-up LOD density: the game keeps lerp(1, detailLODDensity, 0.8) of the hairs at head distance (L480); the "
+                        "game-accurate preview shows it and the hairhook can switch it live.\nDensity: a density below 1 is exported as a flat density map "
+                        "(studio_to_config look.density_flat), every distance.");
+        ImGui::PopItemWidth();
+        ImGui::EndGroup();
+        if (ch) a.gbCompute();
+        // curve: estimated ms with every hair vs stiffness, and the budget line
+        {
+            std::vector<const GbRow*> pts;
+            for (auto& rw : g.rows) if (!rw.current && !rw.custom && rw.tip > 0.05) pts.push_back(&rw);
+            std::sort(pts.begin(), pts.end(), [](const GbRow* x, const GbRow* y) { return x->stiffness < y->stiffness; });
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            float W = S(580), H = S(96);
+            dl->AddRectFilled(p0, ImVec2(p0.x + W, p0.y + H), tc(tok::BG0), S(6));
+            double ymax = g.budget * 3;
+            for (auto* q : pts) ymax = std::max(ymax, std::min(q->extraFull, g.budget * 6.0));
+            float x0 = p0.x + S(40), x1 = p0.x + W - S(12), y0 = p0.y + S(8), y1 = p0.y + H - S(18);
+            auto X = [&](double s) { return x0 + float((s - 0.25) / 0.75) * (x1 - x0); };
+            auto Y = [&](double v) { return y1 - float(std::clamp(v, 0.0, ymax) / ymax) * (y1 - y0); };
+            dl->AddLine(ImVec2(x0, Y(g.budget)), ImVec2(x1, Y(g.budget)), tc(tok::AMBER, 0.8f), 1.0f);
+            char lb[48];
+            snprintf(lb, sizeof lb, "budget %.1f", g.budget);
+            dl->AddText(g_fontSmall, g_fontSmall->FontSize, ImVec2(x1 - S(70), Y(g.budget) - S(14)), tc(tok::AMBER), lb);
+            for (size_t i = 0; i + 1 < pts.size(); i++)
+                dl->AddLine(ImVec2(X(pts[i]->stiffness), Y(pts[i]->extraFull)), ImVec2(X(pts[i + 1]->stiffness), Y(pts[i + 1]->extraFull)), tc(tok::SOFT), 1.5f);
+            for (auto* q : pts) {
+                dl->AddCircleFilled(ImVec2(X(q->stiffness), Y(q->extraFull)), S(3), tc(q->bad ? tok::WARN : q->extraFull <= g.budget ? tok::OK : tok::AMBER));
+                dl->AddCircle(ImVec2(X(q->stiffness), Y(q->extra)), S(4.5f), tc(tok::STEEL), 0, 1.2f);
+            }
+            for (double s : {0.25, 0.5, 0.75, 1.0}) {
+                snprintf(lb, sizeof lb, "%.2f", s);
+                dl->AddText(g_fontSmall, g_fontSmall->FontSize, ImVec2(X(s) - S(10), y1 + S(3)), tc(tok::DIM), lb);
+            }
+            snprintf(lb, sizeof lb, "%.0f ms", ymax);
+            dl->AddText(g_fontSmall, g_fontSmall->FontSize, ImVec2(p0.x + S(4), y0), tc(tok::DIM), lb);
+            dl->AddText(g_fontSmall, g_fontSmall->FontSize, ImVec2(p0.x + S(4), y1 - S(10)), tc(tok::DIM), "0");
+            ImGui::Dummy(ImVec2(W, H));
+            tip("Estimated ms over Vesemir vs stiffness (tip .1): filled dots = every hair, rings = with the hair share of the table. Estimate, not measured.");
+        }
+        // table
+        if (ImGui::BeginTable("##gbtab", 7, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+            const char* hd[7] = {"Stiffness", "Tip", "Hairs kept", "Drawn", "Est. ms", "Motion mm", ""};
+            for (int i = 0; i < 7; i++) ImGui::TableSetupColumn(hd[i]);
+            ImGui::TableHeadersRow();
+            for (int i = 0; i < (int)g.rows.size(); i++) {
+                const GbRow& rw = g.rows[i];
+                unsigned col = rw.bad ? tok::WARN : (!rw.fits || rw.noData) ? tok::AMBER : rw.keep + 1e-6 < g.minKeep ? tok::AMBER : tok::OK;
+                ImGui::TableNextRow();
+                ImGui::PushStyleColor(ImGuiCol_Text, tv(col));
+                char c0[64];
+                snprintf(c0, sizeof c0, "%.3g%s", rw.stiffness, rw.current ? "  (now)" : rw.custom ? "  (yours)" : rw.recommended ? "  (best)" : rw.bad ? "  (bad)" : rw.noData ? "  (no data)" : "");
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(c0);
+                if (rw.bad && !rw.badWhy.empty()) tip(("Measured-bad physics, never applied\n" + rw.badWhy[0]).c_str());
+                else if (rw.noData) tip("No measured row below stiffness .35 (Geralt: .35 / .1 = +3 ms, .25 / .05 = +30 ms): the estimate is extrapolated and never recommended. Applying it is your call.");
+                ImGui::TableNextColumn(); ImGui::Text("%.2g%s", rw.tip, rw.strength < 0.999 ? " str<1" : "");
+                ImGui::TableNextColumn(); ImGui::Text("%.0f %%", rw.keep * 100);
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(fmtCount(rw.hairs).c_str());
+                ImGui::TableNextColumn(); ImGui::Text("%+.1f \xC2\xB1%.1f", rw.extra, rw.err);
+                if (rw.keep < 0.999) { char tt[96]; snprintf(tt, sizeof tt, "With every hair: %+.1f ms (estimate)", rw.extraFull); tip(tt); }
+                ImGui::TableNextColumn();
+                if (rw.motionMm >= 0) {
+                    ImGui::Text("%.1f", rw.motionMm);
+                    char tt[160];
+                    snprintf(tt, sizeof tt, "Studio wind 1, 4 headings: mean %.1f mm, tips %.0f mm, %.0f %% of the guides below 2 mm", rw.motionMm, rw.tipMm, rw.stuckPct);
+                    tip(tt);
+                } else ImGui::TextUnformatted(g.measuring >= 0 && g.measuring <= i ? "..." : "-");
+                ImGui::PopStyleColor();
+                ImGui::TableNextColumn();
+                if (!rw.current && !rw.bad) {
+                    std::string id = "Apply##gb" + std::to_string(i);
+                    if (w::button(id.c_str(), "Apply", ImVec2(S(56), 0), nullptr, !rw.recommended, g.measuring < 0)) a.gbApply(i);
+                    tip("Sets this row's stiffness, tip stiffness and hair share on the groom (stiffness strength 1). Ctrl+Z undoes it.");
+                }
+            }
+            ImGui::EndTable();
+        }
+        float hw = (S(580) - S(8)) * 0.5f;
+        if (g.measuring >= 0) {
+            char pb[64];
+            snprintf(pb, sizeof pb, "Wind simulation: row %d of %d", g.measuring + 1, (int)g.rows.size());
+            ImGui::ProgressBar(float(g.measuring) / float(std::max<size_t>(g.rows.size(), 1)), ImVec2(S(580), 0), pb);
+        } else {
+            if (w::button("Measure motion##gb", "Measure motion (wind sim)", ImVec2(hw, 0))) g.measuring = 0;
+            tip("Runs the Studio wind simulation for every row's physics (wind 1, 4 headings, 2.5 s each): mean displacement of the guides from their settled rest, the wind_motion.py metric. A few seconds per row.");
+            ImGui::SameLine(0, S(8));
+            if (w::button("Undo apply##gb", "Undo last apply", ImVec2(hw, 0), nullptr, false, !g.undo.empty())) a.gbUndo();
+        }
+        if (!g.lastApplied.empty()) smallNote("Last applied: " + g.lastApplied, tok::MUTED);
+    }
+    ImGui::End();
+    if (!open && a.gb.measuring < 0) a.gb.open = false;
 }
 
 static void curveEditor(App& a) {
@@ -1537,7 +1691,8 @@ static void furSwitch(App& a) {
     float y = ImGui::GetCursorScreenPos().y + S(10);
     d->AddText(g_fontCap, g_fontCap->FontSize, ImVec2(wp.x + S(16), y + S(16) - g_fontCap->FontSize * 0.5f), tc(tok::MUTED), "EDITING");
     ImGui::SetCursorScreenPos(ImVec2(wp.x + S(16) + w::textSize(g_fontCap, "EDITING").x + S(12), y));
-    const char* lb[] = {"Hair##fur", "Beard##fur"};
+    const std::string bl = a.beardName + "##fur";
+    const char* lb[] = {"Hair##fur", bl.c_str()};
     const char* tp[] = {"Hair mode\nThe tools, Look, Physics, Stiffness map, checks and the budget act on the hair; the beard is a preview.",
                         "Beard mode\nThe tools, Look, Physics, Stiffness map, checks and the budget act on the beard fur; the hair is a preview.\n"
                         "Both edit sets are kept apart, saved in the project and exported (the beard edits go into the build's beard fur)."};
@@ -1844,6 +1999,7 @@ static void drawInspector(App& a) {
                 ImGui::PopID();
             }
             curveEditor(a);
+            gpuPanel(a);
             ImGui::Dummy(ImVec2(0, S(4)));
             w::switchRow("Simulate", &a.simulate, "Simulate\nOff = rest pose (what you edit).");
             {
@@ -2647,6 +2803,8 @@ void App::ui() {
         ImGui::EndPopup();
     }
     if (windLock) ImGui::EndDisabled();
+
+    if (gb.open && loaded) drawAutoBalance(*this);   // 2026-10-18 GPU auto-balance (gpu_cost.cpp)
 
     // Check > Max-wind strays (windcheck.cpp)
     if ((windOpen || windBusy) && loaded) {

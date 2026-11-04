@@ -2,12 +2,18 @@
 #pragma once
 #include <DirectXMath.h>
 
+#include <string>
 #include <vector>
 
 #include "deskpack.h"
 
-enum class MotionPreset { Rest, Idle, TurnHead, Nod, Walk, Run, SpinBody, Wind, Count };
+// gameplay presets (2026-10-18, appended so saved projects keep their index): SprintStop, Dodge, SwordSwings move the
+// root through the world like the player does (forward speed, dead stops, sideways dodges, fast torso turns)
+enum class MotionPreset { Rest, Idle, TurnHead, Nod, Walk, Run, SpinBody, Wind, SprintStop, Dodge, SwordSwings, Count };
 const char* motionName(MotionPreset p);
+// preset from a name: case, spaces and punctuation ignored, prefix match ("spin", "SpinBody", "sprint", "dodge", "sword");
+// fallback when nothing matches
+MotionPreset motionFromName(const std::string& name, MotionPreset fallback);
 
 struct Motion {
     MotionPreset preset = MotionPreset::Idle;
@@ -28,4 +34,6 @@ struct Motion {
     DirectX::XMMATRIX neckM(const DeskPack& pk) const;
     DirectX::XMMATRIX rootM(const DeskPack& pk) const;
     V3 wind() const;        // wind vector (m/s-ish), before the fur's windScaler
+    // world travel of the root (gameplay presets; 0 for the others): the viewport camera follows it
+    V3 travel() const;
 };

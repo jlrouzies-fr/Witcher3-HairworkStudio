@@ -73,6 +73,8 @@ def use_mods(names):
     caches = []
     for n in names or []:
         c = n if os.path.isabs(n) else os.path.join(GAME, 'mods', n, 'content')
+        if not os.path.isdir(c) and not os.path.isabs(n) and os.path.isdir(os.path.join(GAME, 'mods', '~' + n, 'content')):
+            c = os.path.join(GAME, 'mods', '~' + n, 'content')   # 2026-10-18: a mod disabled by the "~" prefix is still a file source
         if not os.path.isdir(c):
             raise SystemExit('source mod not found: %s' % c)
         caches.append(os.path.join(c, 'texture.cache'))
@@ -285,4 +287,7 @@ def mesh_bones(rel):
     p += 2 * n
     n, _ng, p = W.read_vlq2(t, p)
     mats = np.frombuffer(t[p:p + 64 * n], dtype='<f4').reshape(n, 4, 4)
-    return dict(names=names, rig=mats, lods=lods)
+    p += 64 * n
+    n, _ng, p = W.read_vlq2(t, p)
+    eps = list(struct.unpack_from('<%df' % n, t, p))
+    return dict(names=names, rig=mats, lods=lods, eps=eps)

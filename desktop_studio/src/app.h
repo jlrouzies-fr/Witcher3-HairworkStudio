@@ -5,7 +5,7 @@
 inline constexpr const char* kCommunityRepo = "jlrouzies-fr/Witcher3-HairworkCommunity";
 #include <windows.h>
 
-#define GSD_VERSION "0.4.0"
+#define GSD_VERSION "0.5.0"
 
 #include <algorithm>
 #include <atomic>
@@ -26,6 +26,7 @@ inline constexpr const char* kCommunityRepo = "jlrouzies-fr/Witcher3-HairworkCom
 #include "motion.h"
 #include "params.h"
 #include "pt_estimate.h"
+#include "gpu_cost.h"
 
 struct Settings {
     std::string repo, sdkDir, dll, python = "py", gameDir;   // gameDir: The Witcher 3 folder (content\content0 + mods), exported as HWFA_GAME to the Python tools
@@ -115,6 +116,7 @@ struct App {
     Look beardLook;
     std::vector<int> beardGuideOfAsset;
     bool beardSdkOk = false, beardOn = false, showBeard = true;
+    std::string beardName = "Beard";   // desk.json beard_fur.label: "Top Hairs" when the slot holds a frozen top fur (2026-10-24)
     void buildBeard();
     // the rest of the parked fur's own state (swapFur exchanges it with the live members of the same name)
     struct FurSlot {
@@ -156,6 +158,7 @@ struct App {
     std::vector<int> guideOfAsset;
     bool assetDirty = false, stiffDirty = true, teleport = true;
     double lastBuild = 0, simAcc = 0;
+    double simStep = 1.0 / 60.0;   // simulation step (s); 1/30 emulates the game's 30 FPS cap (motion_report / drape_report step_hz)
     // view toggles
     bool simulate = true, paused = false, showHair = true, showGuideOverlay = false, showMeshes = true;
     bool guideCustom = false;                      // View > Guide colour: own colour for the overlay (white hair hides the default grey)
@@ -247,6 +250,23 @@ struct App {
     bool ptCalibLoaded = false;
     bool ptLoadSim = false;   // artificial GPU load proportional to the estimate (off by default)
     double ptMs = 0;          // current estimate (ms/frame), 0 = none yet
+    // GPU cost model of moving hair + the stiffness / hair-count auto-balance (gpu_cost.cpp, 2026-10-18; an ESTIMATE fitted on
+    // measured game rows by tools/hairworks/toolarch/gpu_cost_model.py, never a measurement)
+    GpuModel gpuModel;
+    bool gpuModelTried = false;
+    GpuBudget gb;
+    void gpuEnsureModel();
+    std::string gpuCharacter() const;
+    GpuFeat gpuFeatures() const;
+    GpuEstimate gpuEstimateNow();
+    void gbCompute();                       // the trade-off table from the model (instant)
+    json gbMeasureMotion(double stiffness, double tip, double strength, float windStrength, const std::vector<float>& yaws, float windS);
+    void gbMeasureRow(int i);               // Studio wind simulation of one row's physics (restores the look and the motion state)
+    json gbApply(int i);                    // sets the row's values on the groom (undo: gbUndo / Ctrl+Z)
+    bool gbUndo();
+    bool gbUndoKey();                       // Ctrl+Z: an auto-balance apply newer than the last groom op / collider change
+    json gpuEstimateCmd(const json& c);     // serve "gpu_estimate"
+    json autoBalanceCmd(const json& c);     // serve "auto_balance"
     double sumFaceDensity = 0;
     float fps = 0;
     bool aboutOpen = false, helpOpen = false;
@@ -301,6 +321,17 @@ struct App {
     // other skin grey (agent.cpp computeHeadScalp)
     std::map<int, std::vector<float>> headScalp;
     void computeHeadScalp();
+    // 2026-10-18 opt-in texel scalp test (project "scalp_mask": {"texel": true, "pixel_thr_scale": s}; off = the per-vertex
+    // mask above, unchanged): a point is painted scalp when it lies on a head triangle touching a painted vertex and the
+    // head diffuse there (9 px mean) is darker than the threshold x pixel_thr_scale. Follows a painted hairline between
+    // vertex rows (~25 mm apart on Voorhis's forehead) and light hair paint (Voorhis's widow's peak is blond, L 95-110).
+    json scalpOpt = json::object();
+    struct ScalpTexel { int mi = -1, w = 0, h = 0; float thr = 0; std::vector<float> lum; std::vector<std::vector<int>> vtris; std::vector<char> tband; };
+    ScalpTexel scalpTx;
+    bool scalpTexelOn() const { return scalpTx.mi >= 0 && !scalpTx.lum.empty(); }
+    // -1 = texel test off (use the vertex flag); else 0/1 for point p near head vertex vi (pos = that mesh's vertices, posed or not)
+    int scalpTexelAt(const std::vector<V3>& pos, int vi, V3 p) const;
+    void setScalpOpt(const json& o);   // recomputes the mask when the keys change
     bool scalpMesh(std::vector<V3>& pos, std::vector<float>& flag, std::vector<std::array<int, 3>>& tris) const;   // posed head mesh + scalp flags (hairline tools)
     bool skinRay(const DirectX::XMFLOAT3& o, const DirectX::XMFLOAT3& d, DirectX::XMFLOAT3& hit, int& mesh) const;   // nearest posed skin triangle hit
     // viewport toolbar (toolbar.cpp)
@@ -387,6 +418,7 @@ struct App {
     int colFlatOf(int sphere) const;        // flat id of a sphere, -1 when it is not part of a flat
     json colReport(const json& c);
     json colCommand(const std::string& d, const json& c);
+    json motionReport(const json& c);   // motioncheck.cpp: head-frame guide displacement under motion presets (gameplay check)
     json drapeCommand(const std::string& d, const json& c);   // drape.cpp: drape hair over outfit meshes (drape_outfit / drape_report / list_meshes)
     json drapeList() const;
     std::map<std::string, bool> drapePick;  // UI: mesh token -> ticked

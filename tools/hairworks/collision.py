@@ -37,7 +37,7 @@ def _inside(P, V, T):
     return votes >= 4
 
 
-def head_spheres(head, roots, nmax=7, margin=0.002, rmin=0.025):
+def head_spheres(head, roots, nmax=7, margin=0.002, rmin=0.025, min_gain=6):
     hv, ht = head.v, head.t
     lo = np.array([-0.11, head.c[1] - 0.09, head.top - 0.27])
     hi = np.array([0.11, head.c[1] + 0.13, head.top])
@@ -62,7 +62,7 @@ def head_spheres(head, roots, nmax=7, margin=0.002, rmin=0.025):
             gain = int((~covered[idx[np.abs(dd - R[i]) < 0.007]]).sum())
             if gain > best:
                 best, bi = gain, i
-        if bi is None or best < 6:
+        if bi is None or best < min_gain:
             break
         idx = np.array(tt.query_ball_point(C[bi], R[bi] + 0.007))
         dd = np.linalg.norm(roots[idx] - C[bi], axis=1)
@@ -107,10 +107,12 @@ def face_shell(head, r=0.022, spacing=0.016, pad=0.003, zlo=0.17, zhi=0.04, xmax
     return [(P[i] - nrm[i] * (r - pad), r) for i in picked]
 
 
-def neck_spheres(head, legacy=False):
+def neck_spheres(head, legacy=False, slices=None):
     out = []
     last = None
-    for dz in (0.28, 0.315):
+    # 2026-10-18 opt-in growth.neck_slices (user: Yennefer needs full head + neck colliders): list of depths below the
+    # crown top (m), one sphere per slice; absent = the two default slices
+    for dz in (slices or (0.28, 0.315)):
         z = head.top - dz
         s = head.v[(head.v[:, 2] > z - 0.012) & (head.v[:, 2] < z + 0.012)]
         s = s[s[:, 1] < head.c[1] + 0.04]
@@ -180,9 +182,11 @@ def torso_spheres(head, body):
 
 def fit(head, body, ears, bones, roots, pad=0.004, log=print, outfit=None, outfit_pad=0.002, ear_collision=True, legacy_neck=False,
         skull_spheres=7, ear_pad=0.004, ear_rmax=0.03, ear_chain=False, face=None, ear_colliders=True, shell=None,
-        clamp_skin=None, mirror_ears=None):
+        clamp_skin=None, mirror_ears=None, neck_slices=None, skull_min_gain=6):
     names = [b['name'] for b in bones]
-    hs = head_spheres(head, roots, nmax=skull_spheres)
+    # 2026-10-18 opt-in growth.skull_min_gain (Yennefer, user: full head colliders): keep adding cranium spheres while
+    # each covers at least this many more roots (default 6 = unchanged)
+    hs = head_spheres(head, roots, nmax=skull_spheres, min_gain=skull_min_gain)
     if shell:                    # growth.face_shell: true or {r, spacing, pad, zlo, zhi, xmax, front_y}
         sh = face_shell(head, **(shell if isinstance(shell, dict) else {}))
         hs = hs + sh
@@ -195,7 +199,7 @@ def fit(head, body, ears, bones, roots, pad=0.004, log=print, outfit=None, outfi
         if fs is not None:
             hs = hs + [fs]
             log('collision: face sphere c %s r %.3f' % (np.round(fs[0], 3), fs[1]))
-    nk = neck_spheres(head, legacy=legacy_neck)
+    nk = neck_spheres(head, legacy=legacy_neck, slices=neck_slices)
     es = []
     ear_runs = []
     for side in ((1, -1) if ear_collision else ()):   # R39: off for styles that cover the ears

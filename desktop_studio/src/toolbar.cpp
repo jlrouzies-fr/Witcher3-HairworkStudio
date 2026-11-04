@@ -388,20 +388,24 @@ void App::drawToolbar() {
         // motion preset
         {
             static const MotionPreset quick[] = {MotionPreset::Idle, MotionPreset::Walk, MotionPreset::Run, MotionPreset::SpinBody, MotionPreset::Wind,
-                                                 MotionPreset::TurnHead, MotionPreset::Nod, MotionPreset::Rest};
+                                                 MotionPreset::TurnHead, MotionPreset::Nod, MotionPreset::Rest,
+                                                 // gameplay (2026-10-18): the root travels like the player; the camera follows
+                                                 MotionPreset::SprintStop, MotionPreset::Dodge, MotionPreset::SwordSwings};
             MotionPreset shown = editPose ? savedPreset : motion.preset;
             bool open = dropButton("##tb_motion", ICON_LC_ACTIVITY, tc(tok::GLOW), motionName(shown), S(32));
-            tbTip("Motion preset (idle, walk, run, spin, wind, ...)\nHead / body motion driving the fur bones, so sag, swing and inertia show as in game.");
+            tbTip("Motion preset (idle, walk, run, spin, wind, ...; sprint-stop, dodge, sword swings = gameplay speeds)\nHead / body motion driving the fur bones, so sag, swing and inertia show as in game.");
             ImVec2 pp(ImGui::GetItemRectMin().x, ImGui::GetItemRectMin().y - S(10));
             if (open) ImGui::OpenPopup("##tb_motion_pop");
             ImGui::SetNextWindowPos(pp, ImGuiCond_Always, ImVec2(0, 1));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, S2(6, 6));
             if (ImGui::BeginPopup("##tb_motion_pop")) {
-                for (auto m : quick)
-                    if (ImGui::Selectable(motionName(m), shown == m, 0, ImVec2(S(200), S(24)))) {
+                for (auto m : quick) {
+                    if (m == MotionPreset::SprintStop) ImGui::Separator();
+                    if (ImGui::Selectable(motionName(m), shown == m, 0, ImVec2(S(240), S(24)))) {
                         if (editPose) resumeMotion();
                         motion.preset = m; motion.t = 0; paused = false;
                     }
+                }
                 ImGui::EndPopup();
             }
             ImGui::PopStyleVar();

@@ -59,7 +59,11 @@ def daemon():
             if not chunk:
                 break
             data += chunk
-        req = json.loads(data)
+        try:
+            req = json.loads(data)
+        except ValueError:      # a stray probe (curl, port scan) must not kill the session and its unsaved edits
+            c.close()
+            continue
         if req.get("stop"):
             c.sendall(b'{"stopped":true}\n')
             c.close()

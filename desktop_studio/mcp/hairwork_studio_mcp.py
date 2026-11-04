@@ -166,7 +166,7 @@ class Studio:
     READ_ONLY = {"status", "shots_list", "render", "guides", "guide", "faces", "pick", "pick_region", "scalp_coverage",
                  "look_get", "materials_list", "save_edits", "save_project", "export", "dump_params", "bench", "select", "dump_geo",
                  "wind_check", "list_colliders", "collider_report", "drape_report", "list_meshes", "handback_gate", "gate_status", "gate_fail",
-                 "check_loops", "hairline_check", "eye_check", "band_sim"}
+                 "check_loops", "hairline_check", "eye_check", "band_sim", "gpu_estimate", "auto_balance", "motion_report"}
 
     def _send(self, cmd, timeout):
         self.p.stdin.write((json.dumps(cmd) + "\n").encode())
@@ -1433,11 +1433,12 @@ def t_rebind_colliders(a):
 
 @tool("studio_collider_report", "Clearance report of the colliders (read-only). (1) guides whose strand ends inside a collider: mode 'rest' = the authored hair "
       "at rest; mode 'sim' = the SDK simulation read back after `steps` (180) frames with a motion `preset` (Idle, TurnHead, Nod, Walk, Run, SpinBody, "
-      "Wind; default the current one), CVs from from_cv on, deeper than tol_mm (1) inside a capsule; per guide the deepest CV, the capsule and its "
+      "Wind, SprintStop, Dodge, SwordSwings; default the current one; step_hz 30 = the game's FPS cap), CVs from from_cv on, deeper than tol_mm (1) inside a capsule; per guide the deepest CV, the capsule and its "
       "group. (2) capsules poking out of the skin: surface samples of every capsule outside the nearest shown mesh surface (head, body, outfit, scabbard, sword) by more than poke_mm (3), "
       "indicative. Also spheres_without_capsule (inactive in the game).",
       obj({"mode": {"type": "string", "enum": ["rest", "sim"]}, "preset": {"type": "string"}, "steps": {"type": "integer"}, "wind": {"type": "number"},
-           "tol_mm": {"type": "number"}, "poke_mm": {"type": "number"}, "from_cv": {"type": "integer"}, "worst": {"type": "integer"}}))
+           "tol_mm": {"type": "number"}, "poke_mm": {"type": "number"}, "from_cv": {"type": "integer"}, "worst": {"type": "integer"},
+           "step_hz": {"type": "number", "description": "simulation step rate (60 default; 30 = one step per frame at the game's 30 FPS cap)"}}))
 def t_collider_report(a):
     return S.call({"do": "collider_report", **a}, timeout=1800)
 
@@ -1475,11 +1476,12 @@ def t_drape(a):
 
 @tool("studio_drape_report", "Read-only: how many guides / points are inside (or within pad_mm) the selected meshes. mode 'rest' = the authored strands "
       "(CVs after the root part + 2 samples per span); mode 'sim' = the SDK simulation read back after `steps` (240) frames with a motion `preset` "
-      "(Idle, Walk, ...; the meshes are posed like the Studio draws them), lower 60 % of the refined strand, frames of the second half. "
+      "(Idle, Walk, ..., SprintStop / Dodge / SwordSwings = gameplay speeds; the meshes are posed like the Studio draws them; step_hz 30 = game FPS cap), lower 60 % of the refined strand, frames of the second half. "
       "Returns guides_inside, points_inside, ..._or_within_pad, deepest_mm; ids: true adds ids_deeper_5mm / 10mm / 20mm (guide ids).",
       obj({"meshes": DRAPE_MESHES, "mode": {"type": "string", "enum": ["rest", "sim"]}, "preset": {"type": "string"}, "steps": {"type": "integer"},
            "wind": {"type": "number"}, "pad_mm": {"type": "number"}, "root_mm": {"type": "number"}, "max_push_mm": {"type": "number"},
-           "box": {"type": "array", "items": {"type": "number"}}, "axis": {"type": "array", "items": {"type": "number"}}, "ids": {"type": "boolean"}}, ["meshes"]))
+           "box": {"type": "array", "items": {"type": "number"}}, "axis": {"type": "array", "items": {"type": "number"}}, "ids": {"type": "boolean"},
+           "step_hz": {"type": "number", "description": "mode sim: simulation step rate (60 default; 30 = the game's FPS cap)"}}, ["meshes"]))
 def t_drape_report(a):
     return S.call({"do": "drape_report", **a}, timeout=1800)
 
@@ -2116,6 +2118,55 @@ def S_call_values(keys):
     return S.call({"do": "look_get", "keys": keys}).get("values", {})
 
 
+@tool("studio_gpu_estimate", "2026-10-18: ESTIMATED extra GPU ms over the Vesemir reference of the open groom (hair fur), from the GPU cost "
+      "model fitted on measured game rows (tools/hairworks/toolarch/gpu_cost_model.py; same-launch fpsrun deltas). An estimate, NOT a "
+      "measurement: +-err_ms is the leave-one-out error band (narrower when the character has measured rows: 'anchored'). Returns "
+      "extra_ms, err_ms, render_ms / motion_ms, colour vs the budget (green <= budget, amber <= 1.5x, red above or measured-bad physics), "
+      "drawn_hairs, hold (how firmly the strands keep their rest shape), bad_zone (strength < 1, stiffness <= .25 with tip 0, curve to 0 at "
+      "the tip), features and the no-data list. set: optional what-if values {path: value} (nothing is changed), e.g. "
+      "{\"physicalMaterials.stiffness.stiffness\": 0.35, \"keep\": 0.6}.",
+      obj({"budget": {"type": "number", "description": "ms over Vesemir (default 6)"}, "set": {"type": "object"}}))
+def t_gpu_estimate(a):
+    return S.call({"do": "gpu_estimate", **{k: a[k] for k in ("budget", "set") if k in a}})
+
+
+@tool("studio_auto_balance", "2026-10-18: stiffness vs drawn-hair-count trade-off for a GPU budget (ESTIMATE from the GPU cost model, "
+      "not measured). One row per stiffness (current, 1 .. .25 with tip >= .1 and strength 1, a custom stiffness, and the measured-bad "
+      ".186 / tip 0 for reference): keep = the share of the current drawn hairs that fits the budget (>= .25; guides are never deleted), "
+      "drawn_hairs, extra_ms +- err_ms, extra_ms_all_hairs, fits, bad_zone. recommended = the lowest stiffness that fits while keeping "
+      ">= min_keep. motion: true also runs the Studio wind simulation per row (wind 1, 4 headings: mean / tip mm, stuck %; wind_motion.py "
+      "metric; a few s per row). apply: a row index or \"recommended\" sets stiffness / tipStiffness / strength 1 and the hair share "
+      "(route 'lod' = levelOfDetail.detailLOD.detailLODDensity, default; 'density' = physicalMaterials.volume.density -> flat density "
+      "map at export) on the groom; undo: true reverts the last apply (Ctrl+Z in the UI). Bad-zone rows are never applied.",
+      obj({"budget": {"type": "number"}, "min_keep": {"type": "number"}, "stiffness": {"type": "number", "description": "custom row stiffness"},
+           "route": {"type": "string", "enum": ["lod", "density"]}, "motion": {"type": "boolean"},
+           "apply": {"description": "row index (integer) or \"recommended\""}, "undo": {"type": "boolean"}}))
+def t_auto_balance(a):
+    cmd = {"do": "auto_balance", **{k: a[k] for k in ("budget", "min_keep", "stiffness", "motion", "apply", "undo") if k in a}}
+    if "route" in a:
+        cmd["route"] = 1 if a["route"] == "density" else 0
+    r = S.call(cmd, timeout=1800)
+    ap = r.get("apply") or {}
+    if isinstance(ap, dict) and ap.get("set"):   # journal the applied values, so a Studio restart replays them
+        S.journal.append({"do": "look", "set": ap["set"]})
+    elif a.get("undo") and r.get("undone"):
+        r["note_undo"] = "undone in this session only: if the Studio process restarts, its replay re-applies the earlier apply (check studio_gpu_estimate)"
+    return r
+
+
+@tool("studio_scalp_mask", "2026-10-18 opt-in texel scalp test (saved in the project as \"scalp_mask\"; off = the per-vertex mask, "
+      "unchanged). texel: true = the painted-scalp test of the scalp overlay, hairline_check / handback gate roots, align_to_hairline, "
+      "fill tools and fill_below_hairline runs per texel of the head diffuse instead of by the nearest head vertex (~1-2.5 cm apart), in "
+      "a band = triangles touching a painted vertex, flooded up to band_rings (6) rings through triangles with >= band_frac (0.4) "
+      "painted samples. pixel_thr_scale (1) scales the dark threshold (0.62 x skin, max 95) for light hair paint: Voorhis's blond "
+      "widow's peak needs 1.25 (roots off scalp 374 -> 106). No keys = report (painted vertices, band triangles, pixel threshold). "
+      "Look at a hair:false overlay render after setting it: green must stop at the painted hairline, never on the forehead / ears.",
+      obj({"texel": {"type": "boolean"}, "pixel_thr_scale": {"type": "number"}, "band_frac": {"type": "number"},
+           "band_rings": {"type": "integer"}}))
+def t_scalp_mask(a):
+    return S.call({"do": "scalp_mask", **{k: a[k] for k in ("texel", "pixel_thr_scale", "band_frac", "band_rings") if k in a}})
+
+
 @tool("studio_look_get", "Current look / physics values (fur parameter paths). keys: optional list of path prefixes.",
       obj({"keys": {"type": "array", "items": {"type": "string"}}}))
 def t_lookget(a):
@@ -2194,7 +2245,8 @@ def t_game_accurate(a):
 
 
 @tool("studio_simulate","Run physics: preset idle / walk / run / turn / nod / spin / wind / rest for seconds "
-      "(settle = rest pose). on=false keeps hair on the rest shape.",
+      "(settle = rest pose), or the gameplay presets sprint (Sprint-stop: 6.5 m/s sprints with dead stops and 180 deg turns), "
+      "dodge (1.5 m sideways in 0.4 s, crouch + tilt), sword (Sword swings: +-110 deg torso in 0.3 s). on=false keeps hair on the rest shape.",
       obj({"preset": {"type": "string"}, "seconds": {"type": "number"}, "on": {"type": "boolean"}, "reset": {"type": "boolean"},
            "amount": {"type": "number", "description": "motion / wind strength multiplier (1)"}, "speed": {"type": "number"},
            "wind_yaw_deg": {"type": "number", "description": "wind heading 0-360 (default 206.6 = front-left towards back)"},
@@ -2210,6 +2262,21 @@ def t_sim(a):
                    **{k: a[k] for k in ("wind_yaw_deg", "wind_pitch_deg") if k in a}})
 
 
+@tool("studio_motion_report", "Read-only: how far the simulated hair moves RELATIVE TO THE HEAD under motion presets (gameplay check, 2026-10-18). "
+      "Per preset: settle at rest, then the preset from the settled state; every guide CV is read back and put in the head frame. "
+      "Returns tip_mean_mm, cv_mean_mm, tip_max_mm p50/p90/p99/max (per-guide maximum), guides_fly (tip > fly_mm from rest), "
+      "guides_tip_rise_50mm, peak_root_speed_ms and a 0.25 s series [t, mean, p95]. set {sdk path: number} tries simulation values "
+      "(damping, massScale, inertiaLimit, stiffnessDamping, ...) for this report only; the project is not changed.",
+      obj({"presets": {"type": "array", "items": {"type": "string"}, "description": "default [Run, SprintStop, Dodge, SwordSwings]"},
+           "seconds": {"type": "number", "description": "per preset (8)"}, "warmup_s": {"type": "number", "description": "not measured (1)"},
+           "settle_s": {"type": "number"}, "step_hz": {"type": "number", "description": "60 (Studio) or 30 (game FPS cap: one step per frame)"},
+           "amount": {"type": "number"}, "wind": {"type": "number", "description": "Studio wind strength on top (0)"}, "wind_yaw_deg": {"type": "number"},
+           "fly_mm": {"type": "number", "description": "80"}, "series": {"type": "boolean"},
+           "set": {"type": "object", "description": "{\"physicalMaterials.simulation.damping\": 0.8, ...}"}}))
+def t_motion_report(a):
+    return S.call({"do": "motion_report", **a}, timeout=3600)
+
+
 @tool("studio_dump_geo", "Read-only: write the groom as it is now (alive guides in order with all control points, edit frame, "
       "faces by alive index with per-corner uv, K) to a JSON file (path; default <out>/geo.json). For offline checks / diffs. "
       "guides[n] is NOT Studio guide n: use index[n] (its Studio index) before passing it to any other tool. "
@@ -2220,6 +2287,84 @@ def t_sim(a):
 def t_dump_geo(a):
     return S.call({"do": "dump_geo", "path": a.get("path") or os.path.join(S.out, "geo.json"),
                    **({"render": True} if a.get("render") else {})})
+
+
+@tool("studio_cards_bake", "Opt-in (2026-10-29): bake the OPEN groom (with its edits) into classic hair CARDS at vanilla GPU cost "
+      "(tools/hairworks/cards_bake.py): HairWorks-like strands from the guides / growth faces, clustered into card strips that "
+      "follow the groom, written into the vanilla card mesh's own vertex slots, with a new alpha / colour / normal atlas baked "
+      "from the strands. name (new, e.g. <char>_cards1) is required. Knobs: cards (170; fewer = fewer layers / more gaps), "
+      "seg (9 segments per strip), tiles (40 shared atlas tiles; 0 = one per card), coverage (0.45 of each tile drawn: lower "
+      "= more see-through), strand_px (0.9) / tip_px (0.5) strand width in atlas px, root_fade (0.12) / side_fade (0.35) "
+      "wispy roots / card sides, strands (60000), seed. Returns the offline sheet (vanilla cards | baked) and writes "
+      "build/cards_bake/<name>/ (atlas, cards.npz, with mod: true the game files) + the preview pack "
+      "build/desktop_studio/<name>/ (studio_open {cfg: name} + studio_render {vanilla: true} shows the baked cards; "
+      "opening it replaces the open build, so studio_save the groom first). Game build: config key cards_bake "
+      "{desk: <pack>, geo: <dump>, ...knobs} (hairpipe / HairLab). atlas_src 'studio' (user 2026-10-29: the HairWorks render "
+      "itself as the card texture): renders the open groom from 13 views (colour + hair mask, views_size px) into "
+      "build/cards_bake/<name>/views and projects them onto the cards (each card its own texels; strand alpha only at the "
+      "card sides / root / tips); game config: cards_bake {atlas_src: 'studio', views: 'build/cards_bake/<name>/views'}. "
+      "preset (2026-10-31, cards_geo 'strands' = one ribbon per hair lock, 2 meshes, ~2 x 61k triangles; c04ma L1267): "
+      "'strands' = e1 (HairWorks waves, inner scalp layer, hairline fringe in a 15 mm band, quantisation box grown), "
+      "'strands_sway' = e2 (e1 + Avallach's bone chains: back / side hair sways, the dome stays on the head). Both render "
+      "13 Studio views of the open groom (views_size, default 1024) for the strand colour. opts {key: value} = any other "
+      "cards_bake.DEFAULTS key (e.g. ribbon_fringe, ribbon_dyng_zramp_cm, ribbon_bright), applied over the preset. With a "
+      "preset the result carries game_config = the cards_bake {...} block for a HairLab plan subject (2 meshes and sway "
+      "need the HairLab build; mod: true writes only the first mesh).",
+      obj({"name": {"type": "string"}, "cards": {"type": "integer"}, "seg": {"type": "integer"}, "tiles": {"type": "integer"},
+           "atlas_src": {"type": "string", "enum": ["baked", "studio"]}, "views_size": {"type": "integer"}, "tilt_max": {"type": "number"},
+           "coverage": {"type": "number"}, "strand_px": {"type": "number"}, "tip_px": {"type": "number"},
+           "root_fade": {"type": "number"}, "side_fade": {"type": "number"}, "strands": {"type": "integer"},
+           "seed": {"type": "integer"}, "mod": {"type": "boolean"},
+           "preset": {"type": "string", "enum": ["strands", "strands_sway"]}, "opts": {"type": "object"}}, ["name"]))
+def t_cards_bake(a):
+    if not re.match(r"^[A-Za-z0-9_]+$", a["name"]):
+        raise RuntimeError("name: letters, digits and _ only")
+    st = S.call({"do": "status"})["status"]
+    cfg = st.get("config")
+    desk = os.path.join(REPO, "build", "desktop_studio", cfg)
+    if not os.path.isfile(os.path.join(desk, "desk.json")):
+        raise RuntimeError("no desk pack for the open build %s" % cfg)
+    geo = os.path.join(S.out, "cards_geo_%s.json" % a["name"])
+    S.call({"do": "dump_geo", "path": geo, "render": True})
+    cmd = [sys.executable, os.path.join(REPO, "tools", "hairworks", "cards_bake.py"), "bake", desk, "--name", a["name"], "--geo", geo]
+    sys.path.insert(0, os.path.join(REPO, "tools", "hairworks"))
+    import cards_bake as CB
+    extra = dict(CB.PRESETS[a["preset"]]) if a.get("preset") else {}
+    bad = sorted(k for k in (a.get("opts") or {}) if k not in CB.DEFAULTS)
+    if bad:
+        raise RuntimeError("opts: not cards_bake keys: %s" % ", ".join(bad))
+    extra.update(a.get("opts") or {})
+    vd = None
+    if a.get("atlas_src") == "studio" or a.get("preset"):
+        vd = os.path.join(REPO, "build", "cards_bake", a["name"], "views")
+        size = int(a.get("views_size", 1024 if a.get("preset") else 2048))
+        CB.render_views(lambda cam, ov, path: S.call({"do": "render", "path": path, "size": size, "eye": cam["eye"],
+                                                       "target": cam["target"], "fovy": cam["fovy"], "overlay": ov}),
+                        vd, CB.head_centre(desk), size, log=lambda *x: None)
+        cmd += ["--views", vd] + (["--atlas-src", "studio"] if a.get("atlas_src") == "studio" else [])
+    for k in ("cards", "seg", "tiles", "coverage", "strand_px", "tip_px", "root_fade", "side_fade", "strands", "seed", "tilt_max"):
+        if k in a:
+            extra[k] = a[k]
+    for k, v in extra.items():     # cards_bake CLI: --key value per DEFAULTS key (bool: '' = False)
+        cmd += ["--" + k.replace("_", "-"), ("1" if v else "") if isinstance(v, bool) else str(v)]
+    if a.get("mod"):
+        cmd.append("--mod")
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
+    out = os.path.join(REPO, "build", "cards_bake", a["name"])
+    res = {"do": "cards_bake", "source": cfg, "geo": geo, "out": out, "preview_pack": a["name"], "rc": r.returncode,
+           "log": (r.stdout + r.stderr).strip().splitlines()[-16:]}
+    if a.get("preset"):
+        rel = lambda p: (os.path.relpath(p, REPO) if os.path.splitdrive(p)[0].lower() == os.path.splitdrive(REPO)[0].lower() else p).replace("\\", "/")
+        res["game_config"] = {"cards_bake": dict({"desk": cfg, "geo": rel(geo), "views": rel(vd)}, **extra)}
+    if r.returncode != 0:
+        return res
+    try:
+        res["cards"] = json.load(open(os.path.join(out, "cards.json")))
+        res["cards"].pop("opts", None)
+    except (OSError, ValueError):
+        pass
+    sh = os.path.join(out, "sheet_views.png")
+    return [res, image_content(sh, None, 1000)] if os.path.isfile(sh) else res
 
 
 # --- composite fixers (2026-10-16, agent tools): the recipes that worked, in one call each, with numbers before / after
@@ -2652,7 +2797,7 @@ def handle(msg):
     if m == "initialize":
         return {"protocolVersion": msg.get("params", {}).get("protocolVersion", PROTOCOL),
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "hairwork-studio", "version": "0.4.0"},
+                "serverInfo": {"name": "hairwork-studio", "version": "0.5.0"},
                 "instructions": "Live Hairwork Studio session (Witcher 3 HairWorks grooms). Start with studio_open, "
                                 "studio_shots, studio_compare (vanilla | as opened | current). Find bald patches with "
                                 "studio_render overlay=scalp + studio_scalp_coverage, locate them with studio_pick / "

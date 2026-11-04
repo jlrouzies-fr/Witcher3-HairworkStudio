@@ -12,6 +12,9 @@ Config (all keys optional, `"beard": {}` = defaults):
     "hair": true,             # false = beard only: the hair stays vanilla cards (no hair fur, template patched for the beard)
     "keep_brows": true,       # eyebrow cards baked in the same hb_ mesh (Lambert, Regis, ...) stay cards: extra mesh
                               #   <mesh>_brows.w2mesh drawn with the fur, fallback <mesh>_nobrows.w2mesh (no doubling with HW off)
+    "drop_brows": false,      # 2026-10-24 opt-in (Baron L1118, user: "REMOVE the cardboard, NO HYBRID"): with keep_brows true, the
+                              #   eyebrow cards are still left out of the beard fur (same roots / bone table as keep_brows) but no
+                              #   _brows / _nobrows mesh is written: no card mesh with HairWorks on (brows as Studio guides instead)
     "alpha_vis": 0.25,        # card atlas alpha above which a card sample counts as visible hair
     "root_sd": 0.008,         # visible card samples within this skin distance form the root region
     "reach": 0.005,           # a head vertex is a root when a root-region sample lies within reach
@@ -1329,7 +1332,7 @@ def generate(C, info, log=print, part='beard', prefix=''):
     head = growth.Head(head_rel)
     res = dict(S=strands, F=F, roots=V)
     log('fur %s (beard): %d guides, %d faces, %d bytes' % (comp, len(strands), len(F), len(data)))
-    return dict(fur=data, template=tpl, comp=comp if part == 'beard' else (sc.get('name') or 'scalp_' + (comp[3:] if comp.startswith('hb_') else comp)), src_comp=comp, mesh=mesh, res=res, head=head, brows=bool((nb and o['keep_brows']) or nk), keep_brows=bool(o['keep_brows']), keep_boxes=o.get('keep_card_boxes'), keep_opts=(int(o.get('keep_card_min_verts', 1)), o.get('keep_card_below')),
+    return dict(fur=data, template=tpl, comp=comp if part == 'beard' else (sc.get('name') or 'scalp_' + (comp[3:] if comp.startswith('hb_') else comp)), src_comp=comp, mesh=mesh, res=res, head=head, brows=bool((nb and o['keep_brows'] and not o.get('drop_brows')) or nk), keep_brows=bool(o['keep_brows']), keep_boxes=o.get('keep_card_boxes'), keep_opts=(int(o.get('keep_card_min_verts', 1)), o.get('keep_card_below')),
                 tex=tex, skin=skin, samples=S, extra_files=(cmap['files'] if cmap else []) + dgain_files)
 
 
@@ -1412,6 +1415,98 @@ def bake_density(geo, length_scale, bk, base_path, share, log=print):
     return U.reshape(-1, 2), files, st
 
 
+def tint_rel(C):
+    """game path of the studio_geo_beard.colour_tint texture of config C (the same in a round and in an install)"""
+    return r'characters\models\hairworkforall\tint\%s_beard_tint.xbm' % C['name'].lower()
+
+
+def tint_texture(C, log=print):
+    """studio_geo_beard.colour_tint {rgb, brightness} (2026-10-20, Donar L963-L970): the kept vanilla braid cards render
+    warmer / darker than strands reading the same grey beard_01_d01 (the cards' hue comes from their material). A tinted
+    COPY of colour_tex under tint_rel(C): same size / mips / format as the game texture, every DXT5 colour endpoint x a
+    per-channel gain (alpha-weighted mean -> rgb / brightness), the 4x4 indices and the alpha blocks untouched.
+    Inline xbms with no texture.cache entry drew the fur BLACK in game (L965 DXT1 proxy, L967 DXT5, L969 full resident
+    chain; a vanilla inline texture did render, L970): the engine reads fur textures through the cache key, so this
+    returns the stub (bundle) AND the cache entry (texture.cache), shipped by batch.build / hairpipe.build.
+    -> dict(rel, stub, blob, ends, size, hdr) or None without the key"""
+    sg = C.get('studio_geo_beard') or {}
+    tint = sg.get('colour_tint')
+    if not (tint and sg.get('colour_tex')):
+        return None
+    import struct
+    import zlib
+    import gamefiles as G
+    import texcache as TC
+    import scalp_tex as ST
+    import w3lib
+    from texread import load_xbm
+    src = sg['colour_tex']
+    im = np.asarray(load_xbm(src).convert('RGBA')).astype(np.float64)
+    a = im[..., 3] > 0.3 * 255
+    mean = im[a][:, :3].mean(0)
+    b = float(tint.get('brightness', 1.0))
+    gain = np.asarray(tint['rgb'], float) / b / mean
+    c = TC.TextureCache(TC.GAME_CACHE)
+    e = c.by_name[src.lower()]
+    v = list(struct.unpack('<IiIIIIHHHHiiQBBH', e.raw))
+    blocks = ST.parse_entry_blocks(c.path, e, c.mips)
+
+    def tint_blocks(raw):
+        q = np.frombuffer(raw, np.uint8).reshape(-1, 16).copy()
+        for o in (8, 10):
+            cc = q[:, o].astype(np.int32) | (q[:, o + 1].astype(np.int32) << 8)
+            r, g, bl = (cc >> 11) & 31, (cc >> 5) & 63, cc & 31
+            r = np.clip(np.round(r * gain[0]), 0, 31).astype(np.int32)
+            g = np.clip(np.round(g * gain[1]), 0, 63).astype(np.int32)
+            bl = np.clip(np.round(bl * gain[2]), 0, 31).astype(np.int32)
+            cc = (r << 11) | (g << 5) | bl
+            q[:, o], q[:, o + 1] = cc & 255, cc >> 8
+        return q.tobytes()
+
+    tb = [tint_blocks(x) for x in blocks]
+    blob, ends = bytearray(), []
+    for i, raw in enumerate(tb):
+        z = zlib.compress(raw, 9)
+        blob += struct.pack('<IIB', len(z), len(raw), len(tb) - 1 - i) + z
+        ends.append(len(blob))
+    rel = tint_rel(C)
+    stub = bytearray(G.get(src))
+    res = tb[-1]
+    assert bytes(stub[-len(res):]) == blocks[-1], 'stub resident mips != the cache resident block'
+    stub[-len(res):] = res
+    w = w3lib.CR2W(bytes(stub))
+    t_, o_, ln_ = w.prop(0, 'textureCacheKey')
+    assert ln_ == 4
+    struct.pack_into('<I', w.d, o_, TC.name_hash(rel))
+    w.fix_crcs()
+    hdr = dict(size=sum(len(x) for x in tb), w=v[6], h=v[7], mips=v[8], slices=v[9], type=v[13], fmt=v[14], flags=v[15])
+    log('  colour_tint: %s mean %s x gain %s -> %s; cache copy %s (%dx%d, %d mips, %d streamed + resident, zsize %d)' % (
+        src, mean.round(1).tolist(), gain.round(3).tolist(), (mean * gain).round(1).tolist(), rel, hdr['w'], hdr['h'],
+        hdr['mips'], len(tb) - 1, len(blob)))
+    return dict(rel=rel, stub=bytes(w.d), blob=bytes(blob), ends=ends[:-1], hdr=hdr, brightness=b)
+
+
+def write_tint_cache(path, items):
+    """v6 texture.cache with the tint_texture() entries (scalp_recolour.write_cache layout, header fields per item)"""
+    import struct
+    import texcache as TC
+    blob, strings, ents, mtab = bytearray(), bytearray(), bytearray(), []
+    for it in items:
+        h = it['hdr']
+        page = len(blob) // 4096
+        blob += it['blob'] + bytes(-len(it['blob']) % 4096)
+        ents += struct.pack('<IiIIIIHHHHiiQBBH', TC.name_hash(it['rel']), len(strings), page, len(it['blob']), h['size'],
+                            16, h['w'], h['h'], h['mips'], h['slices'], len(mtab), len(it['ends']), 0, h['type'], h['fmt'], h['flags'])
+        mtab += it['ends']
+        strings += it['rel'].encode('latin1') + b'\0'
+    with open(path, 'wb') as f:
+        f.write(blob)
+        f.write(struct.pack('<%dI' % len(mtab), *mtab))
+        f.write(strings)
+        f.write(ents)
+        f.write(struct.pack('<QIIII4sI', 0, len(blob) // 4096, len(items), len(strings), len(mtab), b'HCXT', 6))
+
+
 def studio_beard(C, fur, log=print, extra_files=None, base_path=None):
     """opt-in "studio_geo_beard" (2026-10-14): the Groom Studio's Beard-mode result (geometry + look values) replaces the
     generated beard fur's, with the Studio export's own function (desk_export.edit_fur). Made by studio_to_config.py."""
@@ -1420,6 +1515,18 @@ def studio_beard(C, fur, log=print, extra_files=None, base_path=None):
     DE = studio_geo._desk_export()
     sg = C['studio_geo_beard']
     geo = studio_geo.load_geo(sg['geo'])
+    if sg.get('bind_head_box'):
+        # opt-in bind_head_box [x0,x1,y0,y1,z0,z1] (2026-10-21, Donar L1031): guides rooted in the box follow the head bone
+        # only. Mustache guides weighted to the neck / mouth bones were left behind when the NPC turns its head in game
+        # (pushed to one side, L1030); the Studio pose never shows it. Bone 0 = head in the beard fur bone list.
+        b = sg['bind_head_box']
+        nb = 0
+        for i, g in enumerate(geo['guides']):
+            r = g[0]
+            if b[0] <= r[0] <= b[1] and b[2] <= r[1] <= b[3] and b[4] <= r[2] <= b[5]:
+                geo['bone_idx'][i], geo['bone_w'][i] = [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
+                nb += 1
+        log('  studio_geo_beard: bind_head_box -> %d guides bound to the head only' % nb)
     look = json.load(open(studio_geo._path(sg['look']))) if sg.get('look') else {}
     sd = studio_defaults(cfg(C))
     if sd is not None and cfg(C).get('studio_defaults'):
@@ -1498,7 +1605,45 @@ def studio_beard(C, fur, log=print, extra_files=None, base_path=None):
                                    w3_keys=bool(sg.get('w3_keys')))   # opt-in 2026-10-15 (desk_export.W3_KEY_TYPES); studio_to_config sets it for new configs
     finally:
         os.remove(tmp)
+    if sg.get('colour_tex'):
+        # 2026-10-18 opt-in (Donar L771: a texture-less white beard shades as one flat sheet in game): rootColorTex /
+        # tipColorTex = this game texture (e.g. the hair's own hair_medium_03_d01.xbm), so each hair takes the texel
+        # under its root as the hair furs do; textureBrightness comes from the look / extra_set
+        tex_ = sg['colour_tex']
+        if sg.get('colour_tint'):
+            # 2026-10-20 opt-in: the tinted cache copy of colour_tex (tint_texture; stub + texture.cache entry are added
+            # by batch.build / hairpipe.build); the fur only imports its path
+            tex_ = tint_rel(C)
+            log('  studio_geo_beard colour_tint: rootColorTex / tipColorTex = %s' % tex_)
+        doc = DE.CR2WDoc.parse(out)
+        ch = DE.Chunk(doc, 0)
+        imp = DE.v_import(doc.add_import(tex_, 'CBitmapTexture'))
+        for k in ('rootColorTex', 'tipColorTex'):
+            DE.apply_value(doc, ch, ['graphicalMaterials', 'color', k], 'handle:CBitmapTexture', imp)
+        ch.commit()
+        out = doc.to_bytes()
+        DE.RF.verify(out)
+        changed.append('colour_tex ' + tex_)
     log('  studio_geo_beard %s: %d guides, %d faces; changed: %s' % (sg['geo'], len(geo['guides']), len(geo['F']), ', '.join(changed)))
+    return out
+
+
+def studio_scalp(C, fur, log=print):
+    """opt-in "studio_geo_scalp" {geo, look (optional), w3_keys} (2026-10-19): Studio geometry / colliders for the beard.scalp fur."""
+    import tempfile
+    import studio_geo
+    DE = studio_geo._desk_export()
+    sg = C['studio_geo_scalp']
+    geo = studio_geo.load_geo(sg['geo'])
+    look = json.load(open(studio_geo._path(sg['look']))) if sg.get('look') else {}
+    fd, tmp = tempfile.mkstemp(suffix='.redfur')
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(fur)
+        out, changed = DE.edit_fur(tmp, {'ops': ['studio']}, look, geo, False, True, None, log, w3_keys=bool(sg.get('w3_keys')))
+    finally:
+        os.remove(tmp)
+    log('  studio_geo_scalp %s: %d guides, %d colliders' % (sg['geo'], len(geo['guides']), len((geo.get('colliders') or {}).get('spheres') or [])))
     return out
 
 
@@ -1528,6 +1673,19 @@ def add_to_build(C, info, files, bufs, tpls, P, log=print):
         bm = P(B['mesh'][:-len('.w2mesh')] + '_brows.w2mesh')
         w, b, stt = template.subset_mesh(B['mesh'], keep)
         log('  beard: eyebrow cards kept as %s: (verts, live tris, tris) per chunk %s' % (bm, stt))
+        kt = cfg(C).get('keep_card_tint')
+        if kt:
+            # 2026-10-20 opt-in beard.keep_card_tint [r, g, b] (Donar, user: "it needs to be gray, not blondish"): the
+            # kept cards' (braids + brows) pbr_hair VarianceColor patched in place on this mesh copy (vanilla_twin's
+            # same-size patch; vanilla 254,255,243 renders beige in the game light)
+            from lab import vanilla_twin as VT
+            saved = VT.PATCH
+            VT.PATCH = {'VarianceColor': ('Color', tuple(int(x) for x in kt[:3]) + (255,))}
+            try:
+                w, done = VT.patch_materials(w, log)
+            finally:
+                VT.PATCH = saved
+            log('  beard: keep_card_tint %s on %d material(s): was %s' % (list(kt[:3]), len(done), [d[2] for d in done]))
         files.append((bm, w)); bufs.append((bm + '.1.buffer', b))
         extra.append((B['comp'] + '_brows', bm))
         fb = P(B['mesh'][:-len('.w2mesh')] + '_nobrows.w2mesh')
@@ -1555,6 +1713,10 @@ def add_to_build(C, info, files, bufs, tpls, P, log=print):
     if sc:
         # L250 opt-in: scalp hair = a second fur component cloned from the beard component (own cards subset as fallback)
         B2 = generate(C, info, log, part='scalp')
+        if C.get('studio_geo_scalp'):
+            # 2026-10-19 opt-in (Bedlam L901): the Studio's Hair-mode result of a scalp_beard (the scalp fur is beard.scalp, so
+            # studio_geo never reaches it): geometry + colliders (+ look when given) replace the generated scalp fur's
+            B2['fur'] = studio_scalp(C, B2['fur'], log)
         zz = float(sc.get('z', 1.34))
         fp2 = P(H.fur_path(C, B2['comp']))
         files.append((fp2, B2['fur']))

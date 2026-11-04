@@ -225,6 +225,12 @@ def write(strands, faces, uvs, bones, collision, look, auto_hide=100.0):
     ch.set('boneSphereIndexArray', 'array:2,0,Uint32', arr([struct.pack('<I', int(i)) for i in col['idx']]))
     ch.set('boneSphereRadiusArray', 'array:2,0,Float', arr([struct.pack('<f', r) for r in col['rad']]))
     ch.set('boneCapsuleIndices', 'array:2,0,Uint32', arr([struct.pack('<I', int(i)) for i in col['cap']]))
+    if col.get('pins'):
+        # 2026-10-20 opt-in (hairpipe.pin_setup): pin spheres on dangle bones, written like c_06_mg__spiketail_fur
+        pn = col['pins']
+        ch.set('pinConstraintsLocalPosArray', 'array:2,0,Vector', arr([enc_vec(doc, list(p) + [0.0]) for p in pn['pos']]), after='boneVertexEpsilons')
+        ch.set('pinConstraintsIndexArray', 'array:2,0,Uint32', arr([struct.pack('<I', int(i)) for i in pn['idx']]), after='pinConstraintsLocalPosArray')
+        ch.set('pinConstraintsRadiusArray', 'array:2,0,Float', arr([struct.pack('<f', r) for r in pn['rad']]), after='pinConstraintsIndexArray')
     mn, mx = pts.min(0) - 0.02, pts.max(0) + 0.02
     bb = lambda v, nm_: struct.pack('<HHI', _nm(doc, nm_), _nm(doc, 'Vector'), 4 + 51) + enc_vec(doc, list(v) + [1.0])
     ch.set('boundingBox', 'Box', b'\0' + bb(mn, 'Min') + bb(mx, 'Max') + b'\0\0')

@@ -315,6 +315,7 @@ bool App::openConfig(const std::string& cfg, bool rebuildPrep) {
         if (!m.texFile.empty() && !meshTex.count(m.texFile)) meshTex[m.texFile] = gfx.loadTexture(dir + "\\" + m.texFile, true);
         if (!m.nrmFile.empty() && !meshTex.count(m.nrmFile)) meshTex[m.nrmFile] = gfx.loadTexture(dir + "\\" + m.nrmFile, false);
     }
+    scalpOpt = json::object();   // opt-in scalp keys belong to a project (loadProject sets them again)
     computeHeadScalp();
     safeRelease(colorSrv);
     if (!pack.colorFile.empty()) colorSrv = gfx.loadTexture(dir + "\\" + pack.colorFile, true);
@@ -440,6 +441,8 @@ void App::buildBeard() {
     hwBeard.sphereR.clear();
     if (!hwBeard.build(beardPk, beardGroom, beardGuideOfAsset)) { logf("beard fur: %s", hwBeard.lastError.c_str()); return; }
     beardOn = true;
+    for (const json* b : {&pack.beardFur, &beardPk.beardFur})
+        if (b->is_object() && b->contains("label")) beardName = (*b)["label"].get<std::string>();
     logf("beard fur: %d guides, %d faces (second HairWorks instance)", (int)beardPk.guides.size(), (int)beardPk.F.size());
 }
 
@@ -478,8 +481,8 @@ bool App::setFur(int f) {
     smap.ensure(groom.P.size());
     assetDirty = stiffDirty = aoRefreshAll = true;
     computeBudget();
-    status = fur ? "Beard mode: editing the beard (" + std::to_string(groom.numAlive()) + " guides); the hair is the preview"
-                 : "Hair mode: editing the hair (" + std::to_string(groom.numAlive()) + " guides); the beard is the preview";
+    status = fur ? beardName + " mode: editing the " + beardName + " (" + std::to_string(groom.numAlive()) + " guides); the hair is the preview"
+                 : "Hair mode: editing the hair (" + std::to_string(groom.numAlive()) + " guides); the " + beardName + " is the preview";
     logf("%s", status.c_str());
     return true;
 }
@@ -666,6 +669,13 @@ void App::step(double dt) {
     fps = fps * 0.95f + 0.05f * float(1.0 / std::max(dt, 1e-4));
     if (!loaded) return;
     if (windBusy && !windInside) { windResume(); return; }   // Check > Max-wind strays owns the simulation while it runs
+    if (gb.measuring >= 0 && !gb.inside && !headless) {       // Auto-balance "Measure motion": one row's wind simulation per frame
+        gb.inside = true;
+        int i = gb.measuring;
+        gbMeasureRow(i);
+        gb.measuring = i + 1 < (int)gb.rows.size() ? i + 1 : -1;
+        gb.inside = false;
+    }
     if (assetDirty && (!dragging || headless || ImGui::GetTime() - lastBuild > 0.12)) rebuildHair();
     if (stiffDirty && sdkOk) updateStiffnessTexture();
     if (turntable && !camOverride) cam.yaw += float(dt) * 0.45f;
@@ -704,10 +714,10 @@ void App::step(double dt) {
     if (!paused && simulate) {
         simAcc += dt;
         int n = 0;
-        while (simAcc >= 1.0 / 60.0 && n < 4) {
-            hw.step(1.0f / 60.0f);
-            if (beardOn) hwBeard.step(1.0f / 60.0f);
-            simAcc -= 1.0 / 60.0;
+        while (simAcc >= simStep - 1e-9 && n < 4) {
+            hw.step(float(simStep));
+            if (beardOn) hwBeard.step(float(simStep));
+            simAcc -= simStep;
             n++;
         }
         if (n == 4) simAcc = 0;
@@ -795,6 +805,10 @@ static void meshVerts(const App& a, std::vector<GVertex>& out, bool textured, in
                     auto hs = a.headScalp.find(int(mi));
                     float fl = hs != a.headScalp.end() ? hs->second[t[c]] : 0.0f;
                     cc = scalpTex ? XMFLOAT4(m.uv[t[c]][0], m.uv[t[c]][1], fl, 6) : XMFLOAT4(0, 0, fl, 5);
+                    // opt-in texel test (scalp_mask texel): w = 8 on texel-band triangles, 7 elsewhere, z = 1 + scaled threshold
+                    if (scalpTex && a.scalpTexelOn() && a.scalpTx.mi == int(mi))
+                        cc = XMFLOAT4(m.uv[t[c]][0], m.uv[t[c]][1], 1.0f + float(std::pow(a.scalpTx.thr / 255.0, 2.2)),
+                                      ti < a.scalpTx.tband.size() && a.scalpTx.tband[ti] ? 8.0f : 7.0f);
                 }
                 out.push_back({P[t[c]], n, scalp ? cc : tex ? XMFLOAT4(m.uv[t[c]][0], m.uv[t[c]][1], cls, texMode) : cc});
             }
@@ -817,12 +831,15 @@ void App::drawScene() {
         V = cam.view();
         P = XMMatrixPerspectiveFovRH(XMConvertToRadians(cam.fov), aspect, 0.02f, 200.0f);
     }
+    V3 tr = motion.travel();   // gameplay presets move the root through the world: the camera (viewport and shots) follows
+    if (tr.x != 0 || tr.y != 0 || tr.z != 0) V = XMMatrixTranslation(-tr.x, -tr.y, -tr.z) * V;
     XMStoreFloat4x4(&viewM, V);
     XMStoreFloat4x4(&projM, P);
     // ---- key-light shadow map: meshes + hair (SDK shadow pass), ortho box around the character
     float ca0 = std::cos(rig.sunEl);
     XMVECTOR Ldir = XMVector3Normalize(XMVectorSet(ca0 * std::sin(rig.sunAz), ca0 * std::cos(rig.sunAz), std::sin(rig.sunEl), 0));
-    XMVECTOR ctr = loaded ? XMVectorSet(pack.headC.x, pack.headC.y, 1.05f, 1) : XMVectorSet(0, 0, 1.05f, 1);
+    V3 trS = motion.travel();
+    XMVECTOR ctr = loaded ? XMVectorSet(pack.headC.x + trS.x, pack.headC.y + trS.y, 1.05f, 1) : XMVectorSet(0, 0, 1.05f, 1);
     XMVECTOR up = std::fabs(std::sin(rig.sunEl)) > 0.97f ? XMVectorSet(0, 1, 0, 0) : XMVectorSet(0, 0, 1, 0);
     XMMATRIX LV = XMMatrixLookAtRH(XMVectorAdd(ctr, XMVectorScale(Ldir, 3.0f)), ctr, up);
     const float lnear = 0.1f, lfar = 6.0f, lbox = 2.3f;
@@ -2064,7 +2081,9 @@ void App::applyFurState(const json& j) {
     for (auto& o : j.value("ops", json::array())) groom.ops.push_back(o);
     groom.replay();
     std::string mat = j.value("material", "");
-    for (int i = 0; i < (int)presets.size(); i++) if (presets[i].name == mat) presetSel = i;
+    // 2026-10-18: the older presets got an " (Unoptimized)" tag (desk_prep.PRESETS); projects saved before keep theirs
+    for (int i = 0; i < (int)presets.size(); i++)
+        if (presets[i].name == mat || presets[i].name == mat + " (Unoptimized)") presetSel = i;
     keepColours = j.value("keep_colours", true);
     look.over.clear();
     json lk = j.value("look", json::object());
@@ -2118,6 +2137,7 @@ bool App::saveProject(const std::string& path) {
         if (!kc.empty()) j["keep_cards"] = kc;
     }
     if (!cardOffsets.empty()) j["card_offsets"] = cardOffsets;   // 2026-10-17 moved kept card pieces (studio_card_offset)
+    if (!scalpOpt.empty()) j["scalp_mask"] = scalpOpt;   // 2026-10-18 opt-in texel scalp test (setScalpOpt)
     j["saved_by"] = headless ? "agent" : "ui";   // 2026-10-16 agent tools: an agent's MCP layer snapshots a UI save before it edits it
     fs::create_directories(fs::path(path).parent_path());
     std::ofstream(path) << j.dump(1);
@@ -2132,6 +2152,7 @@ bool App::loadProject(const std::string& path) {
     json j;
     try { std::ifstream f(path); j = json::parse(f); } catch (std::exception& e) { status = std::string("Project: ") + e.what(); return false; }
     if (!openConfig(j.value("config", ""), false)) return false;
+    setScalpOpt(j.contains("scalp_mask") && j["scalp_mask"].is_object() ? j["scalp_mask"] : json::object());
     applyFurState(j);
     if (beardOn && j.contains("beard") && j["beard"].is_object()) {
         // the beard fur's edits: applied while it is live, its asset rebuilt now (it is parked again afterwards)
@@ -2226,6 +2247,65 @@ bool App::scalpMesh(std::vector<V3>& pos, std::vector<float>& flag, std::vector<
         return true;
     }
     return false;
+}
+
+// closest point of triangle abc to p as barycentric weights (Ericson, Real-Time Collision Detection 5.1.5)
+static std::array<float, 3> closestBary(V3 p, V3 a, V3 b, V3 c) {
+    V3 ab = b - a, ac = c - a, ap = p - a;
+    float d1 = dot(ab, ap), d2 = dot(ac, ap);
+    if (d1 <= 0 && d2 <= 0) return {1, 0, 0};
+    V3 bp = p - b;
+    float d3 = dot(ab, bp), d4 = dot(ac, bp);
+    if (d3 >= 0 && d4 <= d3) return {0, 1, 0};
+    float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) { float v = d1 / (d1 - d3); return {1 - v, v, 0}; }
+    V3 cp = p - c;
+    float d5 = dot(ab, cp), d6 = dot(ac, cp);
+    if (d6 >= 0 && d5 <= d6) return {0, 0, 1};
+    float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) { float w = d2 / (d2 - d6); return {1 - w, 0, w}; }
+    float va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) { float w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return {0, 1 - w, w}; }
+    float den = 1.0f / (va + vb + vc), v = vb * den, w = vc * den;
+    return {1 - v - w, v, w};
+}
+
+// opt-in texel scalp test (app.h): p projected on the triangles around head vertex vi; painted when that triangle is in
+// the texel band (computeHeadScalp; the overlay shader tests the same band) and the 9 px mean diffuse there is below the scaled threshold
+int App::scalpTexelAt(const std::vector<V3>& pos, int vi, V3 p) const {
+    if (!scalpTexelOn()) return -1;
+    auto hs = headScalp.find(scalpTx.mi);
+    const Mesh& m = pack.meshes[scalpTx.mi];
+    if (hs == headScalp.end() || pos.size() != m.v.size() || vi < 0 || vi >= (int)pos.size()) return -1;
+    const std::vector<float>& f = hs->second;
+    float bd = 1e30f; int bt = -1; std::array<float, 3> bw{};
+    for (int t : scalpTx.vtris[vi]) {
+        auto& T = m.t[t];
+        auto w = closestBary(p, pos[T[0]], pos[T[1]], pos[T[2]]);
+        V3 q = pos[T[0]] * w[0] + pos[T[1]] * w[1] + pos[T[2]] * w[2];
+        float d = len(q - p);
+        bool band = t < (int)scalpTx.tband.size() && scalpTx.tband[t];
+        if (d < bd - 1e-7f || (d < bd + 1e-7f && band && !(bt >= 0 && scalpTx.tband[bt]))) { bd = std::min(bd, d); bt = t; bw = w; }
+    }
+    if (bt < 0) return f[vi] > 0.5f ? 1 : 0;
+    auto& T = m.t[bt];
+    if (bt >= (int)scalpTx.tband.size() || !scalpTx.tband[bt]) return 0;
+    float u = m.uv[T[0]][0] * bw[0] + m.uv[T[1]][0] * bw[1] + m.uv[T[2]][0] * bw[2];
+    float v = m.uv[T[0]][1] * bw[0] + m.uv[T[1]][1] * bw[1] + m.uv[T[2]][1] * bw[2];
+    int x = std::clamp(int(u * scalpTx.w), 0, scalpTx.w - 1), y = std::clamp(int(v * scalpTx.h), 0, scalpTx.h - 1);
+    return scalpTx.lum[size_t(y) * scalpTx.w + x] < scalpTx.thr ? 1 : 0;
+}
+
+void App::setScalpOpt(const json& o) {
+    json n = json::object();
+    if (o.is_object()) {
+        if (o.value("texel", false)) n["texel"] = true;
+        if (n.contains("texel")) for (const char* k : {"pixel_thr_scale", "band_frac", "band_rings"})
+            if (o.contains(k) && o[k].is_number()) n[k] = o[k];
+    }
+    if (n == scalpOpt) return;
+    scalpOpt = n;
+    computeHeadScalp();
 }
 
 // 2026-10-17 card_offset: per-vertex displacement of the hair-card vertices picked by each cardOffsets entry. Selection

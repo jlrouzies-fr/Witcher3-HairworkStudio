@@ -822,17 +822,9 @@ json App::colReport(const json& c) {
         }
     } else {
         // simulated: the SDK runs `steps` frames with a motion preset, the guide CVs are read back (as band_sim) and tested
-        // against the colliders in the same pose. mode "sim" = the current preset, or "preset": a name (Idle, TurnHead, Nod, Walk, Run, SpinBody, Wind)
-        std::string pn = c.value("preset", std::string());
-        MotionPreset pre = motion.preset;
-        for (int pi = 0; pi < (int)MotionPreset::Count; pi++) {
-            std::string nm = motionName((MotionPreset)pi), a = nm, b = pn;
-            std::transform(a.begin(), a.end(), a.begin(), ::tolower);
-            std::transform(b.begin(), b.end(), b.begin(), ::tolower);
-            a.erase(std::remove(a.begin(), a.end(), ' '), a.end());
-            b.erase(std::remove(b.begin(), b.end(), ' '), b.end());
-            if (!b.empty() && a == b) pre = (MotionPreset)pi;
-        }
+        // against the colliders in the same pose. mode "sim" = the current preset, or "preset": a name (Idle, TurnHead, Nod, Walk, Run, SpinBody, Wind,
+        // SprintStop, Dodge, SwordSwings; prefix match)
+        MotionPreset pre = motionFromName(c.value("preset", std::string()), motion.preset);
         const int steps = std::clamp(c.value("steps", 180), 10, 3000);
         bool sSim = simulate, sPaused = paused, sWind = windOn;
         Motion sMotion = motion;
@@ -846,7 +838,7 @@ json App::colReport(const json& c) {
         bool ok = true;
         std::vector<char> seen(groom.P.size(), 0);
         for (int s = 0; s < steps && ok; s++) {
-            step(1.0 / 60.0);
+            step(simStep);   // one simulation step per frame (simStep: 1/60, or step_hz)
             if (s < steps / 2) continue;                               // let the pose settle, test the second half
             int pg = PG;
             if (!hw.readGuides(xyz, pg) || pg <= 0 || xyz.size() < NA * size_t(pg) * 3) { ok = false; simInfo["error"] = "guide read-back failed"; break; }

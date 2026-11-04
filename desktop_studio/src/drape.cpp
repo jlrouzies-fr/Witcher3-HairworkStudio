@@ -470,14 +470,7 @@ json App::drapeCommand(const std::string& d, const json& c) {
             }
             r["points"] = "CVs after the root part + 2 samples per span (edit frame, rest)";
         } else {
-            std::string pn = c.value("preset", std::string("Rest (no motion)"));
-            MotionPreset pre = motion.preset;
-            for (int pi = 0; pi < (int)MotionPreset::Count; pi++) {
-                std::string a1 = lower(motionName((MotionPreset)pi)), b1 = lower(pn);
-                a1.erase(std::remove(a1.begin(), a1.end(), ' '), a1.end());
-                b1.erase(std::remove(b1.begin(), b1.end(), ' '), b1.end());
-                if (!b1.empty() && (a1 == b1 || a1.rfind(b1, 0) == 0)) pre = (MotionPreset)pi;
-            }
+            MotionPreset pre = motionFromName(c.value("preset", std::string("Rest (no motion)")), motion.preset);
             const int steps = std::clamp(c.value("steps", 240), 10, 3000);
             bool sSim = simulate, sPaused = paused, sWind = windOn;
             Motion sMotion = motion;
@@ -490,7 +483,7 @@ json App::drapeCommand(const std::string& d, const json& c) {
             const size_t NA = guideOfAsset.size();
             bool ok = true;
             for (int s = 0; s < steps && ok; s++) {
-                step(1.0 / 60.0);
+                step(simStep);   // one simulation step per frame (simStep: 1/60, or step_hz)
                 if (s < steps / 2) continue;
                 if (s % 6 != 0 && s != steps - 1) continue;
                 int pg = PG;

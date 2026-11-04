@@ -180,12 +180,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     g_stage = "open";
     if (!g_app.args.project.empty()) g_app.loadProject(g_app.args.project);
     else if (!g_app.args.cfg.empty()) g_app.openConfig(g_app.args.cfg, false);
-    if (!g_app.args.motion.empty())
-        for (int i = 0; i < (int)MotionPreset::Count; i++) {
-            std::string n = motionName(MotionPreset(i));
-            std::transform(n.begin(), n.end(), n.begin(), ::tolower);
-            if (n.find(g_app.args.motion) == 0) g_app.motion.preset = MotionPreset(i);
-        }
+    if (!g_app.args.motion.empty()) g_app.motion.preset = motionFromName(g_app.args.motion, g_app.motion.preset);
     g_app.showGuideOverlay = g_app.args.guides;
     g_app.guideFront = g_app.args.guidesFront;
     g_app.guideBody = g_app.args.guidesBody;

@@ -42,8 +42,11 @@ def load_pack(cfg):
         return json.load(f), os.path.dirname(p)
 
 
-def scalp_mask(D, pdir):
-    """Replica of App::computeHeadScalp (agent.cpp): per head vertex, painted scalp or not."""
+def scalp_mask(D, pdir, opt=None):
+    """Replica of App::computeHeadScalp (agent.cpp): per head vertex, painted scalp or not. opt = the project's opt-in
+    "scalp_mask" keys ({"texel": true, "pixel_thr_scale": s, "band_frac": 0.4, "band_rings": 6}): adds the texel band
+    (scalp_at / Skin.on_scalp / hairline then test the diffuse per texel, as App::scalpTexelAt)."""
+    opt = opt or {}
     from PIL import Image
     from scipy.ndimage import uniform_filter
     ht = D['head_tex']
@@ -95,11 +98,93 @@ def scalp_mask(D, pdir):
     N[flip] *= -1
     # one mesh may hold both eyes: one centre per side of the head's mid plane
     eyeC = [e[m].mean(0) for e in eyes for m in (e[:, 0] < C[0], e[:, 0] >= C[0]) if m.sum() > 3]
-    return dict(V=V, T=T, N=N, flag=flag, C=C, browZ=browZ, eyes=eyeC, skin=skin, thr=thr)
+    S = dict(V=V, T=T, N=N, flag=flag, C=C, browZ=browZ, eyes=eyeC, skin=skin, thr=thr)
+    if opt.get('texel') and flag.sum() >= 40:
+        thrT = thr * min(max(float(opt.get('pixel_thr_scale', 1.0)), 0.5), 2.0)
+        frac = min(max(float(opt.get('band_frac', 0.4)), 0.05), 1.0)
+        rings = min(max(int(opt.get('band_rings', 6)), 0), 50)
+        tb = flag[T].any(1)
+        cen = V[T].mean(1)
+        ok = (cen[:, 2] >= C[2]) & ~((cen[:, 1] > C[1] + 0.05) & (cen[:, 2] < browZ))
+        dk = np.zeros(len(T), int)
+        for a_ in range(4):
+            for b_ in range(4 - a_):
+                wa, wb = a_ / 3, b_ / 3
+                uv = UV[T[:, 0]] * wa + UV[T[:, 1]] * wb + UV[T[:, 2]] * (1 - wa - wb)
+                x = np.clip((uv[:, 0] * w).astype(int), 0, w - 1); y = np.clip((uv[:, 1] * h).astype(int), 0, h - 1)
+                dk += lum[y, x] < thrT
+        paint = ok & (dk >= frac * 10)
+        edgeT = {}
+        for t, tri in enumerate(T):
+            for c in range(3):
+                a, b = wid[tri[c]], wid[tri[(c + 1) % 3]]
+                edgeT.setdefault((min(a, b), max(a, b)), []).append(t)
+        fr = list(np.where(tb)[0])
+        for _ in range(rings):
+            nx = []
+            for t in fr:
+                for c in range(3):
+                    a, b = wid[T[t][c]], wid[T[t][(c + 1) % 3]]
+                    for u in edgeT[(min(a, b), max(a, b))]:
+                        if not tb[u] and paint[u]:
+                            tb[u] = True; nx.append(u)
+            if not nx:
+                break
+            fr = nx
+        vt = [[] for _ in range(len(V))]
+        for t, tri in enumerate(T):
+            for c in tri:
+                vt[c].append(t)
+        S.update(UV=UV, lum=lum, thrT=thrT, tband=tb, vtris=vt)
+    return S
+
+
+def _closest_bary(p, a, b, c):
+    """closest point of triangle abc to p as barycentric weights (as app.cpp closestBary)."""
+    ab, ac, ap = b - a, c - a, p - a
+    d1, d2 = ab @ ap, ac @ ap
+    if d1 <= 0 and d2 <= 0: return (1.0, 0.0, 0.0)
+    bp = p - b; d3, d4 = ab @ bp, ac @ bp
+    if d3 >= 0 and d4 <= d3: return (0.0, 1.0, 0.0)
+    vc = d1 * d4 - d3 * d2
+    if vc <= 0 and d1 >= 0 and d3 <= 0: v = d1 / (d1 - d3); return (1 - v, v, 0.0)
+    cp = p - c; d5, d6 = ab @ cp, ac @ cp
+    if d6 >= 0 and d5 <= d6: return (0.0, 0.0, 1.0)
+    vb = d5 * d2 - d1 * d6
+    if vb <= 0 and d2 >= 0 and d6 <= 0: w_ = d2 / (d2 - d6); return (1 - w_, 0.0, w_)
+    va = d3 * d6 - d5 * d4
+    if va <= 0 and (d4 - d3) >= 0 and (d5 - d6) >= 0: w_ = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return (0.0, 1 - w_, w_)
+    den = 1.0 / (va + vb + vc); v, w_ = vb * den, vc * den
+    return (1 - v - w_, v, w_)
+
+
+def scalp_at(S, vi, p):
+    """App::scalpTexelAt: None = texel test off; else painted (bool) for point p near head vertex vi."""
+    if 'tband' not in S:
+        return None
+    V, T, tb = S['V'], S['T'], S['tband']
+    best = None
+    for t in S['vtris'][vi]:
+        wts = _closest_bary(p, *V[T[t]])
+        d = float(np.linalg.norm(V[T[t]].T @ np.array(wts) - p))
+        if best is None or d < best[0] - 1e-7 or (d < best[0] + 1e-7 and tb[t] and not tb[best[1]]):
+            best = (min(d, best[0]) if best else d, t, wts)
+    if best is None:
+        return bool(S['flag'][vi])
+    _, t, wts = best
+    if not tb[t]:
+        return False
+    uv = S['UV'][T[t]].T @ np.array(wts)
+    lum = S['lum']; h, w = lum.shape
+    x = min(max(int(uv[0] * w), 0), w - 1); y = min(max(int(uv[1] * h), 0), h - 1)
+    return bool(lum[y, x] < S['thrT'])
 
 
 def hairline(S):
     V, T, f = S['V'], S['T'], S['flag']
+    tx = 'tband' in S
+    if tx:   # texel test (serve.cpp hairlineOf): texel-painted vertices, hairline where the paint ends along the edge
+        f = np.array([scalp_at(S, i, V[i]) for i in range(len(V))])
     pt, inner, seen = [], [], set()
     for t in T:
         for c in range(3):
@@ -110,7 +195,16 @@ def hairline(S):
             if k in seen:
                 continue
             seen.add(k)
-            pt.append((V[i] + V[j]) / 2); inner.append(V[i] if f[i] else V[j])
+            if not tx:
+                pt.append((V[i] + V[j]) / 2); inner.append(V[i] if f[i] else V[j])
+                continue
+            a, b = (i, j) if f[i] else (j, i)
+            s_ = 0.05
+            for q in np.arange(1, 11) / 10:
+                if not scalp_at(S, a if q < 0.5 else b, V[a] + (V[b] - V[a]) * q):
+                    break
+                s_ = min(q, 0.95)
+            pt.append(V[a] + (V[b] - V[a]) * s_); inner.append(V[a])
     return np.array(pt), np.array(inner)
 
 
@@ -119,6 +213,7 @@ class Skin:
     def __init__(self, S):
         from scipy.spatial import cKDTree
         self.V, self.N, self.flag = S['V'], S['N'], S['flag']
+        self.S = S
         self.kd = cKDTree(self.V)
 
     def sd(self, p):
@@ -127,7 +222,8 @@ class Skin:
 
     def on_scalp(self, p):
         _, i = self.kd.query(p)
-        return bool(self.flag[i])
+        tx = scalp_at(self.S, i, p)
+        return bool(self.flag[i]) if tx is None else tx
 
     def build_shell(self, z_top, drape_mm=30.0, dz=0.005, naz=72):
         V = self.V
@@ -318,10 +414,12 @@ def main():
     ap.add_argument('--uv', type=str, default='', help='u,v for every new face corner (density / colour texel)')
     ap.add_argument('--side', choices=['both', 'plus', 'minus'], default='both')
     ap.add_argument('--list', action='store_true', help='print lanes only')
+    ap.add_argument('--scalp-mask', type=str, default='',
+                    help='opt-in texel scalp test = the project "scalp_mask" JSON, e.g. {"texel": true, "pixel_thr_scale": 1.25}')
     a = ap.parse_args()
 
     D, pdir = load_pack(a.cfg)
-    S = scalp_mask(D, pdir)
+    S = scalp_mask(D, pdir, json.loads(a.scalp_mask) if a.scalp_mask else None)
     sk = Skin(S)
     sk.build_shell(a.shell_top, a.drape_mm)
     hlp, hli = hairline(S)

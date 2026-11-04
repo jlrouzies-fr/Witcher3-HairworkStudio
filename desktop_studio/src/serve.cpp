@@ -129,18 +129,33 @@ static V3 rotAxis(V3 v, V3 k, float a) {   // Rodrigues, k unit
     return v * c + cross(k, v) * s + k * (dot(k, v) * (1 - c));
 }
 // painted hairline of the head mesh: edges between a scalp vertex and a skin vertex (posed); inner = the scalp end
-struct Hairline { std::vector<V3> pt, inner; std::vector<V3> pos; std::vector<float> flag; };
+// (opt-in scalp_mask texel: app = the texel test; pt = where the painted diffuse ends along the edge, not its middle)
+struct Hairline { std::vector<V3> pt, inner; std::vector<V3> pos; std::vector<float> flag; const App* app = nullptr; };
 static bool hairlineOf(const App& a, Hairline& h) {
     std::vector<std::array<int, 3>> tris;
     if (!a.scalpMesh(h.pos, h.flag, tris)) return false;
+    if (a.scalpTexelOn()) h.app = &a;
+    // texel test: hairline edges between texel-painted and bare vertices (the band can run past the painted vertices)
+    std::vector<char> tf(h.pos.size());
+    for (size_t i = 0; i < h.pos.size(); i++) tf[i] = h.app ? a.scalpTexelAt(h.pos, int(i), h.pos[i]) == 1 : h.flag[i] > 0.5f;
     std::set<std::pair<int, int>> seen;
     for (auto& t : tris)
         for (int c = 0; c < 3; c++) {
             int i = t[c], j = t[(c + 1) % 3];
-            if ((h.flag[i] > 0.5f) == (h.flag[j] > 0.5f)) continue;
+            if (tf[i] == tf[j]) continue;
             if (!seen.insert({std::min(i, j), std::max(i, j)}).second) continue;
-            int in = h.flag[i] > 0.5f ? i : j;
-            h.pt.push_back((h.pos[i] + h.pos[j]) * 0.5f);
+            int in = tf[i] ? i : j, outv = in == i ? j : i;
+            float s = 0.5f;
+            if (h.app) {   // last painted texel walking from the scalp end (10 steps)
+                s = 0.05f;
+                for (int k = 1; k <= 10; k++) {
+                    float q = k / 10.0f;
+                    V3 X = h.pos[in] + (h.pos[outv] - h.pos[in]) * q;
+                    if (a.scalpTexelAt(h.pos, q < 0.5f ? in : outv, X) != 1) break;
+                    s = std::min(q, 0.95f);
+                }
+            }
+            h.pt.push_back(h.app ? h.pos[in] + (h.pos[outv] - h.pos[in]) * s : (h.pos[i] + h.pos[j]) * 0.5f);
             h.inner.push_back(h.pos[in]);
         }
     return !h.pt.empty();
@@ -148,6 +163,7 @@ static bool hairlineOf(const App& a, Hairline& h) {
 static bool onScalp(const Hairline& h, V3 p) {
     int best = -1; float bd = 1e30f;
     for (size_t i = 0; i < h.pos.size(); i++) { float d = len(h.pos[i] - p); if (d < bd) { bd = d; best = int(i); } }
+    if (best >= 0 && h.app) { int tx = h.app->scalpTexelAt(h.pos, best, p); if (tx >= 0) return tx == 1; }
     return best >= 0 && h.flag[best] > 0.5f;
 }
 static int nearestHl(const Hairline& h, V3 p, float& d) {
@@ -979,6 +995,7 @@ static json rebuildFromCards(App& a, const json& c, int& grpId, const rebuild::H
         int bi = -1; float bd = 1e9f;
         for (float rad = 0.01f; bi < 0 && rad <= 0.08f; rad *= 2)
             sgd.around(p, rad, [&](int i) { float d = len(sm->v[i] - p); if (d < bd) { bd = d; bi = i; } });
+        if (bi >= 0 && a.scalpTexelOn()) { int tx = a.scalpTexelAt(sm->v, bi, p); if (tx >= 0) return tx == 1; }   // opt-in scalp_mask texel
         return bi >= 0 && (*sf)[bi] > 0.5f;
     };
     int offScalp = 0, nGrown = 0, nExRoot = 0;
@@ -2547,6 +2564,8 @@ static json fillBelowHairline(App& a, const json& c, int& grpId, const std::stri
     Grid sg(0.01f);
     for (size_t i = 0; i < hs.m->v.size(); i++) if (hs.painted((int)i)) sg.add(hs.m->v[i], (int)i);
     auto distScalp = [&](V3 p) { float bd = 1e9f; sg.around(p, below, [&](int i) { bd = std::min(bd, len(hs.m->v[i] - p)); }); return bd; };
+    // opt-in scalp_mask texel: painted per texel at the point, not by its nearest vertex
+    auto paintedAt = [&](int vi, V3 X) { int tx = a.scalpTexelAt(hs.m->v, vi, X); return tx >= 0 ? tx == 1 : hs.painted(vi); };
     std::vector<V3> cards = cardHair(a, c.value("alpha_vis", 0.3f));
     if (cards.empty()) { r["error"] = "this pack has no vanilla hair cards (re-run desk_prep)"; return r; }
     Grid cg(0.01f);
@@ -2577,7 +2596,7 @@ static json fillBelowHairline(App& a, const json& c, int& grpId, const std::stri
         if (X.z < z.eyeZ - 0.07f || !inWhere(X)) { nRegion++; return -1.0f; }
         if (z.overFace(X) || z.inEar(X, earPad)) { nFace++; return -1.0f; }
         vi = hs.nearest(X);
-        if (vi < 0 || (!seen && hs.painted(vi))) { nPainted++; return -1.0f; }
+        if (vi < 0 || (!seen && paintedAt(vi, X))) { nPainted++; return -1.0f; }
         float ds = distScalp(X);
         if (ds > below) { nOff++; return -1.0f; }
         bool card = false;
@@ -2655,7 +2674,7 @@ static json fillBelowHairline(App& a, const json& c, int& grpId, const std::stri
             V3 X = m.v[t[0]] + (m.v[t[1]] - m.v[t[0]]) * uu + (m.v[t[2]] - m.v[t[0]]) * vv;
             if (X.z < z.eyeZ - 0.07f || !inWhere(X) || z.overFace(X) || z.inEar(X, earPad)) continue;
             int vi = hs.nearest(X);
-            if (vi < 0 || hs.painted(vi)) continue;
+            if (vi < 0 || paintedAt(vi, X)) continue;
             float ds = distScalp(X);
             if (ds > below) { nOff++; continue; }
             bool card = false;
@@ -6381,8 +6400,17 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         r["status"] = status_();
         return r;
     }
+    if (d == "motion_report") {   // motioncheck.cpp (2026-10-18): gameplay presets, head-frame displacement, step_hz
+        json mr = motionReport(c);
+        mr["status"] = status_();
+        return mr;
+    }
     if (d == "fit_colliders" || d == "list_colliders" || d == "edit_collider" || d == "collider_report" || d == "drape_outfit" || d == "drape_report" || d == "list_meshes" || d == "grow_colliders" || d == "shell_colliders") {   // colliders.cpp, drape.cpp
+        // step_hz (2026-10-18, opt-in): the sim modes step the simulation at that rate (30 = the game's FPS cap)
+        double sStep = simStep;
+        if (c.contains("step_hz") && c["step_hz"].is_number()) simStep = 1.0 / std::clamp(c["step_hz"].get<double>(), 15.0, 240.0);
         json cr = colCommand(d, c);
+        simStep = sStep;
         if (!cr.contains("error")) { if (d == "fit_colliders" || d == "edit_collider") settleRest(*this, 0.5); cr["status"] = status_(); }
         return cr;
     }
@@ -7211,6 +7239,25 @@ json App::serveCommand(const json& c, const std::string& out, bool& quit) {
         r["result"] = res; r["status"] = status_();
         return r;
     }
+    if (d == "gpu_estimate") return gpuEstimateCmd(c);   // 2026-10-18 GPU cost model (gpu_cost.cpp): estimate, not measured
+    if (d == "auto_balance") { json res = autoBalanceCmd(c); if (c.contains("apply") || c.value("undo", false)) res["status"] = status_(); return res; }
+    if (d == "scalp_mask") {
+        // 2026-10-18 opt-in texel scalp test: {"do": "scalp_mask", "texel": true, "pixel_thr_scale": 1.25, ["band_frac": 0.4,
+        // "band_rings": 6]} sets it (saved in the project as "scalp_mask"), {"do": "scalp_mask", "texel": false} back to the
+        // per-vertex mask, no keys = report
+        bool set = false;
+        json o = scalpOpt;
+        if (c.contains("texel")) { o["texel"] = c.value("texel", false); set = true; }
+        for (const char* k : {"pixel_thr_scale", "band_frac", "band_rings"}) if (c.contains(k)) { o[k] = c[k]; set = true; }
+        if (set) setScalpOpt(o);
+        if (scalpTexelOn()) { int nb = 0; for (char x : scalpTx.tband) nb += x; r["band_triangles"] = nb; }
+        r["scalp_mask"] = scalpOpt; r["texel_on"] = scalpTexelOn();
+        if (scalpTexelOn()) r["pixel_threshold"] = scalpTx.thr;
+        int n = 0, nv = 0;
+        for (auto& [mi, f] : headScalp) for (float x : f) { nv++; n += x > 0.5f; }
+        r["painted_vertices"] = n; r["head_vertices"] = nv;
+        return r;
+    }
     if (d == "look_get") {
         json o = json::object();
         auto keys = c.value("keys", json::array());
@@ -7308,7 +7355,8 @@ int App::runServe(const std::string& out) {
             static const std::set<std::string> noGuard = {"open", "undo", "redo", "reset_edits", "check_direction", "direction_guard",
                 "status", "render", "guides", "guide", "faces", "check_faces", "shots_list", "look_get", "materials_list", "save_edits", "quit",
                 "pick_region", "eye_check", "hairline_check", "wind_check", "collider_report", "list_colliders", "list_meshes",
-                "drape_report", "check_loops", "free_budget", "make_bun", "braid", "curl", "hold_curls", "twist_roll", "fur"};
+                "drape_report", "check_loops", "free_budget", "make_bun", "braid", "curl", "hold_curls", "twist_roll", "fur",
+                "gpu_estimate", "auto_balance", "scalp_mask"};
             bool guard = loaded && !c.value("dry_run", false) && !c.value("list_only", false) && !noGuard.count(dcmd) &&
                          !c.value("baseline", false) && c.value("direction_guard", dirGuardMode) != "off";
             std::set<long long> dirPre;

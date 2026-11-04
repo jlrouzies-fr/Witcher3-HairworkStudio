@@ -77,6 +77,12 @@ def discover(C, log=print):
         for comp, cls, mesh, fur in D.mesh_comps(tpl):
             if D.classify(mesh) == 'hair':
                 info['hair'].append(dict(template=tpl, comp=comp, cls=cls, mesh=mesh, fur=fur, used_by=['item']))
+    for hf in C.get('hair_force_comps', []):
+        # 2026-10-19 opt-in (monsters: bruxa / alp): card hair drawn with a custom shader (bruxa_hair_dissolve.w2mg, not
+        # pbr_hair*) is not classified as hair; these {template, comp} components are taken as hair cards anyway
+        for comp, cls, mesh, fur in D.mesh_comps(hf['template']):
+            if comp == hf['comp'] and not any(h['template'] == hf['template'] and h['comp'] == comp for h in info['hair']):
+                info['hair'].append(dict(template=hf['template'], comp=comp, cls=cls, mesh=mesh, fur=fur, used_by=['forced']))
     if C.get('hair'):
         want = [(h.get('template'), h.get('comp')) for h in C['hair']]
         tpl_only = {t.lower() for t, c in want if t and not c}      # R35: select by hair template alone
@@ -251,6 +257,45 @@ def bone_table(C, info, log=print, extra=()):
     return bt
 
 
+def pin_setup(C, bones, col, pts, log=print):
+    """2026-10-20 opt-in `pins` (Cerys braid): pin constraints like the vanilla c_06_mg__spiketail_fur (15 pins on its
+    hair_dyng_* bones). The vanilla card mesh's dangle bones (C['pins']['mesh'], e.g. dyng_hair_b_01..07, parent = head
+    as in the spiketail fur) are appended to the fur's bone table; one sphere per bone is centred on the hair CVs in a
+    z slab at the bone (slab_mm, behind y_max), so the braid follows the dangle chain the game swings. extend_mm adds
+    pins below the last bone along the chain for hair that hangs past it. Material pinStiffness is the config's
+    look.extra_set (vanilla spiketail 0.6). World = local @ bind (row vectors), checked on the spiketail fur."""
+    P = C['pins']
+    mb = G.mesh_bones(P['mesh'])
+    names = list(P['bones'])
+    rig = {n: np.asarray(m, float) for n, m in zip(mb['names'], mb['rig'])}
+    bt = list(bones)
+    for n in names:
+        if n not in [b['name'] for b in bt]:
+            R = rig[n]
+            bt.append(dict(name=n, rig=R.tolist(), bind=np.linalg.inv(R).tolist(), parent=0, eps=0.151))
+    pts = np.asarray(pts, float)
+    rad, slab, ymax = P.get('radius_mm', 40) / 1000.0, P.get('slab_mm', 10) / 1000.0, P.get('y_max', -0.06)
+    at = [np.linalg.inv(rig[n])[3, :3] for n in names]
+    spots = [(n, a) for n, a in zip(names, at)]
+    if P.get('extend_mm') and len(at) > 1:
+        d = (at[-1] - at[-2]) / np.linalg.norm(at[-1] - at[-2])
+        for k in range(1, int(P.get('extend_count', 1)) + 1):
+            spots.append((names[-1], at[-1] + d * P['extend_mm'] / 1000.0 * k))
+    pos, idx, rr = [], [], []
+    for n, a in spots:
+        m = (np.abs(pts[:, 2] - a[2]) < slab) & (pts[:, 1] < ymax)
+        if m.sum() < 5:
+            log('  pins: %s at z %.3f: no hair, skipped' % (n, a[2]))
+            continue
+        c = np.median(pts[m], 0)
+        j = [b['name'] for b in bt].index(n)
+        loc = np.r_[c, 1.0] @ np.asarray(bt[j]['rig'], float)
+        pos.append(loc[:3].tolist()); idx.append(j); rr.append(rad)
+        log('  pins: %s centre %s (bone %s), %d CVs within %.0f mm' % (n, np.round(c, 3).tolist(), np.round(a, 3).tolist(),
+                                                                    int((np.linalg.norm(pts - c, axis=1) < rad).sum()), rad * 1000))
+    return bt, dict(col, pins=dict(pos=pos, idx=idx, rad=rr))
+
+
 def fur_path(C, comp):
     return C.get('fur_dir', os.path.dirname(C['template']).replace('npc_entities', 'models') + '\\hairworks') + '\\' + comp + '.redfur'
 
@@ -416,6 +461,33 @@ def split_tint_texture(sc, tex, prefix, base, log=print):
     n = int(sc['tint'].get('size', 1024))
     small = np.asarray(Image.fromarray(im.astype(np.uint8), 'RGBA').resize((n, n), Image.LANCZOS)).astype(np.float64)
     rgb = np.clip(small[..., :3] * gain, 0, 255)
+    bl = sc['tint'].get('bleed')
+    if bl:
+        # 2026-10-30 opt-in (Udalryk L1228): studio_fade_hairline ramps put the edge faces on low-alpha texels, whose colour
+        # is the card's dark fringe, so the sparse edge hairs drew as dark dashes; texels under bleed.alpha (0.6) blend
+        # toward the local colour of the opaque texels (normalised box blur, radii 4..256 px), density keeps the alpha
+        bl = bl if isinstance(bl, dict) else {}
+        thr = float(bl.get('alpha', 0.6)) * 255
+        src = (small[..., 3] >= thr).astype(np.float64)
+
+        def box(M, r):
+            for ax in (0, 1):
+                c = np.cumsum(np.pad(M, [(r + 1, r) if i == ax else (0, 0) for i in range(M.ndim)], mode='wrap'), ax)
+                M = (np.take(c, range(2 * r + 1, c.shape[ax]), ax) - np.take(c, range(0, c.shape[ax] - 2 * r - 1), ax)) / (2 * r + 1)
+            return M
+        fill = np.zeros_like(rgb)
+        got = np.zeros(src.shape, bool)
+        for r in (4, 8, 16, 32, 64, 128, 256):
+            wsum = box(src, r)
+            col = box(rgb * src[..., None], r) / np.maximum(wsum, 1e-6)[..., None]
+            new = (wsum > 0.02) & ~got
+            fill[new] = col[new]
+            got |= new
+        t = np.clip(small[..., 3] / thr, 0, 1)[..., None]
+        t[~got] = 1.0
+        n_bl = int((t[..., 0] < 1).sum())
+        rgb = np.clip(rgb * t + fill * (1 - t), 0, 255)
+        log('  card_tint bleed: %d texels under alpha %.2f take the opaque colour around them' % (n_bl, thr / 255))
     path = prefix + base + '_split_tint.xbm'
     data = headtex.make_xbm(headtex.DXT1_PROXY, n, n, headtex.encode_dxt1(rgb), path, n // 4 * 8)
     full = np.concatenate([np.clip(np.round(rgb), 0, 255), small[..., 3:]], -1).astype(np.uint8)
@@ -556,7 +628,8 @@ def generate(C, hair=None, log=print, prefix=''):
                         ear_pad=C['growth'].get('ear_pad', 0.004 if _legacy_ears else 0.005),
                         ear_rmax=C['growth'].get('ear_rmax', 0.03 if _legacy_ears else 0.018),
                         ear_chain=C['growth'].get('ear_chain', not _legacy_ears), clamp_skin=C['growth'].get('clamp_skin'),
-                        mirror_ears=C['growth'].get('mirror_ears'))
+                        mirror_ears=C['growth'].get('mirror_ears'), neck_slices=C['growth'].get('neck_slices'),
+                        skull_min_gain=C['growth'].get('skull_min_gain', 6))
     # strands that lie on the ear flap (temple tufts swept back over it) read as hair growing through the ear: drop
     # guides whose body touches an ear sphere (the cards pass over the ear because they are drawn above it)
     if C['growth'].get('ear_tuck') and col.get('ears'):
@@ -1326,8 +1399,51 @@ def generate(C, hair=None, log=print, prefix=''):
         look['set'][('physicalMaterials', 'volume', 'densityTexChannel')] = ('EHairTextureChannel', 'ALPHA')
         look['set'][('physicalMaterials', 'volume', 'usePixelDensity')] = ('Bool', 1)
         log('  look.density_flat %.3f: flat density map %s (every hair kept with that probability, as the Studio thins)' % (_pf, _dp))
-    if (C.get('split_cards') or {}).get('tint') and L['use_card_texture'] and not L.get('card_density_only'):
-        _tp, _td, _timg, _tb = split_tint_texture(C['split_cards'], tex, prefix, fur_path(C, hair['comp'])[:-len('.redfur')], log=log)
+    if C['look'].get('distance_width_ramp'):
+        # 2026-10-25 opt-in (PT_DISTANCE_NOISE.md, L1096): the path tracer casts one ray per pixel, so strands thinner than
+        # a pixel at a few metres turn into grain / shimmer under DLSS-RR. The distance LOD widens the strands linearly
+        # from `start` (LOD distance units: HairLab head shots ~.56, so start 1 leaves close-ups and cutscenes as built)
+        # to `end`, by `slope` x look width per LOD unit (width grows with distance like the pixel footprint), or to an
+        # absolute `width` at `end`. distanceLODEnd is ALSO where the hair is gone (it fades out from distanceLODFadeStart
+        # to End; L1099: end .05 / 2 removed the simulated fur), so `end` stays far (default 95, our furs' value).
+        # `density` 1 keeps every hair (our furs ramp to distanceLODDensity 0). Absent = unchanged builds.
+        _r = dict(C['look']['distance_width_ramp'])
+        _w0 = float(look['set'].get(('physicalMaterials', 'strandWidth', 'width'), ('Float', L['width']))[1])
+        _s, _e = float(_r.get('start', 1.0)), float(_r.get('end', 95.0))
+        _w = float(_r['width']) if 'width' in _r else _w0 * (1.0 + float(_r.get('slope', 1.0)) * (_e - _s))
+        _dl = ('levelOfDetail', 'distanceLOD')
+        look['set'][_dl + ('distanceLODStart',)] = ('Float', _s)
+        look['set'][_dl + ('distanceLODEnd',)] = ('Float', _e)
+        look['set'][_dl + ('distanceLODWidth',)] = ('Float', _w)
+        look['set'][_dl + ('distanceLODDensity',)] = ('Float', float(_r.get('density', 1.0)))
+        _ramp_set = {k: look['set'][_dl + (k,)] for k in ('distanceLODStart', 'distanceLODEnd', 'distanceLODWidth', 'distanceLODDensity')}
+        log('  look.distance_width_ramp: width %.3f -> %.3f from LOD distance %.2f to %.2f, density %.2f' % (
+            _w0, _w, _s, _e, float(_r.get('density', 1.0))))
+    if C['look'].get('strand_tex'):
+        # 2026-10-18 opt-in (toolarch strand-texture gallery, user OK): our own strand texture (a <name>_hw.png strip from
+        # desktop_studio\assets\strand_textures: x = along the hair, root at x = 0) as an inline DXT1 xbm bound as
+        # strandTex (top level + materialSets), with look.strand_blend_mode (Overwrite / Multiply / Add / Modulate,
+        # default Modulate) and look.strand_blend_scale (default .2). Absent = unchanged builds.
+        import headtex
+        from PIL import Image as _Im
+        _sp = C['look']['strand_tex']
+        _sp = _sp if os.path.isabs(_sp) else os.path.join(ROOT, _sp)
+        _rgb = np.asarray(_Im.open(_sp).convert('RGB').resize((512, 64), _Im.BILINEAR)).astype(np.float64)
+        _xp = prefix + fur_path(C, hair['comp'])[:-len('.redfur')] + '_strand.xbm'
+        split_files.append((_xp, headtex.make_xbm(headtex.DXT1_PROXY, 512, 64, headtex.encode_dxt1(_rgb), _xp, 512 // 4 * 8)))
+        look['textures'][('graphicalMaterials', 'color', 'strandTex')] = _xp
+        _bm = str(C['look'].get('strand_blend_mode', 'Modulate'))
+        _bs = float(C['look'].get('strand_blend_scale', 0.2))
+        look['set'][('graphicalMaterials', 'color', 'strandBlendMode')] = ('EHairStrandBlendModeType', _bm)
+        look['set'][('graphicalMaterials', 'color', 'strandBlendScale')] = ('Float', _bs)
+        log('  look.strand_tex %s: strandTex %s, %s x %.2f' % (C['look']['strand_tex'], _xp, _bm, _bs))
+    _tint = C['split_cards'] if ((C.get('split_cards') or {}).get('tint') and L['use_card_texture'] and not L.get('card_density_only')) else None
+    if L.get('card_tint') and (L['use_card_texture'] or L.get('card_density_only')):
+        # 2026-10-27 opt-in (Udalryk L1141): a flat root / tip colour reads as a painted shell in game; the tinted card
+        # diffuse gives every hair the light / dark streak of the card under its root (Vesemir's look), no split needed
+        _tint = {'tint': L['card_tint']}
+    if _tint:
+        _tp, _td, _timg, _tb = split_tint_texture(_tint, tex, prefix, fur_path(C, hair['comp'])[:-len('.redfur')], log=log)
         split_files.append((_tp, _td))
         look['textures'][('graphicalMaterials', 'color', 'rootColorTex')] = _tp
         look['textures'][('graphicalMaterials', 'color', 'tipColorTex')] = _tp
@@ -1396,6 +1512,9 @@ def generate(C, hair=None, log=print, prefix=''):
         # 2026-10-11 opt-in release mode (core/README.md): the Core is a script dependency (requirement script written
         # with the mod folder below); the fur itself is the dev build's. Default builds never set it.
         core_unretarget(look, log=log)
+    if C.get('pins'):
+        _pp = _studio_hair_pts(C) if C.get('studio_geo') else np.concatenate([np.asarray(s_['p'], float) for s_ in res['S']])
+        bones, col = pin_setup(C, bones, col, _pp, log)
     data = redfur.write(res['S'], _F, uvs, bones, col, look, auto_hide=C.get('auto_hide', 100.0))
     if C.get('studio_geo'):
         # 2026-10-12 opt-in: the guides / faces / UVs of a Groom Studio project (its export's _geo.json, incl. Studio-only
@@ -1419,6 +1538,40 @@ def generate(C, hair=None, log=print, prefix=''):
             finally:
                 os.remove(_tmp)
             log('  studio_geo.look %s: %d values set' % (C['studio_geo']['look'], len(_chg)))
+            if C['look'].get('distance_width_ramp'):
+                # 2026-10-26 (Geralt L1114): the Studio look above rewrites levelOfDetail.distanceLOD, so the opt-in
+                # look.distance_width_ramp goes back on top (configs without the ramp key are unchanged). It also sets the
+                # strand width (Geralt .552 vs look .8), so a slope ramp is recomputed from the fur's final width.
+                import struct
+                import redfur
+                from cr2w_edit import CR2WDoc, Chunk
+                _doc = CR2WDoc.parse(data)
+                _ch = Chunk(_doc, 0)
+                _rr =C['look']['distance_width_ramp']
+                if 'width' not in _rr:
+                    _v = _ch.get('physicalMaterials').value
+                    for _n in ('strandWidth', 'width'):
+                        _v = next(it[2] for it in redfur.parse_struct(_v) if _doc.names[it[0]] == _n)
+                    _wf = struct.unpack('<f', _v)[0]
+                    _s, _e = _ramp_set['distanceLODStart'][1], _ramp_set['distanceLODEnd'][1]
+                    _ramp_set['distanceLODWidth'] = ('Float', _wf * (1.0 + float(_rr.get('slope', 1.0)) * (_e - _s)))
+                    log('  look.distance_width_ramp: fur width %.3f after studio_geo.look -> distanceLODWidth %.3f' % (
+                        _wf, _ramp_set['distanceLODWidth'][1]))
+                for _k, (_t, _v) in _ramp_set.items():
+                    DE.apply_value(_doc, _ch, ['levelOfDetail', 'distanceLOD', _k], _t, DE.encode(_doc, _t, _v))
+                _ch.commit()
+                data = _doc.to_bytes()
+                log('  look.distance_width_ramp re-applied after studio_geo.look')
+    _frozen = None
+    if C.get('studio_geo') and C['studio_geo'].get('_frozen_geo') is not None:
+        # 2026-10-19 opt-in studio_geo.frozen_fur (L812): the guides above the band as a second, NOT simulated fur, made
+        # from the finished fur (look + maps) -> its component is added next to the hair's in build()
+        import studio_geo
+        _fc = hair['comp'] + C['studio_geo']['frozen_fur'].get('suffix', '_top')
+        _fd = studio_geo.frozen_fur_bytes(data, C['studio_geo'].pop('_frozen_geo'), C['studio_geo']['frozen_fur'].get('look_set'))
+        redfur.verify(_fd)
+        extra_files = list(extra_files) + [(prefix + fur_path(C, _fc), _fd)]
+        _frozen = (_fc, prefix + fur_path(C, _fc))
     redfur.verify(data)
     try:                                # R78: HairWorks Preview data pack (reads the fur bytes only; never breaks a build)
         strand_edits.export_hw_pack(C, data, _edit_path, tex=tex, comp=hair['comp'], index=_idx, log=log)
@@ -1427,7 +1580,7 @@ def generate(C, hair=None, log=print, prefix=''):
     log('fur %s: %d guides, %d faces, %d bytes, face coverage targets mean %.2f (hairline ring faces %d)' % (
         hair['comp'], len(res['S']), len(res['F']), len(data), float(target.mean()), int((ring == 0).sum())))
     return dict(fur=data, growth=res, head=head, col=col, uvs=uvs, hair=hair, tex=tex, info=info, extra_files=extra_files,
-                head_tex=head_tex, ch=ch, alpha=alpha)
+                head_tex=head_tex, ch=ch, alpha=alpha, frozen=_frozen)
 
 
 def comp_mask(ch, sel):
@@ -1470,7 +1623,13 @@ def build(C, install=False, log=print, prefix='', assemble=False):
     files, bufs, tpls = [], [], []
     # 2026-10-11 opt-in beard HairWorks (beard.py): "beard": {"hair": false} keeps the hair on its vanilla cards
     _beard_only = isinstance(C.get('beard'), dict) and C['beard'].get('hair') is False
+    _cards = None
     for hair in ([] if _beard_only else info['hair']):
+        if C.get('cards_bake'):
+            # 2026-10-29 opt-in (cards_bake.py): the groom baked into classic hair CARDS (no fur): card mesh + atlas
+            import cards_bake
+            _cards = cards_bake.add_to_build(C, hair, P, files, bufs, tpls, log)
+            continue
         st = generate(C, hair, log, prefix=prefix)
         fp = P(fur_path(C, hair['comp']))
         files.append((fp, st['fur']))
@@ -1694,6 +1853,16 @@ def build(C, install=False, log=print, prefix='', assemble=False):
         elif C.get('accessories'):
             # without an underlayer the full card mesh stays the fallback (accessories then draw twice when HW is off)
             pass
+        if C.get('far_cards'):
+            # 2026-10-21 opt-in (crowd cut-off test, L1047 showed bald NPCs past auto_hide): an extra card component whose
+            # mesh draws nothing closer than far_cards.near_m and the vanilla cards beyond it (template.far_mesh); pair it
+            # with auto_hide = near_m so the fur hands over to the cards
+            _near = float(C['far_cards'].get('near_m', C.get('auto_hide', 6.0)))
+            far = P(hair['mesh'][:-len('.w2mesh')] + '_far.w2mesh')
+            w, b = template.far_mesh(hair['mesh'], _near)
+            log('  far_cards: %s draws the vanilla cards from %.1f m' % (far, _near))
+            files.append((far, w)); bufs.append((far + '.1.buffer', b))
+            extra = list(extra) + [(hair['comp'] + '_far', far)]
         # template_from_vanilla (2026-10-05, Triss): patch CDPR's template, not the source_mods one (licence)
         _tsrc = G.get_vanilla(hair['template']) if C.get('template_from_vanilla') else G.get(hair['template'])
         if C.get('lore_guard'):
@@ -1713,10 +1882,20 @@ def build(C, install=False, log=print, prefix='', assemble=False):
         template.FLAT_COMP = C.get('template_flat_comp')
         template.FLAT_NULL_FURS = tuple(C.get('template_flat_null_furs', ()))   # 2026-10-15 opt-in, see template.OUTER_ONLY
         new = template.patch(_tsrc, hair['comp'], fp, extra, fallback)
+        if st.get('frozen'):
+            # 2026-10-19 opt-in studio_geo.frozen_fur: second fur component (not simulated), empty card fallback
+            _fc, _fp = st['frozen']
+            _fb = P(hair['mesh'][:-len('.w2mesh')] + '_empty.w2mesh')
+            if not any(r == _fb for r, _d in files):
+                w, b, stt = template.subset_mesh(hair['mesh'], lambda ch: np.zeros(ch['nv'], bool))
+                files.append((_fb, w)); bufs.append((_fb + '.1.buffer', b))
+
+            new = template.add_fur_component(new, hair['comp'], _fc, _fp, _fb)
+            log('  frozen_fur: component %s -> %s (not simulated)' % (_fc, _fp))
         if C.get('clear_component_meshes') and not (C.get('lore_guard') and C.get('lore_guard_hide')):
             # 2026-10-15 opt-in: e.g. Triss's i_01 clips showing through the fur (dev builds). With the lore guard +
             # lore_guard_hide the mesh stays and the guard script hides it only when the lore hair is present.
-            new = template.clear_meshes(new, C['clear_component_meshes'])
+            new = template.clear_meshes(new, C['clear_component_meshes'], flat=bool(C.get('clear_component_meshes_flat')))
         if C.get('template_drop_flat'):
             # 2026-10-15 opt-in (Geralt Ard headband, L353): the source coif's STALE flatCompiledData (broken fur path,
             # original card mesh) is what the game instantiated, so the outer-table patch never showed. Drop the flat
@@ -1729,6 +1908,33 @@ def build(C, install=False, log=print, prefix='', assemble=False):
         template.validate(new, hair['template'])
         files.append((P(hair['template']), new))
         tpls.append((hair['template'], P(hair['template'])))
+        if hair is info['hair'][0]:
+            # 2026-11-01 opt-in (Yennefer, Nexus report: alt look still on cards; user "you only need to transfer the same
+            # hairwork"): "hair_alias_templates": [other vanilla hair templates] get this fur too, so appearances that use
+            # another hair file draw the same HairWorks. Each alias template is patched in place (its own card component,
+            # named like the file, swapped to our fur): L1272 showed a byte copy of the c_01 template (component
+            # c_01_wa__yennefer) still drew the c_03 cards. Without the key nothing is added.
+            _afb = fallback
+            if C.get('hair_alias_empty_fallback'):
+                # 2026-11-01 diagnostic (L1274): empty card fallback on the alias, so a shot tells "our file is loaded but
+                # the fur does not draw" (no hair) from "our file is not loaded" (the vanilla cards)
+                _afb = P(hair['mesh'][:-len('.w2mesh')] + '_aliasempty.w2mesh')
+                if not any(r == _afb for r, _d in files):
+                    w, b, stt = template.subset_mesh(hair['mesh'], lambda ch: np.zeros(ch['nv'], bool))
+                    files.append((_afb, w)); bufs.append((_afb + '.1.buffer', b))
+            for _al in C.get('hair_alias_templates', []):
+                _ac = os.path.splitext(os.path.basename(_al.replace('\\', '/')))[0]
+                _afp = fp
+                if C.get('hair_alias_own_fur'):
+                    # 2026-11-01 opt-in (L1276): the alias draws its own byte copy of the fur (<alias comp>.redfur). L1275
+                    # (release fur, shared by c_01 + c_03) crashed twice at the same address before any shot.
+                    _afp = P(fur_path(C, _ac))
+                    files.append((_afp, st['fur']))
+                _an = template.patch(G.get(_al), _ac, _afp, (), _afb)
+                template.validate(_an, _al)
+                files.append((P(_al), _an))
+                tpls.append((_al, P(_al)))
+                log('  hair_alias: %s (component %s) -> fur %s' % (_al, _ac, _afp))
     if C.get('beard') not in (None, False):
         # 2026-10-11 opt-in: the beard cards -> a second, separate fur (CFurComponent swapped in place like Geralt's
         # vanilla beard); without the key this block never runs and the hair build above is unchanged
@@ -1742,6 +1948,14 @@ def build(C, install=False, log=print, prefix='', assemble=False):
         # xbm stub(s) go into blob0.bundle, the mips into content\texture.cache. Without the key nothing changes here.
         import scalp_recolour
         _scalp = scalp_recolour.add_to_mod(C, files, log)
+    _tint = None
+    if (C.get('studio_geo_beard') or {}).get('colour_tint'):
+        # 2026-10-20 opt-in (beard.tint_texture): tinted beard texture = stub in blob0.bundle + mips in texture.cache
+        import beard as _B
+        _tint = _B.tint_texture(C, log)
+        if _tint:
+            assert not _scalp, 'scalp_recolour + colour_tint: one texture.cache writer only'
+            files.append((_tint['rel'], _tint['stub']))
     mod = mod_src(C)
     content = os.path.join(mod, 'content')
     if os.path.isdir(mod):
@@ -1753,6 +1967,12 @@ def build(C, install=False, log=print, prefix='', assemble=False):
     write_legacy_metadata_store(os.path.join(content, 'metadata.store'), bundles)
     if _scalp:
         scalp_recolour.write_cache(os.path.join(content, 'texture.cache'), _scalp)
+    if _tint:
+        _B.write_tint_cache(os.path.join(content, 'texture.cache'), [_tint])
+    if _cards:
+        assert not (_scalp or _tint), 'cards_bake + scalp_recolour / colour_tint: one texture.cache writer only'
+        import beard as _B2
+        _B2.write_tint_cache(os.path.join(content, 'texture.cache'), _cards)
     ents = {e.name: e for e in bundle_entries(os.path.join(content, 'blob0.bundle'))}
     for rel, data in files:
         assert bundle_read(os.path.join(content, 'blob0.bundle'), ents[rel]) == data

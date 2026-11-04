@@ -172,6 +172,53 @@ def _edit_both(data, fn):
     return doc.to_bytes()
 
 
+def _add_dangle(doc, comp_names, dyng_path, name, wind=1.0, use_offsets=True, gp=(230, 100)):
+    """2026-10-30 opt-in (cards_bake ribbon_dyng, sway for the static ribbon mesh): a CAnimDangleComponent `name`
+    (CAnimDangleConstraint_Dyng on the vanilla .w3dyng `dyng_path`) as in the vanilla Avallach hair template
+    (c_07_ma__avallach.w2ent), and every mesh component of comp_names attached to it by a CMeshSkinningAttachment
+    (their mesh skinned to that dyng's bones by name). The components must have no parent attachment yet."""
+    flat = doc.exports[0].cls != 'CEntityTemplate'
+    ent_i = next(i for i, e in enumerate(doc.exports) if e.cls in ('CEntity', 'CItemEntity'))
+    imp = doc.add_import(dyng_path, 'CDyngResource')
+    dg_i = len(doc.exports)
+    cons_i = dg_i + 1
+    props = [Prop('guid', 'CGUID', uuid.uuid5(uuid.NAMESPACE_URL, 'hairpipe/' + name).bytes_le), Prop('name', 'String', v_string(name))]
+    if flat:
+        props += [Prop('graphPositionX', 'Int16', v_i16(gp[0])), Prop('graphPositionY', 'Int16', v_i16(gp[1]))]
+    props.append(Prop('constraint', 'ptr:IAnimDangleConstraint', v_ptr(cons_i)))
+    atts = [dg_i + 2 + k for k in range(len(comp_names))]
+    doc.add_export('CAnimDangleComponent', ent_i, Chunk.build(doc, props, write_ptr_lists([[], [a + 1 for a in atts]])))
+    doc.add_export('CAnimDangleConstraint_Dyng', dg_i, Chunk.build(doc, [
+        Prop('dyng', 'handle:CDyngResource', v_import(imp)), Prop('useOffsets', 'Bool', b'\x01' if use_offsets else b'\x00'),
+        Prop('wind', 'Float', struct.pack('<f', wind))]))
+    for k, cn in enumerate(comp_names):
+        ci = _find_mesh(doc, cn)
+        c = Chunk(doc, ci)
+        lists, rest = read_ptr_lists(c.trailing, 2)
+        assert not lists[0] and c.get('transformParent') is None, '%s already has a parent attachment' % cn
+        doc.add_export('CMeshSkinningAttachment', dg_i, Chunk.build(doc, [
+            Prop('parent', 'ptr:CNode', v_ptr(dg_i)), Prop('child', 'ptr:CNode', v_ptr(ci))]))
+        c.props.insert(0, Prop('transformParent', 'ptr:CHardAttachment', v_ptr(atts[k])))
+        lists[0] = [atts[k] + 1]
+        c.trailing = write_ptr_lists(lists, rest)
+        c.commit()
+    ent = Chunk(doc, ent_i)
+    head, eptrs, rest = entity_components(ent.trailing)
+    eptrs.append(dg_i + 1)
+    ent.trailing = set_entity_components(head, eptrs, rest)
+    ent.commit()
+    for n in ('CAnimDangleComponent', 'CAnimDangleConstraint_Dyng', 'CMeshSkinningAttachment', 'constraint', 'dyng', 'useOffsets',
+              'wind', 'transformParent', 'parent', 'child', 'ptr:CHardAttachment', 'ptr:CNode', 'ptr:IAnimDangleConstraint',
+              'handle:CDyngResource', 'Float', 'Bool'):
+        doc.name(n)
+    return dg_i
+
+
+def add_dangle(data, comp_names, dyng_path, name, wind=1.0):
+    """w2ent bytes + a dangle component driving comp_names (outer table and flatCompiledData), see _add_dangle."""
+    return _edit_both(data, lambda d: _add_dangle(d, comp_names, dyng_path, name, wind))
+
+
 def _add_script_component(doc, cls, name, gp=(120, 520)):
     """A plain scripted component (no attachment, no mesh) of the WitcherScript class `cls` (opt-in, lore_guard)."""
     flat = doc.exports[0].cls != 'CEntityTemplate'
@@ -194,7 +241,7 @@ def add_script_component(data, cls, name):
     return _edit_both(data, lambda d: _add_script_component(d, cls, name))
 
 
-def clear_meshes(data, meshes):
+def clear_meshes(data, meshes, flat=False):
     """2026-10-15 opt-in (config key clear_component_meshes): every CMeshComponent drawing one of meshes loses its
     mesh handle (outer table + flatCompiledData); the component stays (no export / attachment change), it draws nothing.
     Used for Triss's i_01 hair clips, which show through the HairWorks."""
@@ -214,8 +261,37 @@ def clear_meshes(data, meshes):
                 c.remove('mesh')
                 c.commit()
                 hits.append(doc.imports[-h - 1][0])
-    data = _edit_both(data, fn)
+    # 2026-10-18 opt-in flat (config clear_component_meshes_flat, Geralt Ard headband L657): with OUTER_ONLY the flat
+    # data (what the game instantiates) was left alone, so the cleared mesh still drew; clear it there too
+    _oo = OUTER_ONLY
+    try:
+        if flat:
+            globals()['OUTER_ONLY'] = False
+        data = _edit_both(data, fn)
+    finally:
+        globals()['OUTER_ONLY'] = _oo
     assert hits, 'clear_component_meshes: none of %s found' % sorted(want)
+    return data
+
+
+def add_fur_component(data, comp, name, fur_path, mesh):
+    """2026-10-19 (studio_geo.frozen_fur, L812): a second fur component `name` cloned from `comp` (after patch), fur
+    `fur_path`, card fallback `mesh`; with OUTER_ONLY + FLAT_COMP also in the stale flat data the game instantiates"""
+    def _f(d, src):
+        _add_mesh_component(d, src, name, mesh)
+        _swap(d, name, fur_path, mesh)
+    data = _edit_both(data, lambda d: _f(d, comp))
+    if OUTER_ONLY and FLAT_COMP:
+        doc = CR2WDoc.parse(data)
+        root = Chunk(doc, 0)
+        fl = root.get('flatCompiledData')
+        cnt, = struct.unpack_from('<I', fl.value, 0)
+        fd = CR2WDoc.parse(fl.value[4:4 + cnt])
+        _f(fd, FLAT_COMP)
+        fb = fd.to_bytes()
+        root.set('flatCompiledData', fl.type, struct.pack('<I', len(fb)) + fb)
+        root.commit()
+        data = doc.to_bytes()
     return data
 
 
@@ -276,6 +352,43 @@ def patch(data, comp, fur_path, extra=(), fallback_mesh=None):
         data = doc.to_bytes()
         print('  streamedAttachments: %d childClass entr%s -> CFurComponent' % (n, 'y' if n == 1 else 'ies'))
     return data
+
+
+def far_mesh(mesh_rel, near_m):
+    """2026-10-21 opt-in (config far_cards, crowd cut-off test): copy of a card mesh that draws NOTHING closer than near_m
+    and the vanilla cards beyond it, so a fur with autoHideDistance = near_m hands over to the cards instead of leaving
+    a bald NPC. cookedData.renderLODs [0, d1, d2 ..] -> [0, near, near + d1, ..] and every chunk's LOD mask moves up one
+    level (the old LOD0 cards draw from near_m; the last old LOD is dropped). Same sizes, so only the CRCs change.
+    Returns (w2mesh bytes, buffer bytes)."""
+    d, buf, _ = subset_mesh(mesh_rel, lambda ch: np.ones(ch['nv'], bool))
+    d = bytearray(d)
+    m = G.load_mesh(mesh_rel)
+    cd = m['t']['cookedData']
+    lods = [float(x) for x in cd['renderLODs']]
+    n = len(lods)
+    assert n >= 2, 'far_cards: mesh %s has one render LOD only' % mesh_rel
+    old = struct.pack('<%df' % n, *lods)
+    new = struct.pack('<%df' % n, *([0.0] + [near_m + x for x in lods[:-1]]))
+    assert d.count(old) == 1, 'far_cards: renderLODs not found once in %s' % mesh_rel
+    i = d.index(old)
+    d[i:i + len(old)] = new
+    rc = bytes(G.CR2WFile(bytes(G.get(mesh_rel))).exports[0].props['cookedData'][1]['_props']['renderChunks'][1][1])
+    nch = rc[0]
+    rec = (len(rc) - 1) // max(1, nch)
+    assert nch and 1 + nch * rec == len(rc), 'far_cards: unexpected renderChunks layout in %s' % mesh_rel
+    assert d.count(rc) == 1, 'far_cards: renderChunks not found once in %s' % mesh_rel
+    j = d.index(rc)
+    full = (1 << n) - 1
+    for k in range(nch):
+        p = j + 1 + (k + 1) * rec - 1          # the last byte of each chunk record = its LOD mask
+        assert 0 < d[p] <= full, 'far_cards: chunk %d LOD mask %d out of range' % (k, d[p])
+        d[p] = (d[p] << 1) & full
+    c = w3lib.CR2W(bytes(d))
+    c.fix_crcs()
+    out = bytes(c.d)
+    bad, ok = w3lib.CR2W(out).verify_crcs()
+    assert bad == 0 and ok
+    return out, buf
 
 
 def subset_mesh(mesh_rel, keep_fn, move_fn=None):

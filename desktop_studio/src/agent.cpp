@@ -66,16 +66,7 @@ static bool makePair(const std::string& left, const std::string& right, const st
     return writePng(out, w * 2, h, px.data());
 }
 
-static MotionPreset motionByName(const std::string& n) {
-    std::string a = n;
-    std::transform(a.begin(), a.end(), a.begin(), ::tolower);
-    for (int i = 0; i < (int)MotionPreset::Count; i++) {
-        std::string m = motionName(MotionPreset(i));
-        std::transform(m.begin(), m.end(), m.begin(), ::tolower);
-        if (m.find(a) == 0) return MotionPreset(i);
-    }
-    return MotionPreset::Idle;
-}
+static MotionPreset motionByName(const std::string& n) { return motionFromName(n, MotionPreset::Idle); }
 
 int App::runAgent(const std::string& scriptPath) {
     json S;
@@ -693,6 +684,7 @@ int App::finishAgent(json& report, const std::string& out, int rc) {
 // beard stubble, brows, eye sockets). Not from guide roots: those can sit inside the forehead.
 void App::computeHeadScalp() {
     headScalp.clear();
+    scalpTx = ScalpTexel();
     for (size_t mi = 0; mi < pack.meshes.size(); mi++) {
         const Mesh& m = pack.meshes[mi];
         if (m.kind != "head" || m.texFile.empty() || m.uv.size() != m.v.size()) continue;
@@ -730,6 +722,26 @@ void App::computeHeadScalp() {
         }
         float thrLin = float(std::pow(thr / 255.0, 2.2));
         logf("scalp mask: skin luminance %.0f, threshold %.0f, brow height %.3f", skin, thr, browZ);
+        // opt-in texel test (app.h scalpTexelAt): 9 px mean luminance map of the whole diffuse + triangles per vertex
+        if (scalpOpt.value("texel", false) && scalpTx.mi < 0) {
+            scalpTx.mi = int(mi); scalpTx.w = w; scalpTx.h = h;
+            scalpTx.thr = float(thr * std::clamp(scalpOpt.value("pixel_thr_scale", 1.0), 0.5, 2.0));
+            std::vector<double> sat(size_t(w + 1) * (h + 1), 0.0);   // summed-area table
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+                const unsigned char* p = &im[(size_t(y) * w + x) * 4];
+                sat[size_t(y + 1) * (w + 1) + x + 1] = 0.3 * p[0] + 0.59 * p[1] + 0.11 * p[2] + sat[size_t(y) * (w + 1) + x + 1] +
+                                                      sat[size_t(y + 1) * (w + 1) + x] - sat[size_t(y) * (w + 1) + x];
+            }
+            scalpTx.lum.assign(size_t(w) * h, 0.0f);
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+                int x0 = std::max(0, x - 4), x1 = std::min(w, x + 5), y0 = std::max(0, y - 4), y1 = std::min(h, y + 5);
+                double s = sat[size_t(y1) * (w + 1) + x1] - sat[size_t(y0) * (w + 1) + x1] - sat[size_t(y1) * (w + 1) + x0] + sat[size_t(y0) * (w + 1) + x0];
+                scalpTx.lum[size_t(y) * w + x] = float(s / ((x1 - x0) * (y1 - y0)));
+            }
+            scalpTx.vtris.assign(nv, {});
+            for (size_t t = 0; t < m.t.size(); t++) for (int c = 0; c < 3; c++) scalpTx.vtris[m.t[t][c]].push_back(int(t));
+            logf("scalp mask: texel test on, pixel threshold %.0f (x%.2f)", scalpTx.thr, scalpTx.thr / thr);
+        }
         freeImage(im);
         // weld by position, adjacency over welded ids
         std::map<std::array<long, 3>, int> wid;
@@ -772,6 +784,7 @@ void App::computeHeadScalp() {
                     for (auto& cv : cardV) if (len(cv - m.v[i]) < 0.012f) { in[id[i]] = 1; break; }
                 }
                 fromCards = true;
+                if (scalpTx.mi == int(mi)) scalpTx = ScalpTexel();   // no painted scalp: nothing for a texel test
             }
         }
         std::vector<float> f(nv);
@@ -780,6 +793,51 @@ void App::computeHeadScalp() {
         for (size_t i = 0; i < nv; i++) { f[i] = in[id[i]] ? 1.0f + thrLin : 0.0f; cnt += in[id[i]]; }
         headScalp[int(mi)] = f;
         logf("scalp mask: %s %d / %zu vertices%s", m.name.c_str(), cnt, nv, fromCards ? " (from the vanilla hair-card footprint: no painted scalp)" : "");
+        if (scalpTx.mi == int(mi)) {
+            // texel band: triangles touching a painted vertex, then flooded (edge neighbours over welded vertices, up to
+            // band_rings rings) through triangles whose texels are mostly painted (>= band_frac of 10 samples below the
+            // scaled threshold), above the head centre and not in front below the brows: the band follows a painted
+            // hairline that runs past the vertex rows (Voorhis's widow's peak / temple corners)
+            size_t nt = m.t.size();
+            auto& tb = scalpTx.tband;
+            tb.assign(nt, 0);
+            std::vector<char> paintT(nt, 0);
+            float frac = float(std::clamp(scalpOpt.value("band_frac", 0.4), 0.05, 1.0));
+            int rings = std::clamp(scalpOpt.value("band_rings", 6), 0, 50);
+            for (size_t t = 0; t < nt; t++) {
+                auto& T = m.t[t];
+                if (in[id[T[0]]] || in[id[T[1]]] || in[id[T[2]]]) tb[t] = 1;
+                V3 cen = (m.v[T[0]] + m.v[T[1]] + m.v[T[2]]) * (1.0f / 3);
+                if (cen.z < pack.headC.z || (cen.y > pack.headC.y + 0.05f && cen.z < browZ)) continue;
+                int dk = 0;
+                for (int a = 0; a <= 3; a++) for (int b = 0; a + b <= 3; b++) {
+                    float wa = a / 3.0f, wb = b / 3.0f, wc = 1 - wa - wb;
+                    float u = m.uv[T[0]][0] * wa + m.uv[T[1]][0] * wb + m.uv[T[2]][0] * wc, v = m.uv[T[0]][1] * wa + m.uv[T[1]][1] * wb + m.uv[T[2]][1] * wc;
+                    int x = std::clamp(int(u * w), 0, w - 1), y = std::clamp(int(v * h), 0, h - 1);
+                    dk += scalpTx.lum[size_t(y) * w + x] < scalpTx.thr;
+                }
+                paintT[t] = dk >= frac * 10;
+            }
+            std::map<std::pair<int, int>, std::vector<int>> edgeT;
+            for (size_t t = 0; t < nt; t++) for (int c = 0; c < 3; c++) {
+                int a = id[m.t[t][c]], b = id[m.t[t][(c + 1) % 3]];
+                edgeT[{std::min(a, b), std::max(a, b)}].push_back(int(t));
+            }
+            std::vector<int> fr;
+            for (size_t t = 0; t < nt; t++) if (tb[t]) fr.push_back(int(t));
+            int added = 0;
+            for (int r = 0; r < rings && !fr.empty(); r++) {
+                std::vector<int> nx;
+                for (int t : fr) for (int c = 0; c < 3; c++) {
+                    int a = id[m.t[t][c]], b = id[m.t[t][(c + 1) % 3]];
+                    for (int u : edgeT[{std::min(a, b), std::max(a, b)}]) if (!tb[u] && paintT[u]) { tb[u] = 1; nx.push_back(u); added++; }
+                }
+                fr.swap(nx);
+            }
+            int nb = 0;
+            for (char x : tb) nb += x;
+            logf("scalp mask: texel band %d / %zu triangles (%d past the painted vertices)", nb, nt, added);
+        }
         if (fromCards) for (auto& x : f) if (x > 0.5f) x = 1.0f + 1.0f;   // card footprint: whole area counts (no texel test)
     }
 }

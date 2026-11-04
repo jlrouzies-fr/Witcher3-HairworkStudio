@@ -234,15 +234,81 @@ def budget_of(D):
 # name -> (how, source). Values = the config's look run through hairpipe (DEFAULT_LOOK + look keys -> look_params) on
 # top of its mat_src material, i.e. what a build with those keys writes. Parameter values only (the Yen-mod look is the
 # pipeline's own re-creation in yen_material.json; no third-party file is read or shipped).
+# 2026-10-18 (user: "NEW materials, the ones that are optimised, not the old presets (those should be put under
+# (Unoptimized) tag)"): the "PT ... (optimised)" presets set ONLY what the 5.0 path tracer reads (Locks round L671-L695:
+# strand width + root / tip scale, close-up width detailLODWidth, waveness, length / width noise; it draws 32 hairs per
+# growth face, ignores density, specular, clumping and strandTex across the width) and nothing per character: colours,
+# stiffness / simulation, density stay the character's. GPU cost ~ drawn hairs x CVs x width, so width is the only
+# material cost lever. The older presets carry whole looks (physics, specular, density-era widths): tagged (Unoptimized).
+OPT_PRESETS = {
+    'fine': {'physicalMaterials.strandWidth.width': 0.8, 'physicalMaterials.strandWidth.widthRootScale': 0.4,
+             'physicalMaterials.strandWidth.widthTipScale': 0.2, 'physicalMaterials.strandWidth.widthNoise': 0.5,
+             'levelOfDetail.detailLOD.detailLODWidth': 0.5,
+             'physicalMaterials.waveness.waveScale': 0.4, 'physicalMaterials.waveness.waveScaleNoise': 0.4,
+             'physicalMaterials.waveness.waveStrand': 1.0, 'physicalMaterials.waveness.waveRootStraighten': 0.925,
+             'physicalMaterials.volume.lengthNoise': 0.12},
+    'lean': {'physicalMaterials.strandWidth.width': 0.6, 'physicalMaterials.strandWidth.widthRootScale': 0.35,
+             'physicalMaterials.strandWidth.widthTipScale': 0.15, 'physicalMaterials.strandWidth.widthNoise': 0.4,
+             'levelOfDetail.detailLOD.detailLODWidth': 0.4,
+             'physicalMaterials.waveness.waveScale': 0.4, 'physicalMaterials.waveness.waveScaleNoise': 0.4,
+             'physicalMaterials.waveness.waveStrand': 1.0, 'physicalMaterials.waveness.waveRootStraighten': 0.925,
+             'physicalMaterials.volume.lengthNoise': 0.12},
+    'medium': {'physicalMaterials.strandWidth.width': 1.0, 'physicalMaterials.strandWidth.widthRootScale': 0.6,
+               'physicalMaterials.strandWidth.widthTipScale': 0.25, 'physicalMaterials.strandWidth.widthNoise': 0.5,
+               'levelOfDetail.detailLOD.detailLODWidth': 0.8,
+               'physicalMaterials.waveness.waveScale': 0.4, 'physicalMaterials.waveness.waveScaleNoise': 0.4,
+               'physicalMaterials.waveness.waveStrand': 1.0, 'physicalMaterials.waveness.waveRootStraighten': 0.925,
+               'physicalMaterials.volume.lengthNoise': 0.12},
+    'sleek': {'physicalMaterials.strandWidth.width': 0.8, 'physicalMaterials.strandWidth.widthRootScale': 0.4,
+              'physicalMaterials.strandWidth.widthTipScale': 0.2, 'physicalMaterials.strandWidth.widthNoise': 0.25,
+              'levelOfDetail.detailLOD.detailLODWidth': 0.5,
+              'physicalMaterials.waveness.waveScale': 0.1, 'physicalMaterials.waveness.waveScaleNoise': 0.2,
+              'physicalMaterials.waveness.waveStrand': 1.0, 'physicalMaterials.waveness.waveRootStraighten': 1.0,
+              'physicalMaterials.volume.lengthNoise': 0.06},
+    'softwave': {'physicalMaterials.strandWidth.width': 0.8, 'physicalMaterials.strandWidth.widthRootScale': 0.4,
+                 'physicalMaterials.strandWidth.widthTipScale': 0.2, 'physicalMaterials.strandWidth.widthNoise': 0.5,
+                 'levelOfDetail.detailLOD.detailLODWidth': 0.5,
+                 'physicalMaterials.waveness.waveScale': 0.8, 'physicalMaterials.waveness.waveScaleNoise': 0.5,
+                 'physicalMaterials.waveness.waveFreq': 2.0, 'physicalMaterials.waveness.waveStrand': 1.0,
+                 'physicalMaterials.waveness.waveRootStraighten': 1.0, 'physicalMaterials.volume.lengthNoise': 0.15},
+    'tapered': {'physicalMaterials.strandWidth.width': 0.8, 'physicalMaterials.strandWidth.widthRootScale': 0.5,
+                'physicalMaterials.strandWidth.widthTipScale': 0.05, 'physicalMaterials.strandWidth.widthNoise': 0.5,
+                'levelOfDetail.detailLOD.detailLODWidth': 0.5,
+                'physicalMaterials.waveness.waveScale': 0.4, 'physicalMaterials.waveness.waveScaleNoise': 0.4,
+                'physicalMaterials.waveness.waveStrand': 1.0, 'physicalMaterials.waveness.waveRootStraighten': 0.925,
+                'physicalMaterials.volume.lengthNoise': 0.3},
+    # 2026-10-21 (user: "very large strands that fill gaps with a single guide cost", generic NPCs): wide flat ribbons
+    # so a low-guide groom covers the scalp; sleek waves (vanilla card look); root as wide as the mid
+    'wide': {'physicalMaterials.strandWidth.width': 1.6, 'physicalMaterials.strandWidth.widthRootScale': 1.0,
+             'physicalMaterials.strandWidth.widthTipScale': 0.4, 'physicalMaterials.strandWidth.widthNoise': 0.3,
+             'levelOfDetail.detailLOD.detailLODWidth': 1.6,
+             'physicalMaterials.waveness.waveScale': 0.2, 'physicalMaterials.waveness.waveScaleNoise': 0.2,
+             'physicalMaterials.waveness.waveStrand': 1.0, 'physicalMaterials.waveness.waveRootStraighten': 1.0,
+             'physicalMaterials.volume.lengthNoise': 0.08},
+    'xwide': {'physicalMaterials.strandWidth.width': 2.4, 'physicalMaterials.strandWidth.widthRootScale': 1.0,
+              'physicalMaterials.strandWidth.widthTipScale': 0.5, 'physicalMaterials.strandWidth.widthNoise': 0.3,
+              'levelOfDetail.detailLOD.detailLODWidth': 2.4,
+              'physicalMaterials.waveness.waveScale': 0.2, 'physicalMaterials.waveness.waveScaleNoise': 0.2,
+              'physicalMaterials.waveness.waveStrand': 1.0, 'physicalMaterials.waveness.waveRootStraighten': 1.0,
+              'physicalMaterials.volume.lengthNoise': 0.08},
+}
 PRESETS = [
-    ('Default conversion (thick basic strands)', 'default', 'hairpipe.DEFAULT_LOOK: the plain default conversion (geralt_v1halftail_long material)'),
-    ('Fine strands (thin, soft)', 'plan:yen_material', 'lab/plans/yen_material.json = the look of vesemir_r31a (approved)'),
-    ('Fine strands, keep dynamics (look only)', 'plan:yen_strands_only', 'lab/plans/yen_strands_only.json (Yen look without the dynamics keys)'),
-    ('Fine strands, sheen (alternative shading)', 'cfg:emhyr_l132_struct_m2', 'chars/emhyr_l132_struct_m2.json (m2 = Yennefer-mod graphical values)'),
-    ('Coarse short (short hair, beards)', 'cfg:lambert_l76_ez10_vol5d_wr15_b07_f8', 'chars/lambert_l76_ez10_vol5d_wr15_b07_f8.json (Lambert, user: good now; stiff root, free tips)'),
-    ('Curly / wavy (holds curls)', 'cfg:oriana_l141_a', 'chars/oriana_l141_a.json (strong-curl line, stiff enough to hold curls)'),
-    ('Tied / braided sheen (glossy)', 'cfg:triss_l82_fe_user1b', 'chars/triss_l82_fe_user1b.json (approved)'),
-    ('Grey / aged (low specular)', 'cfg:avallach_l85b_hl70_wv_ln_hc', 'chars/avallach_l85b_hl70_wv_ln_hc.json (Avallach white hair, settled)'),
+    ('PT Fine (optimised)', 'opt:fine', 'Locks L695 Geralt pick: fine widths .8 / .4 / .2, close-up width .5, wave .4'),
+    ('PT Fine lean (optimised)', 'opt:lean', 'thinner hairs .6 / .35 / .15, close-up .4: the lowest GPU cost'),
+    ('PT Medium (optimised)', 'opt:medium', 'fuller hairs 1.0 / .6 / .25, close-up .8: covers low-guide grooms (Svanrige deep pick)'),
+    ('PT Straight sleek (optimised)', 'opt:sleek', 'fine widths, wave .1, little length / width noise: straight tidy hair'),
+    ('PT Soft wave (optimised)', 'opt:softwave', 'fine widths, wave .8 / freq 2, root fully straight (band / parting stay clean)'),
+    ('PT Tapered tips (optimised)', 'opt:tapered', 'root .5 / tip .05, length noise .3: thin feathered ends'),
+    ('PT Wide (optimised)', 'opt:wide', 'wide ribbons 1.6 / 1.0 / .4, close-up 1.6, sleek: low-guide generic NPCs cover the scalp'),
+    ('PT Extra wide (optimised)', 'opt:xwide', 'ribbons 2.4 / 1.0 / .5, close-up 2.4, sleek: fewest guides, card-like'),
+    ('Default conversion (thick basic strands) (Unoptimized)', 'default', 'hairpipe.DEFAULT_LOOK: the plain default conversion (geralt_v1halftail_long material)'),
+    ('Fine strands (thin, soft) (Unoptimized)', 'plan:yen_material', 'lab/plans/yen_material.json = the look of vesemir_r31a (approved)'),
+    ('Fine strands, keep dynamics (look only) (Unoptimized)', 'plan:yen_strands_only', 'lab/plans/yen_strands_only.json (Yen look without the dynamics keys)'),
+    ('Fine strands, sheen (alternative shading) (Unoptimized)', 'cfg:emhyr_l132_struct_m2', 'chars/emhyr_l132_struct_m2.json (m2 = Yennefer-mod graphical values)'),
+    ('Coarse short (short hair, beards) (Unoptimized)', 'cfg:lambert_l76_ez10_vol5d_wr15_b07_f8', 'chars/lambert_l76_ez10_vol5d_wr15_b07_f8.json (Lambert, user: good now; stiff root, free tips)'),
+    ('Curly / wavy (holds curls) (Unoptimized)', 'cfg:oriana_l141_a', 'chars/oriana_l141_a.json (strong-curl line, stiff enough to hold curls)'),
+    ('Tied / braided sheen (glossy) (Unoptimized)', 'cfg:triss_l82_fe_user1b', 'chars/triss_l82_fe_user1b.json (approved)'),
+    ('Grey / aged (low specular) (Unoptimized)', 'cfg:avallach_l85b_hl70_wv_ln_hc', 'chars/avallach_l85b_hl70_wv_ln_hc.json (Avallach white hair, settled)'),
 ]
 # never part of a material preset: density / hair count belong to the character (performance budget)
 PRESET_SKIP = {('physicalMaterials', 'volume', 'density'), ('physicalMaterials', 'volume', 'usePixelDensity'),
@@ -274,6 +340,9 @@ def _flatten(d, pre, out):
 def material_preset(how):
     import hairpipe as H
     import gamefiles as GF
+    if how.startswith('opt:'):
+        vals = dict(OPT_PRESETS[how[4:]])
+        return dict(values=vals, config_keys={'look.extra_set.' + k: ['Float', v] for k, v in vals.items()})
     if how == 'default':
         look = {}
     elif how.startswith('plan:'):
@@ -474,12 +543,17 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
         ref['kind'] = 'approved (this build)' if ref_cfg == cfg else 'this build (no approved build for %s)' % character
     D['budget_ref'] = ref
     D['shots'] = shot_cameras(D, log)
+    import gamefiles as GF
+    # 2026-10-21 opt-in studio_tex_mods (Geralt, user: "scalp is missing" / armour colours wrong in the Studio): the head
+    # and outfit textures of these INSTALLED mods (e.g. modGeraltScalpLocal, modArmor) are shown, as in game. Studio pack
+    # only: builds never read this key.
+    tex_mods = GF.outfit_source(C.get('studio_tex_mods'))
+    tex_mods.__enter__()
     try:
         D['head_tex'] = head_textured(cfg, out, log)
     except Exception as e:   # game files not readable: the Studio falls back to the untextured EDIT head
         log('  head texture skipped: %r' % (e,))
     try:
-        import gamefiles as GF
         # 2026-10-14 opt-in growth.outfit_mods: draw the meshes of the named INSTALLED outfit mods (what the player sees, fit
         # only, nothing is shipped); growth.back_items: scabbard / sword meshes in rest pose, shown as outfit parts
         with GF.outfit_source((C.get('growth') or {}).get('outfit_mods')):
@@ -496,6 +570,7 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
                 log('  headgear skipped: %r' % (e,))
     except Exception as e:   # same fallback for the body / outfit meshes
         log('  outfit textures skipped: %r' % (e,))
+    tex_mods.__exit__()
     try:
         try:
             D['beard_cards'] = beard_cards(C, out, log)
@@ -534,6 +609,10 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
     except Exception as e:   # never breaks a prep; the renderer does not draw these yet (HAIRWORK.md "Beards")
         log('  beard cards skipped: %r' % (e,))
     bf = [f for f in glob.glob(os.path.join(os.path.dirname(fur), cfg + '__*.redfur')) if is_beard_fur(f)]
+    if not bf and C.get('studio_top_fur'):
+        # 2026-10-24 opt-in (Geralt headband, frozen_fur): the not-simulated top fur <cfg>__<comp>_top.redfur is drawn in the
+        # beard slot (second instance, its own look), so the Studio shows the hair above the band like the game
+        bf = [f for f in glob.glob(os.path.join(os.path.dirname(fur), cfg + '__*_top.redfur'))]
     if bf:
         BP = HP.build_pack(None, open(bf[0], 'rb').read(), tex_loader=None, fur_name=os.path.basename(bf[0]), log=lambda *a: None)
         Bt = HP.parse_fur(open(bf[0], 'rb').read())
@@ -541,6 +620,7 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
                               bone_idx=[[int(v[k]) for k in 'XYZW'] for v in Bt['boneIndices']],
                               bone_w=[[round(float(v[k]), 5) for k in 'XYZW'] for v in Bt['boneWeights']],
                               physical=BP['physical'], graphical=BP['graphical'],
+                              label='Top Hairs' if bf[0].endswith('_top.redfur') else 'Beard',
                               lod=BP.get('lod') or {})   # 2026-10-16: the beard's own LOD block (the Studio used the defaults: close-up width 1.0 / density 1.0)
         # 2026-10-16: the beard's density texture (beard.density_tex builds use the vanilla beard atlas alpha; the game keeps
         # ~12-27 % of the hairs by it) -> PNG + per-face values, so the Studio's beard instance samples it like the game
@@ -559,6 +639,16 @@ def build(cfg, fur=None, edit=None, out=None, log=print, rebuild=False):
                 log('  beard density texture: %s (%s, pixel %s)' % (bpath, bch, bool(bvol.get('usePixelDensity', 0))))
         log('  beard fur: %s (%d guides, %d faces)' % (_rel(bf[0]), len(BP['guides']), len(BP['F'])))
     D['materials'] = materials(log)
+    if C.get('studio_colliders_from'):
+        # 2026-10-21 opt-in (Geralt, user: "i dont see any collision sphere pushing hairs to stay out of the armor colar"):
+        # the colliders of another config's BUILT hw pack (build\hairbatch\hw\<cfg>.json, e.g. the installed L1001 with
+        # the collar side spheres) replace this pack's own; same bone table required. Studio pack only.
+        src = C['studio_colliders_from']
+        hp = os.path.join(ROOT, 'build', 'hairbatch', 'hw', src + '.json')
+        H2 = json.load(open(hp))
+        assert [b['name'] for b in H2['bones']] == [b['name'] for b in D['bones']], 'bone tables differ: %s' % src
+        D['spheres'], D['capsules'] = H2['spheres'], H2['capsules']
+        log('  colliders from %s: %d spheres, %d capsules' % (src, len(D['spheres']), len(D['capsules'])))
     D['budget_self'] = budget_of(D)
     p = os.path.join(out, 'desk.json')
     with open(p, 'w') as fh:
@@ -824,12 +914,15 @@ def appearance_components(C, log=print):
         log('  appearance %r not in %s: first one used' % (app, tpl))
         app = next(iter(apps), '')
     comps, seen = [], set()
+    # 2026-10-19 opt-in hair_force_comps (monsters: bruxa / alp hair cards use a non-pbr_hair shader): those components
+    # are the hair cards here too (vanilla card view), not outfit meshes drawn over the strands
+    forced = {(h['template'].lower(), h['comp']) for h in C.get('hair_force_comps', [])}
     for t in apps.get(app, []):
         for name, _cls, mesh, _fur in DI.mesh_comps(t):
             if mesh.lower() in seen:
                 continue
             seen.add(mesh.lower())
-            comps.append((name, mesh, DI.classify(mesh)))
+            comps.append((name, mesh, 'hair' if (t.lower(), name) in forced else DI.classify(mesh)))
     if C.get('studio_item_cards'):
         # 2026-10-15 opt-in (Geralt Ard Headband): the hair lives in an ITEM coif template (hair_item_templates), not in the
         # NPC's appearance, so the Studio had no vanilla cards; its mesh components join as hair cards (source_mods first)
@@ -839,6 +932,19 @@ def appearance_components(C, log=print):
                 if mesh and mesh.lower() not in seen:
                     seen.add(mesh.lower())
                     comps.append((name, mesh, 'hair'))
+    if C.get('studio_outfit_meshes'):
+        # 2026-10-18 opt-in (Geralt player): geralt_npc has no appearance with armour; C['outfits'][appearance] (the
+        # player's armour meshes, also the collider fit's outfit) are drawn as outfit parts for collider placement
+        for mesh in (C.get('outfits') or {}).get(C.get('appearance') or '', []):
+            if mesh.lower() not in seen:
+                seen.add(mesh.lower())
+                comps.append((os.path.basename(mesh)[:-7], mesh, 'outfit'))
+    # 2026-10-24 opt-in studio_outfit_list (Geralt player, user: "I see no armor"): mesh paths drawn as outfit parts in the
+    # Studio only; unlike studio_outfit_meshes it needs no C['outfits'], which also turns on the game-side outfit collider fit
+    for mesh in C.get('studio_outfit_list') or []:
+        if mesh.lower() not in seen:
+            seen.add(mesh.lower())
+            comps.append((os.path.basename(mesh)[:-7], mesh, 'outfit'))
     shifts = {}
     for e in (GF.tree(tpl)[0].get('coloringEntries') or []):
         if e.get('appearance') == app and e.get('componentName'):
