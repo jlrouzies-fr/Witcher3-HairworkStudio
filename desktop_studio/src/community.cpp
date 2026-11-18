@@ -367,6 +367,66 @@ const char* kNameRe = R"(^[a-z0-9][a-z0-9-]{0,39}$)";
 const char* kAuthorRe = R"(^[A-Za-z0-9-]{1,39}$)";
 
 // local validation, mirrors community/tools/validate_pack.py + the two schemas (pack folder = <author>__<name>)
+// 2026-11-18 (Studio issue 1): optional pack extras next to ops / params, so a pack carries the whole fur state of the
+// project as it is: "colliders" (the project's sphere + capsule set, bone NAMES: App::colToJson), "material" (preset
+// name; its values are already in params) and "stiffness" (painted per-guide stiffness / root-stiffness multipliers,
+// index = guide index after the ops, "guides" = that count).
+std::vector<std::string> packExtrasErrors(const json& doc) {
+    std::vector<std::string> e;
+    auto num = [](const json& v, double lo, double hi) { return v.is_number() && std::isfinite(v.get<double>()) && v.get<double>() >= lo && v.get<double>() <= hi; };
+    auto vec3 = [&](const json& v, double lim) { if (!v.is_array() || v.size() != 3) return false; for (auto& x : v) if (!num(x, -lim, lim)) return false; return true; };
+    if (doc.contains("colliders")) {
+        const json& c = doc["colliders"];
+        if (!c.is_object() || !c.contains("spheres") || !c["spheres"].is_array() || !c.contains("capsules") || !c["capsules"].is_array()) e.push_back("colliders needs 'spheres' and 'capsules' lists");
+        else {
+            for (auto& [k, v] : c.items()) if (k != "spheres" && k != "capsules" && k != "collision_r" && k != "flats") { e.push_back("colliders: unknown field " + k); break; }
+            const json& sp = c["spheres"];
+            size_t ns = sp.size();
+            if (ns > 85) e.push_back("colliders: more than 85 spheres");
+            if (c["capsules"].size() > 75) e.push_back("colliders: more than 75 capsules");
+            for (auto& s : sp) {
+                bool ok = s.is_object() && s.contains("bone") && s["bone"].is_string() && reOk(s["bone"].get<std::string>(), "^[A-Za-z0-9_]{1,40}$") &&
+                          s.contains("local") && vec3(s["local"], 2.0) && s.contains("r") && num(s["r"], 0.0005, 0.25) &&
+                          (!s.contains("grp") || num(s["grp"], -1, 2)) && (!s.contains("tag") || (s["tag"].is_string() && s["tag"].get<std::string>().size() <= 40));
+                if (!ok) { e.push_back("colliders: a sphere needs bone (name), local [x,y,z] (m) and r (0.5-250 mm)"); break; }
+            }
+            for (auto& cp : c["capsules"]) {
+                bool ok = cp.is_array() && cp.size() == 2 && cp[0].is_number_integer() && cp[1].is_number_integer() &&
+                          cp[0].get<long long>() >= 0 && cp[1].get<long long>() >= 0 && cp[0].get<long long>() < (long long)ns && cp[1].get<long long>() < (long long)ns;
+                if (!ok) { e.push_back("colliders: a capsule is not a pair of sphere indices in range"); break; }
+            }
+            if (c.contains("collision_r")) {
+                if (!c["collision_r"].is_object()) e.push_back("colliders: collision_r must be an object");
+                else for (auto& [k, v] : c["collision_r"].items()) {
+                    if (!reOk(k, "^[0-9]{1,3}$") || std::stoi(k) >= (int)ns || !num(v, 0.0005, 0.25)) { e.push_back("colliders: collision_r entry '" + k + "' out of range"); break; }
+                }
+            }
+            if (c.contains("flats")) {
+                if (!c["flats"].is_object() || c["flats"].size() > 85) e.push_back("colliders: flats must be an object of at most 85");
+                else for (auto& [k, f] : c["flats"].items()) {
+                    bool ok = reOk(k, "^[0-9]{1,6}$") && f.is_object() && f.contains("bone") && f["bone"].is_string() && reOk(f["bone"].get<std::string>(), "^[A-Za-z0-9_]{1,40}$") &&
+                              f.contains("c") && vec3(f["c"], 3.0);
+                    for (const char* q : {"w", "h", "t", "yaw", "pitch", "roll", "count"}) if (ok && f.contains(q)) ok = num(f[q], -360, 360);
+                    if (!ok) { e.push_back("colliders: flat '" + k + "' is not valid"); break; }
+                }
+            }
+        }
+    }
+    if (doc.contains("material") && !(doc["material"].is_string() && reOk(doc["material"].get<std::string>(), "^[A-Za-z0-9 _().,+'-]{1,96}$"))) e.push_back("material must be a preset name (up to 96 plain characters)");
+    if (doc.contains("stiffness")) {
+        const json& st = doc["stiffness"];
+        bool ok = st.is_object() && st.contains("guides") && st["guides"].is_number_integer() && st["guides"].get<long long>() > 0 && st["guides"].get<long long>() <= 100000;
+        for (const char* q : {"s", "r"}) {
+            if (!ok) break;
+            ok = st.contains(q) && st[q].is_array() && st[q].size() == (size_t)st["guides"].get<long long>();
+            if (ok) for (auto& x : st[q]) if (!num(x, 0, 1)) { ok = false; break; }
+        }
+        if (ok) for (auto& [k, v] : st.items()) if (k != "guides" && k != "s" && k != "r") ok = false;
+        if (!ok) e.push_back("stiffness needs guides (count) and s / r lists of that length with values 0-1");
+    }
+    return e;
+}
+
 std::vector<std::string> validatePack(const fs::path& d, bool installCheck) {
     std::vector<std::string> e;
     json m, doc;
@@ -390,7 +450,8 @@ std::vector<std::string> validatePack(const fs::path& d, bool installCheck) {
     if (us == std::string::npos || lower(fn.substr(0, us)) != lower(str("author")) || fn.substr(us + 2) != str("name")) e.push_back("folder name must be <author>__<name> of pack.json");
     if (!readJson(d / "edits.hwgroom", doc) || !doc.is_object()) { e.push_back("edits.hwgroom missing or unreadable"); return e; }
     if (doc.value("format", "") != "hwgroom" || doc.value("version", 0) != 1) e.push_back("edits.hwgroom: format must be hwgroom, version 1");
-    for (auto& [k, v] : doc.items()) if (k != "format" && k != "version" && k != "character" && k != "tol" && k != "params" && k != "ops") e.push_back("edits.hwgroom: unknown field " + k);
+    for (auto& [k, v] : doc.items()) if (k != "format" && k != "version" && k != "character" && k != "tol" && k != "params" && k != "ops" && k != "colliders" && k != "material" && k != "stiffness") e.push_back("edits.hwgroom: unknown field " + k);
+    for (auto& m2 : packExtrasErrors(doc)) e.push_back("edits.hwgroom: " + m2);
     if (doc.contains("tol") && !(doc["tol"].is_number() && doc["tol"].get<double>() > 0 && doc["tol"].get<double>() <= 0.05)) e.push_back("edits.hwgroom: tol out of range");
     if (!doc.contains("ops") || !doc["ops"].is_array()) e.push_back("edits.hwgroom: ops missing");
     else {
@@ -497,7 +558,17 @@ void applyPack(App& a, const std::string& dir) {
     }
     int skipped = 0;
     auto ops = cm::toStudio(hw, &skipped);
-    if (ops.empty()) { setMsg("Nothing to apply: the pack has no edit ops."); return; }
+    bool hasExtras = (hwDoc.contains("params") && hwDoc["params"].is_object() && !hwDoc["params"].empty()) || hwDoc.contains("colliders") ||
+                     hwDoc.contains("material") || hwDoc.contains("stiffness");
+    if (ops.empty() && !hasExtras) { setMsg("Nothing to apply: the pack has no edit ops."); return; }
+    {   // colliders: refuse the whole pack before any change when a bone is missing (a pack for another skeleton)
+        auto ce = packExtrasErrors(hwDoc);
+        if (!ce.empty()) { setMsg("Not applied: " + ce[0]); return; }
+        if (hwDoc.contains("colliders")) {
+            for (auto& s : hwDoc["colliders"]["spheres"])
+                if (a.pack.boneIndex(s["bone"].get<std::string>()) < 0) { setMsg("Not applied: the pack's colliders use bone " + s["bone"].get<std::string>() + ", which this fur does not have."); return; }
+        }
+    }
     // delete_face ops carry base-mesh face indices: refuse when the base groom is not the one the author edited
     bool needFp = false, hasRebuild = false;
     for (auto& o : ops) {
@@ -566,6 +637,31 @@ void applyPack(App& a, const std::string& dir) {
         a.look.enforceCaps();
         a.computeBudget();
     }
+    if (hwDoc.contains("material")) {   // the preset's values came with params; this only restores the selection (export keys)
+        std::string mat = hwDoc["material"].get<std::string>();
+        bool found = false;
+        for (int i = 0; i < (int)a.presets.size(); i++)
+            if (a.presets[i].name == mat || a.presets[i].name == mat + " (Unoptimized)") { a.presetSel = i; found = true; }
+        if (!found) warn += "; material preset '" + mat + "' is not in this Studio (its values are applied)";
+    }
+    if (hwDoc.contains("stiffness")) {   // painted per-guide multipliers, valid only for the same guide count after the ops
+        const json& st = hwDoc["stiffness"];
+        size_t n = st["guides"].get<size_t>();
+        if (n == a.groom.P.size()) {
+            a.smap.reset(n);
+            for (size_t i = 0; i < n; i++) { a.smap.guideS[i] = st["s"][i].get<float>(); a.smap.guideR[i] = st["r"][i].get<float>(); }
+            a.updateStiffnessTexture();
+            warn += "; stiffness map set";
+        } else warn += "; stiffness map NOT set (made for " + std::to_string(n) + " guides, this groom has " + std::to_string(a.groom.P.size()) + ")";
+    }
+    if (hwDoc.contains("colliders")) {   // replaces the project's collider set (collider undo: Ctrl+Z)
+        a.colPushUndo();
+        std::string cerr;
+        if (a.colFromJson(hwDoc["colliders"], &cerr)) {
+            a.colChanged();
+            warn += "; colliders set (" + std::to_string(a.pack.spheres.size()) + " spheres / " + std::to_string(a.pack.capsules.size()) + " capsules)";
+        } else { a.colUndoSt.pop_back(); warn += "; colliders NOT set: " + cerr; }
+    }
     a.editsChanged();
     if (nLook) warn += "; " + std::to_string(nLook) + " look value(s) set";
     setMsg("Applied " + std::to_string(nApplied) + " of " + std::to_string(ops.size()) + " op(s) from " + meta.value("name", "?") + " (undo: Ctrl+Z)" +
@@ -582,7 +678,7 @@ struct ExportForm {
     bool waiting = false, inited = false;
 } g_ef;
 
-void exportPack(App& a) {
+void exportPack(App& a, const std::string& destOverride = "") {
     if (!a.loaded) { setMsg("Export: open a build first."); return; }
     ExportForm& f = g_ef;
     std::string name = f.name, author = f.author, ver = f.version, slot = f.slot, ch = a.pack.character;
@@ -608,14 +704,30 @@ void exportPack(App& a) {
         return -1;
     };
     auto hw = cm::toHwgroom(ed["ops"].get<std::vector<json>>(), &skipped, &ctx);
-    if (hw.empty()) { setMsg("Export: the project has no shareable edit ops."); return; }
-    fs::path dest = P(workRoot(a)) / (author + "__" + name);
+    // 2026-11-18 (Studio issue 1): the whole fur state goes into the pack as it is in the project: look / material values,
+    // the material preset name, the painted stiffness map and the collider set (spheres, capsules, radius overrides, flats)
+    json params = json::object();
+    for (auto& [k, v] : a.look.over) params[k] = v;
+    bool stiff = false;
+    for (size_t i = 0; i < a.smap.guideS.size() && !stiff; i++) stiff = a.smap.guideS[i] != 1.0f || (i < a.smap.guideR.size() && a.smap.guideR[i] != 1.0f);
+    bool cols = a.pack.colModified || !a.colR.empty();
+    if (hw.empty() && params.empty() && !stiff && !cols) { setMsg("Export: the project has no shareable edits."); return; }
+    fs::path dest = destOverride.empty() ? P(workRoot(a)) / (author + "__" + name) : P(destOverride) / (author + "__" + name);
     std::error_code ec;
     fs::create_directories(dest, ec);
     clearRO(dest);
     json old;
     readJson(dest / "pack.json", old);
-    json doc = {{"format", "hwgroom"}, {"version", 1}, {"character", ch}, {"tol", ed.value("tol", 0.004)}, {"params", json::object()}, {"ops", hw}};
+    json doc = {{"format", "hwgroom"}, {"version", 1}, {"character", ch}, {"tol", ed.value("tol", 0.004)}, {"params", params}, {"ops", hw}};
+    if (a.presetSel > 0 && a.presetSel < (int)a.presets.size()) doc["material"] = a.presets[a.presetSel].name;
+    if (stiff) {
+        auto r4 = [](float x) { return std::round(x * 1e4f) / 1e4f; };
+        json s = json::array(), r = json::array();
+        size_t n = a.groom.P.size();
+        for (size_t i = 0; i < n; i++) { s.push_back(r4(i < a.smap.guideS.size() ? a.smap.guideS[i] : 1.0f)); r.push_back(r4(i < a.smap.guideR.size() ? a.smap.guideR[i] : 1.0f)); }
+        doc["stiffness"] = {{"guides", n}, {"s", s}, {"r", r}};
+    }
+    if (cols) doc["colliders"] = a.colToJson();
     json tags = json::array();
     std::istringstream ts(f.tags);
     for (std::string t; std::getline(ts, t, ',');) {
@@ -639,7 +751,7 @@ void exportPack(App& a) {
         if (it != g_tex.end()) { g_tex.erase(it); g_texSz.erase(k); }   // not released: this frame may still draw it
     }
     a.pendingPreview = (dest / "preview.jpg").string();
-    setMsg("Exporting " + std::to_string(hw.size()) + " op(s)" + (skipped ? " (" + std::to_string(skipped) + " unsupported skipped)" : "") + "; capturing the preview...");
+    setMsg("Exporting " + std::to_string(hw.size()) + " op(s), " + std::to_string(params.size()) + " look value(s)" + (cols ? ", colliders" : "") + (stiff ? ", stiffness map" : "") + (skipped ? " (" + std::to_string(skipped) + " unsupported skipped)" : "") + "; capturing the preview...");
 }
 void finishExport(App& a) {
     if (!g_ef.waiting || a.previewOk < 0) return;
@@ -1552,6 +1664,37 @@ void drawGithub(App& a, Settings& s) {
     ImGui::EndChild();
 }
 }  // namespace
+
+// headless export (agent step "export_pack"): {"dir": parent folder (default: the working folder), "name", "author",
+// "slot" (default: current), "version", "status": "ready"|"wip", "description"}; no preview.jpg. -> {message, pack, errors}
+json exportPackHeadless(App& a, const json& stp) {
+    ExportForm& f = g_ef;
+    auto put = [&](char* dst, size_t n, const std::string& v) { strncpy_s(dst, n, v.c_str(), _TRUNCATE); };
+    put(f.name, sizeof f.name, stp.value("name", std::string("test")));
+    put(f.author, sizeof f.author, stp.value("author", std::string("tester")));
+    put(f.version, sizeof f.version, stp.value("version", std::string("0.1.0")));
+    put(f.slot, sizeof f.slot, stp.value("slot", currentSlot(a)));
+    put(f.desc, sizeof f.desc, stp.value("description", std::string()));
+    put(f.tags, sizeof f.tags, "");
+    f.status = stp.value("status", std::string("wip")) == "ready" ? 1 : 0;
+    setMsg("");
+    exportPack(a, stp.value("dir", std::string()));
+    json r;
+    {
+        std::lock_guard<std::mutex> l(g_mx);
+        r["message"] = g_msg;
+    }
+    if (f.waiting) {   // no viewport capture headless
+        f.waiting = false;
+        a.pendingPreview.clear();
+        a.previewOk = -1;
+        r["pack"] = f.dest;
+        json errs = json::array();
+        for (auto& e : validatePack(P(f.dest))) errs.push_back(e);
+        r["errors"] = errs;
+    }
+    return r;
+}
 
 // headless apply (agent step "apply_pack"): the status line applyPack would show
 std::string applyPackHeadless(App& a, const std::string& dir) {

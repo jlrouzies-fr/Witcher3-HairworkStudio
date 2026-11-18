@@ -2797,7 +2797,7 @@ def handle(msg):
     if m == "initialize":
         return {"protocolVersion": msg.get("params", {}).get("protocolVersion", PROTOCOL),
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "hairwork-studio", "version": "0.5.0"},
+                "serverInfo": {"name": "hairwork-studio", "version": "0.5.1"},
                 "instructions": "Live Hairwork Studio session (Witcher 3 HairWorks grooms). Start with studio_open, "
                                 "studio_shots, studio_compare (vanilla | as opened | current). Find bald patches with "
                                 "studio_render overlay=scalp + studio_scalp_coverage, locate them with studio_pick / "

@@ -9,6 +9,7 @@
 #include "app.h"
 #include "gate.h"
 std::string applyPackHeadless(App& a, const std::string& dir);   // community.cpp
+json exportPackHeadless(App& a, const json& stp);                // community.cpp
 #include "lighting.h"
 
 namespace fs = std::filesystem;
@@ -603,6 +604,10 @@ json App::agentStep(const json& stp, const std::string& out, int& rc) {
             r["dir"] = od;
             if (rel) { checkCore(true); r["core"] = {{"installed", core.installed}, {"version", core.version}, {"required", core.required}}; }
             if (!ok) { r["error"] = status; rc = 6; }
+        } else if (d == "export_pack") {
+            // {"do": "export_pack", "dir", "name", "author", "slot", ...}: write the loaded project as a community pack (no preview)
+            r = exportPackHeadless(*this, stp);
+            r["do"] = d;
         } else if (d == "apply_pack") {
             // {"do": "apply_pack", "dir": "<pack folder>"}: apply a community pack onto the loaded project (like Community > Apply)
             r["message"] = applyPackHeadless(*this, stp.value("dir", ""));
